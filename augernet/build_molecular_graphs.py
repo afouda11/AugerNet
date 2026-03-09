@@ -23,24 +23,20 @@ Key differences between graph types:
 """
 
 import os
-import re
 import json
-import tempfile
 import numpy as np
-import pandas as pd
-from pathlib import Path
-import statistics
 import torch
 from torch_geometric.data import Data
 from rdkit import Chem
 from rdkit.Chem import rdmolops, rdchem, rdDetermineBonds, AllChem
 from skipatom import SkipAtomInducedModel # Alt. options: OneHotVectors, RandomVectors, AtomVectors 
 
-from augernet import utils
-from augernet import spec_utils 
-from augernet import eneg_diff as ed
-from augernet import carbon_environment as ce
+from . import eneg_diff as ed
+from . import carbon_environment as ce
 
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', message='.*MorganGenerator.*')
 from augernet import DATA_RAW_DIR, DATA_PROCESSED_DIR
 
 # Global electronegativity matrix
@@ -62,19 +58,8 @@ permitted_list_of_bond_types = [
     rdchem.BondType.AROMATIC
 ]
 
-# Extended bond types for CoreIPNET finetune compatibility (6 types)
-coreipnet_permitted_bond_types = [
-    rdchem.BondType.SINGLE, 
-    rdchem.BondType.DOUBLE, 
-    rdchem.BondType.TRIPLE,
-    rdchem.BondType.QUADRUPLE,
-    rdchem.BondType.AROMATIC,
-    rdchem.BondType.DATIVE
-]
-
 # Permitted atom types for one-hot encoding (only elements in this work)
 PERMITTED_ATOM_TYPES = ['H', 'C', 'N', 'O', 'F']
-
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -128,19 +113,19 @@ def _e_neg_scores_from_mol(mol, add_bonds=True, num_elements=100):
     return scores
 
 
-def get_l(l):
+def _get_l(l):
     """Convert orbital letter to angular momentum quantum number."""
     return {'s': 0, 'p': 1, 'd': 2, 'f': 3, 'g': 4}.get(l, "l value is not valid")
 
 
-def get_n_l(orb):
+def _get_n_l(orb):
     """Parse orbital string (e.g., '1s') into (n, l) quantum numbers."""
     n = int(orb[0])
-    l = get_l(str(orb[1]))
+    l = _get_l(str(orb[1]))
     return n, l
 
 
-def giveorbitalenergy(ele, orb, orbital_energy_file='orbitalenergy.json'):
+def _giveorbitalenergy(ele, orb, orbital_energy_file='orbitalenergy.json'):
     """
     For a given element and orbital, return the orbital energy in eV.
     
@@ -166,12 +151,12 @@ def giveorbitalenergy(ele, orb, orbital_energy_file='orbitalenergy.json'):
     except KeyError:
         raise KeyError("Element symbol not found")
     
-    n, l = get_n_l(orb)
+    n, l = _get_n_l(orb)
     cbenergy = orbenegele[str(l)][n-l-1]
     cbenergy *= au2eV
     return cbenergy
 
-def initialize_all_atom_encoders(skipatom_dir, max_atomic_num=118):
+def _initialize_all_atom_encoders(skipatom_dir, max_atomic_num=118):
     """
     Initialize ALL atom encoders for the feature-store approach.
 
@@ -236,41 +221,14 @@ def initialize_all_atom_encoders(skipatom_dir, max_atomic_num=118):
     return encoders
 
 
-def one_hot_encoding(x, permitted_list):
+def _one_hot_encoding(x, permitted_list):
     """One-hot encode x based on permitted list. Unknown values map to last element."""
     if x not in permitted_list:
         x = permitted_list[-1]
     binary_encoding = [int(boolean_value) for boolean_value in list(map(lambda s: x == s, permitted_list))]
     return binary_encoding
 
-
-def cleanup_qm9_xyz(fname):
-    """
-    Clean up QM9 XYZ format (removes malformed header, keeps valid atom data).
-    
-    Returns
-    -------
-    ind : str
-        Cleaned XYZ content
-    gdb_smi : str
-        GDB SMILES string
-    relax_smi : str
-        Relaxed SMILES string
-    """
-    ind = open(fname).readlines()
-    nAts = int(ind[0])
-    gdb_smi, relax_smi = ind[-2].split()[:2]
-    ind[1] = '\n'
-    ind = ind[:nAts+2]
-    for i in range(2, nAts+2):
-        l = ind[i]
-        l = l.split('\t')
-        l.pop(-1)
-        ind[i] = '\t'.join(l)+'\n'
-    ind = ''.join(ind)
-    return ind, gdb_smi, relax_smi
-
-def extract_edge_attributes(mol, edge_index_order):
+def _extract_edge_attributes(mol, edge_index_order):
     """
     Extract edge attributes (bond types) from an RDKit molecule.
     
@@ -292,7 +250,7 @@ def extract_edge_attributes(mol, edge_index_order):
         if bond is None:
             raise ValueError(f"No bond found between atoms {i} and {j}")
         
-        bond_enc = one_hot_encoding(bond.GetBondType(), permitted_list_of_bond_types)
+        bond_enc = _one_hot_encoding(bond.GetBondType(), permitted_list_of_bond_types)
         if len(bond_types) == 0:
             bond_types = bond_enc
         else:
@@ -306,7 +264,7 @@ def extract_edge_attributes(mol, edge_index_order):
 # MORGAN FINGERPRINT (PER-ATOM)
 # =============================================================================
 
-def compute_per_atom_morgan_fp(mol, radius=MORGAN_RADIUS, n_bits=MORGAN_N_BITS):
+def _compute_per_atom_morgan_fp(mol, radius=MORGAN_RADIUS, n_bits=MORGAN_N_BITS):
     """
     Compute per-atom Morgan fingerprint vectors for ALL atoms in a molecule.
 
@@ -328,14 +286,32 @@ def compute_per_atom_morgan_fp(mol, radius=MORGAN_RADIUS, n_bits=MORGAN_N_BITS):
     np.ndarray, shape (n_atoms, n_bits), dtype float32
         Binary fingerprint vectors for every atom.
     """
-    n_atoms = mol.GetNumAtoms()
-    bit_info = {}
-    AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits, bitInfo=bit_info)
+    from rdkit.Chem import rdFingerprintGenerator
 
+    n_atoms = mol.GetNumAtoms()
     atom_fps = np.zeros((n_atoms, n_bits), dtype=np.float32)
-    for bit_idx, atom_radius_list in bit_info.items():
-        for contributing_atom, _r in atom_radius_list:
-            atom_fps[contributing_atom, bit_idx] = 1.0
+
+    # Create the modern MorganGenerator (hashed to n_bits)
+    gen = rdFingerprintGenerator.GetMorganGenerator(
+        radius=radius,
+        fpSize=n_bits,
+    )
+
+    # Set up AdditionalOutput to capture atom-to-bit mapping
+    ao = rdFingerprintGenerator.AdditionalOutput()
+    ao.AllocateAtomToBits()
+
+    # Generate the HASHED fingerprint (bit indices are in [0, n_bits))
+    # AdditionalOutput is populated as a side effect
+    gen.GetFingerprintAsNumPy(mol, additionalOutput=ao)
+
+    # atomToBits: list of length n_atoms
+    # Each element is a list of bit indices that atom contributed to
+    atom_to_bits = ao.GetAtomToBits()
+
+    for atom_idx, bit_list in enumerate(atom_to_bits):
+        for bit_idx in bit_list:
+            atom_fps[atom_idx, bit_idx] = 1.0
 
     return atom_fps
 
@@ -344,9 +320,7 @@ def compute_per_atom_morgan_fp(mol, radius=MORGAN_RADIUS, n_bits=MORGAN_N_BITS):
 # NODE AND EDGE FEATURE BUILDING
 # =============================================================================
 
-def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_file, 
-                                     category_feature=None, mol_smiles=None, 
-                                     mol_name=None, cebe_dir=None):
+def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_values):
     """
     Build node and edge features using the **feature-store** approach.
 
@@ -360,19 +334,11 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
     all_encoders : dict
         Output of ``initialize_all_atom_encoders()`` — maps encoder name
         to ``(encoder_fn, dim)`` tuple.
-    xyz_path : str
-        Path to XYZ file
-    orbital_energy_file : str
-        Path to orbitalenergy.json
     category_feature : array-like, optional
         Category feature (e.g. [1,0,0] for CEBE, [0,1,0] for singlet Auger).
         Stored directly in ``data.x``.
-    mol_smiles : str, optional
-        SMILES string for electronegativity score computation.
-    mol_name : str, optional
-        Molecule name for loading CEBE values.
-    cebe_dir : str, optional
-        Directory containing ``{mol_name}_node_features.txt`` CEBE files.
+    cebe : np.ndarray
+        CEBE values for the molecule, for mol_be feature for Auger spec only
 
     Returns
     -------
@@ -385,7 +351,6 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
         Category feature only, shape (N, 3), or empty (N, 0) if no category.
     edge_index : torch.Tensor
     edge_attr : torch.Tensor
-    pos : torch.Tensor
     atomic_be_tensor : torch.Tensor
         Atomic 1s BEs in eV (for output denormalisation / evaluation).
     carbon_env_indices : list[int]
@@ -399,14 +364,7 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
     # ordering which disagrees with XYZ ordering for ~84% of molecules.)
     e_score = _e_neg_scores_from_mol(mol)
 
-    # ── CEBE values for mol_be (if available) ──
-    cebe_values = None
-    if cebe_dir is not None and mol_name is not None:
-        cebe_path = os.path.join(cebe_dir, f"{mol_name}_node_features.txt")
-        if not os.path.exists(cebe_path):
-            cebe_path = os.path.join(cebe_dir, f"{mol_name}_cebe.txt")
-        if os.path.exists(cebe_path):
-            cebe_values = np.loadtxt(cebe_path)
+    orbital_energy_file = os.path.join(DATA_RAW_DIR, 'orbitalenergy.json')
 
     # ── per-atom loop ──
     skipatom_200_list = []
@@ -438,7 +396,7 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
             onehot_list.append(enc(symbol))
 
         # Atomic 1s BE (eV, positive)
-        atom_be_eV = -giveorbitalenergy(symbol, "1s", orbital_energy_file)
+        atom_be_eV = -_giveorbitalenergy(symbol, "1s", orbital_energy_file)
         atomic_be_list.append(atom_be_eV)
 
         # Atomic BE feature (Hartree, raw)
@@ -488,7 +446,7 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
         env_onehot_np, dtype=torch.float)                 # (N, NUM_CARBON_CATEGORIES)
 
     # ── per-atom Morgan fingerprint ──
-    morgan_fp = compute_per_atom_morgan_fp(mol)
+    morgan_fp = _compute_per_atom_morgan_fp(mol)
     node_features['feat_morgan_fp'] = torch.tensor(
         morgan_fp, dtype=torch.float)                     # (N, MORGAN_N_BITS)
 
@@ -509,7 +467,7 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
 
     edge_index = torch.tensor(edge_index_order, dtype=torch.long).t().contiguous()
 
-    bond_types = extract_edge_attributes(mol, edge_index_order)
+    bond_types = _extract_edge_attributes(mol, edge_index_order)
 
     edge_attr = torch.tensor(bond_types, dtype=torch.float)
 
@@ -521,7 +479,7 @@ def build_node_and_edge_features(mol, all_encoders, xyz_path, orbital_energy_fil
 # LOAD MOLECULE FROM XYZ 2 MOL WITH PRECISE ATOM ORDERING
 # =============================================================================
 
-def mol_from_xyz_order(fname, labeled_atoms=False):
+def _mol_from_xyz_order(fname, labeled_atoms=False):
     """
     Load an evaluation XYZ file and return an RDKit molecule with consistent ordering.
     
@@ -629,7 +587,7 @@ def mol_from_xyz_order(fname, labeled_atoms=False):
 # NORMALIZATION STATISTICS
 # =============================================================================
 
-def compute_cebe_normalization_stats(cebe_dir, mol_list):
+def _compute_cebe_normalization_stats(cebe_dir, mol_list):
     """
     Load all CEBE data to compute normalization statistics.
     Returns: mean and std of (C_1s_BE - mol_cebe)
@@ -642,7 +600,7 @@ def compute_cebe_normalization_stats(cebe_dir, mol_list):
 
     for mol_name in mol_list:
 
-        cebe_path = f"{cebe_dir}/{mol_name}_node_features.txt"
+        cebe_path = f"{cebe_dir}/{mol_name}_out.txt"
         
         cebe = np.loadtxt(cebe_path)
         
@@ -664,7 +622,7 @@ def compute_cebe_normalization_stats(cebe_dir, mol_list):
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
 
-def build_cebe_gnn(data_dir, data_type, mol_file="mol_list.txt", OUT_SCALE="MEANSTD", scale_value=10, DEBUG=False):
+def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False):
     """
     Process calculated CEBE data using the feature-store approach.
     
@@ -679,18 +637,19 @@ def build_cebe_gnn(data_dir, data_type, mol_file="mol_list.txt", OUT_SCALE="MEAN
     with open(mol_list_path, 'r') as f:
         mol_list = [line.strip() for line in f]
 
-    all_encoders = initialize_all_atom_encoders(skipatom_dir)
-    orbital_energy_file = os.path.join(DATA_RAW_DIR, 'orbitalenergy.json')
+    all_encoders = _initialize_all_atom_encoders(skipatom_dir)
 
     # Compute or load stats before loop over mol_list
     norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
 
+    # Calculate and save norm stats for calc data
     if data_type == 'calc':
-        mean, std = compute_cebe_normalization_stats(mol_dir, mol_list)
-        norm_stats = {'mean': mean, 'std': std, 'scale_value': scale_value}
+        mean, std = _compute_cebe_normalization_stats(mol_dir, mol_list)
+        norm_stats = {'mean': mean, 'std': std}
         print("Normalization statistics:", norm_stats)
         torch.save(norm_stats, norm_stats_path)
 
+    # Load norm stats  from calc data for exp eval and other predictions
     if data_type in ['exp', 'pes']:
         norm_stats = torch.load(norm_stats_path)
         mean = norm_stats['mean']
@@ -698,22 +657,21 @@ def build_cebe_gnn(data_dir, data_type, mol_file="mol_list.txt", OUT_SCALE="MEAN
 
     data_list = []
 
+    if DEBUG:
+        mol_list = mol_list[:5]
+
     for mol_name in mol_list:
 
         mol_xyz_path = os.path.join(mol_dir, f"{mol_name}.xyz")
-        mol, xyz_symbols, pos, smiles = mol_from_xyz_order(mol_xyz_path, labeled_atoms=False)
+        mol, xyz_symbols, pos, smiles = _mol_from_xyz_order(mol_xyz_path, labeled_atoms=False)
+
+        cebe_path = f"{mol_dir}/{mol_name}_out.txt"
+        cebe = np.loadtxt(cebe_path)
 
         #Use to differentiate between cebe, auger sing, auger trip
         category_feature=np.array([1, 0, 0])
         node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
-            build_node_and_edge_features(
-                mol, all_encoders, orbital_energy_file,
-                category_feature=category_feature,
-                mol_smiles=smiles, mol_name=mol_name, cebe_dir=mol_dir,
-            )
-
-        cebe_path = f"{mol_dir}/{mol_name}_out.txt"
-        cebe = np.loadtxt(cebe_path)
+            _build_node_and_edge_features(mol, all_encoders, category_feature, cebe)
 
         # Build targets (same logic as v1)
         out = []
@@ -723,12 +681,8 @@ def build_cebe_gnn(data_dir, data_type, mol_file="mol_list.txt", OUT_SCALE="MEAN
             else:
                 ref_e = atomic_be[n].item()
                 dum = ref_e - val
-                if OUT_SCALE == "MEANSTD":
-                    out.append((dum - mean) / std)
-                elif OUT_SCALE == "SCALAR":
-                    out.append(dum / scale_value)
-                else:
-                    out.append(dum)
+                #Mean std normalized output, across the full calc dataset
+                out.append((dum - mean) / std)
 
         y = torch.FloatTensor(out)
         node_mask = [0. if n == -1 else 1. for n in out]
@@ -743,9 +697,13 @@ def build_cebe_gnn(data_dir, data_type, mol_file="mol_list.txt", OUT_SCALE="MEAN
         data = Data(
             x=x, edge_index=edge_index, edge_attr=edge_attr,
             node_mask=torch.FloatTensor(node_mask),
-            y=y.view(-1, 1), pos=pos, atomic_be=atomic_be,
-            atom_symbols=xyz_symbols, true_cebe=true_cebe,
-            smiles=smiles, mol_name=mol_name,
+            y=y.view(-1, 1), 
+            pos=torch.tensor(pos, dtype=torch.float), 
+            atomic_be=atomic_be,
+            atom_symbols=xyz_symbols, 
+            true_cebe=true_cebe,
+            smiles=smiles, 
+            mol_name=mol_name,
             carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
         )
 

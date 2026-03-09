@@ -22,6 +22,7 @@ import yaml
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
+from augernet import PROJECT_ROOT, DATA_RAW_DIR, DATA_PROCESSED_DIR
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Dataclass
@@ -98,41 +99,19 @@ class AugerNetConfig:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-    def resolve(self, project_root: str | None = None) -> 'AugerNetConfig':
+    def resolve(self) -> 'AugerNetConfig':
+
         """Fill in computed / derived fields after loading."""
         from augernet.feature_assembly import compute_feature_tag
 
-        if project_root:
-            self.project_root = project_root
-
-        # ── script_dir  (where the backend lives) ───────────────────────
-        _backend_dirs = {
-            'cebe-gnn':  os.path.join(self.project_root, 'cebe_pred'),
-        }
-        self.script_dir = _backend_dirs.get(self.model, '')
-
-        # ── data_path default ───────────────────────────────────────────
-        if not self.data_path:
-            self.data_path = os.path.join(self.project_root, 'data')
-
         # ── exp_dir (CEBE) ──────────────────────────────────────────────
         if self.model == 'cebe-gnn' and not self.exp_dir:
-            self.exp_dir = os.path.join(self.data_path, 'raw', 'cebe_eval')
-
-        # ── CNN data paths ──────────────────────────────────────────────
-        if self.model == 'auger-cnn':
-            proc = os.path.join(self.data_path, 'processed')
-            if not self.train_data:
-                self.train_data = os.path.join(proc, 'cnn_auger_calc_carbon.pkl')
-            if not self.eval_data:
-                self.eval_data = os.path.join(proc, 'cnn_auger_eval_carbon.pkl')
-            if not self.exp_data:
-                self.exp_data = os.path.join(proc, 'cnn_auger_exp_carbon.pkl')
+            self.exp_dir = os.path.join(DATA_RAW_DIR, 'exp_cebe')
 
         # ── norm_stats_file (CEBE) ──────────────────────────────────────
         if self.model == 'cebe-gnn' and not self.norm_stats_file:
             self.norm_stats_file = os.path.join(
-                self.script_dir, 'cebe_normalization_stats.pt'
+                DATA_PROCESSED_DIR, 'cebe_norm_stats.pt'
             )
 
         # ── output dirs ─────────────────────────────────────────────────
@@ -140,15 +119,10 @@ class AugerNetConfig:
         # the user controls where outputs land by cd-ing into the right
         # place before running the CLI.  Evaluation modes will then find
         # the saved models in the same directory.
-        # However this can be overwritten by specifying output directories in the CLI
-        # By including --cv_dir '/path/to/cv_results' etc. in python augernet
         cwd = os.getcwd()
-        if not self.cv_dir:
-            self.cv_dir = os.path.join(cwd, 'cv_results')
-        if not self.train_dir:
-            self.train_dir = os.path.join(cwd, 'train_results')
-        if not self.param_dir:
-            self.param_dir = os.path.join(cwd, 'param_results')
+        self.cv_dir = os.path.join(cwd, 'cv_results')
+        self.train_dir = os.path.join(cwd, 'train_results')
+        self.param_dir = os.path.join(cwd, 'param_results')
 
         # ── feature_tag + model_tag (GNN models) ──────────────────────────
         # feature_tag  = pure feature identity, e.g. '035'
@@ -158,48 +132,17 @@ class AugerNetConfig:
         #
         # Both training and evaluation modes produce the SAME model_tag so
         # that load_saved_model finds exactly the file train/cv saved.
-        _cv_modes = ('cv', 'evaluate_cv')
 
-        if self.model in ('cebe-gnn', 'auger-gnn'):
+        if self.model == 'cebe-gnn':
             self.feature_tag = compute_feature_tag(self.feature_keys)
 
             # Start building model_tag from pure feature_tag
             parts = [self.feature_tag]
 
             # Split method is part of the tag for CV-related modes
-            if self.mode in _cv_modes:
-                parts.append(self.split_method)
-
-            # Auger GNN: always append FWHM
-            if self.model == 'auger-gnn':
-                parts.append(f"fwhm{str(self.eval_fwhm).replace('.', 'pt')}")
+            parts.append(self.split_method)
 
             self.model_tag = '_'.join(parts)
-
-        # ── cv_suffix (CNN) ─────────────────────────────────────────────
-        if self.model == 'auger-cnn':
-            parts = []
-            if self.mode in _cv_modes:
-                parts.append(self.split_method)
-            _fwhm_str = f"fwhm{str(self.broadening_fwhm).replace('.', 'pt')}"
-            if self.merge_scheme != 'none':
-                parts.append(self.merge_scheme)
-            parts.append(_fwhm_str)
-            self.cv_suffix = '_' + '_'.join(parts) if parts else ''
-            self.model_tag = self.cv_suffix  # CNN uses cv_suffix as its tag
-
-        # ── split file ──────────────────────────────────────────────────
-        if self.model == 'auger-cnn':
-            if not self.split_dir:
-                self.split_dir = os.path.join(self.data_path, 'processed', 'splits')
-            if not self.split_file:
-                self.split_file = os.path.join(
-                    self.split_dir,
-                    f'auger_cnn_splits_{self.split_method}.json',
-                )
-        elif self.model in ('cebe-gnn', 'auger-gnn'):
-            if not self.split_dir:
-                self.split_dir = os.path.join(self.data_path, 'splits')
 
         return self
 
@@ -230,39 +173,19 @@ def load_config(config_path: str) -> AugerNetConfig:
     # Known dataclass field names
     known = {f.name for f in AugerNetConfig.__dataclass_fields__.values()}
 
-    # Smart flattening: only flatten nested dicts whose *key* is NOT a known
-    # dataclass field (e.g. grouping headers in YAML).  Known dict-typed fields
-    # like 'architecture' and 'param_grid' are kept as-is.
-    flat: Dict[str, Any] = {}
-    for k, v in raw.items():
-        if isinstance(v, dict) and k not in known:
-            # This is a grouping header — flatten its children
-            flat.update(v)
-        else:
-            flat[k] = v
+     # Strict mode: reject unknown keys
+    unknown = set(raw.keys()) - known
+    if unknown:
+        raise ValueError(
+            f"Unknown config fields in {config_path}:\n"
+            f"  {', '.join(sorted(unknown))}\n"
+            f"Allowed fields: {', '.join(sorted(known))}"
+        )
 
-    # Build dataclass — ignore unknown keys gracefully
-    known = {f.name for f in AugerNetConfig.__dataclass_fields__.values()}
-    filtered = {k: v for k, v in flat.items() if k in known}
-
-    cfg = AugerNetConfig(**filtered)
+    cfg = AugerNetConfig(**raw)
 
     # Resolve project root from the config file's location
     # Walk up until we find setup.py or augernet/
-    project_root = _find_project_root()
-    cfg.resolve(project_root)
+    cfg.resolve()
 
     return cfg
-
-def _find_project_root() -> str:
-    """Get the augernet package root directory."""
-    if sys.version_info >= (3, 9):
-        # Python 3.9+: use importlib.resources
-        try:
-            return str(importlib.resources.files('augernet').parent)
-        except (ImportError, AttributeError):
-            pass
-    
-    # Fallback: use __file__
-    import augernet
-    return os.path.dirname(os.path.dirname(os.path.abspath(augernet.__file__)))
