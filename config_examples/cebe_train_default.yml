@@ -19,7 +19,7 @@ run_unit_tests: true
 
 #  K-fold
 n_folds: 5
-train_fold: 3
+train_fold: 1
 split_method: random
 
 # Node Feature Specification
@@ -31,7 +31,6 @@ feature_scale: MEANSTD             # MEANSTD | NORM | NONE
 
 # Output scaling
 out_scale: MEANSTD                 # NONE | FEATURE_SCALE | MEANSTD
-pred_type: CEBE
 
 # Model hyper-parameters
 layer_type: EQ                     # EQ (equivariant) | IN (invariant)
@@ -51,8 +50,8 @@ warmup_epochs: 10
 min_lr: 1.0e-7
 
 # scheduler
-scheduler_type: str = 'cosine'   # cosine | onecycle
-pct_start: float = 0.3           # OneCycleLR only
+scheduler_type: 'cosine'   # cosine | onecycle
+pct_start: 0.3           # OneCycleLR only
 
 # Hyperparameter search grid
 param_grid:

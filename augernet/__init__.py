@@ -25,6 +25,6 @@ __version__ = '0.1.0'
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PROJECT_ROOT = os.path.dirname(PACKAGE_DIR)
-
-DATA_RAW_DIR = os.path.join(PROJECT_ROOT, 'data', 'raw')
-DATA_PROCESSED_DIR = os.path.join(PROJECT_ROOT, 'data', 'processed')
+DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+DATA_RAW_DIR = os.path.join(DATA_DIR, 'raw')
+DATA_PROCESSED_DIR = os.path.join(DATA_DIR, 'processed')
