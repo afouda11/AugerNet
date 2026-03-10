@@ -1,0 +1,60 @@
+# =============================================================================
+#  AugerNet — CEBE GNN Default Config.
+# =============================================================================
+#
+#  Run with:
+#    python -m augernet --config /path/to/this/file/
+#
+# =============================================================================
+
+# Model type and run mode 
+model: cebe-gnn           # 'cebe-gnn' only atm
+mode: param               # cv | train | param | evaluate | predict
+
+# Evaluate on exp data immediately after each training cycle
+run_evaluation: true
+
+# Sanity check permutation invariance & rotational invariance/equivariance
+run_unit_tests: true 
+
+#  K-fold
+n_folds: 5
+train_fold: 1
+split_method: random
+
+# Node Feature Specification
+#   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot, 
+#   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE), 
+#               5=e_score,      6=env_onehot
+feature_keys: '035'                # skipatom_200 + atomic_be + e_score
+feature_scale: MEANSTD             # MEANSTD | NORM | NONE
+
+# Output scaling
+out_scale: MEANSTD                 # NONE | FEATURE_SCALE | MEANSTD
+
+# Model hyper-parameters
+layer_type: EQ                     # EQ (equivariant) | IN (invariant)
+hidden_channels: 64
+n_layers: 3
+num_epochs: 500
+patience: 30
+batch_size: 24
+learning_rate: 0.001
+random_seed: 42
+
+# Optimizer
+optimizer_type: adamw
+weight_decay: 5.0e-4
+gradient_clip_norm: 0.5
+warmup_epochs: 10
+min_lr: 1.0e-7
+
+# scheduler
+scheduler_type: 'cosine'   # cosine | onecycle
+pct_start: 0.3           # OneCycleLR only
+
+# Hyperparameter search grid
+param_grid:
+  n_layers:      [1, 2, 3, 4, 5, 6, 7, 8]
+  layer_type:    [EQ, IN]
+

@@ -1,16 +1,14 @@
 """
-AugerNet — Machine Learning for Auger-Decay Spectroscopy
-=========================================================
+AugerNet — GNN Predictions of Core-Electron Binding Energies
+=============================================================
 
-Provides:
-  • GNN models for core-electron binding energy (CEBE) prediction
-  • GNN models for Auger spectrum prediction (stick + fitted)
-  • CNN models for carbon environment classification
+Provides GNN models for core-electron binding energy (CEBE) prediction
+from molecular graphs.
 
 Usage
 -----
   # As a CLI:
-  python -m augernet --model cebe-gnn --mode train --config configs/cebe_default.yml
+  python -m augernet --config /path/to/config.yml
 
   # Programmatically:
   from augernet.config import load_config

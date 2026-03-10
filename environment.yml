@@ -1,0 +1,35 @@
+# AugerNet conda environment — exact build from osx-arm64 (Apple Silicon)
+#
+# Recreate with:
+#   conda env create -f environment.yml
+#   conda activate augernet
+#
+# PyTorch and PyG are installed via pip (no CUDA on Apple Silicon).
+# For GPU support on Linux, replace the pip torch/pyg lines with the
+# appropriate versions from https://pytorch.org/get-started/locally/
+
+name: augernet
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - rdkit=2025.03.1
+  - matplotlib-base=3.10.1
+  - pandas=2.2.3
+  - seaborn=0.13.2
+  - pip
+  - pip:
+    - numpy==1.26.4
+    - scipy==1.13.1
+    - scikit-learn==1.7.2
+    - pyyaml==6.0.3
+    - torch==2.2.0
+    - torchvision==0.17.0
+    - torch-geometric==2.6.1
+    - torch-scatter==2.1.2
+    - torch-sparse==0.6.18
+    - skipatom==1.2.5
+    - gensim==4.3.3
+    - numba==0.63.1
+    - umap-learn==0.5.11
+    - -e .

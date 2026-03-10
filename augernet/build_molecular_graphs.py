@@ -563,16 +563,37 @@ def _mol_from_xyz_order(fname, labeled_atoms=False):
         rdDetermineBonds.DetermineConnectivity(mol)
     
     Chem.SanitizeMol(mol)
+
+    # AddHs ensures all hydrogens are explicit.  Since XYZ files in this
+    # dataset already contain all H atoms, AddHs should be a no-op.  If it
+    # *does* append atoms the ordering would silently break, so we check.
+    n_before = mol.GetNumAtoms()
     mol = Chem.AddHs(mol)
+    if mol.GetNumAtoms() != n_before:
+        raise RuntimeError(
+            f"Chem.AddHs() added {mol.GetNumAtoms() - n_before} atom(s) to "
+            f"{fname} — the XYZ file is missing explicit hydrogens.  "
+            f"All H atoms must be present in the XYZ to guarantee ordering."
+        )
+
     Chem.SetAromaticity(mol, Chem.AromaticityModel.AROMATICITY_MDL)
     
-    # Verify atom count matches (DetermineBonds preserves XYZ atom ordering)
+    # Verify atom ordering is preserved (not just count)
     mol_symbols = [a.GetSymbol() for a in mol.GetAtoms()]
-    if len(mol_symbols) != len(xyz_symbols):
+    if mol_symbols != xyz_symbols:
+        # Find the first mismatch for a useful error message
+        for k, (ms, xs) in enumerate(zip(mol_symbols, xyz_symbols)):
+            if ms != xs:
+                raise ValueError(
+                    f"Atom ordering mismatch for {fname} at index {k}: "
+                    f"mol has '{ms}' but XYZ has '{xs}'.\n"
+                    f"  XYZ symbols: {xyz_symbols}\n"
+                    f"  Mol symbols: {mol_symbols}"
+                )
+        # Length mismatch (shouldn't reach here given AddHs guard, but just in case)
         raise ValueError(
             f"Atom count mismatch for {fname}:\n"
-            f"  XYZ has {len(xyz_symbols)} atoms: {xyz_symbols}\n"
-            f"  After AddHs() mol has {len(mol_symbols)} atoms: {mol_symbols}"
+            f"  XYZ has {len(xyz_symbols)} atoms, mol has {len(mol_symbols)}"
         )
     
     # Note: No permutation needed - DetermineBonds preserves XYZ atom ordering

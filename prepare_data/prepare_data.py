@@ -127,8 +127,8 @@ def prepare_cebe_gnn(args):
 
     _save_collated(exp_data, os.path.join(DATA_PROCESSED_DIR, "gnn_exp_cebe_data.pt"))
 
-    # --- Experimental evaluation data ---
-    print("\n  [1b] Experimental CEBE evaluation data ...")
+    # --- PES evaluation data ---
+    print("\n  [1c] PES CEBE evaluation data ...")
     pes_data = bmg.build_cebe_graphs('pes', 'pes_cebe', DEBUG=args.debug)
 
     _print_graph_stats(pes_data, "CEBE pes ")

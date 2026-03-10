@@ -1,0 +1,28 @@
+# =============================================================================
+#  AugerNet — CEBE GNN Evaluate Config
+# =============================================================================
+#
+#  Evaluate a previously trained model on experimental data.
+#  Results are written to evaluate_results/ in the working directory.
+#  Graph processed experimental data is in package in data/processed
+#  Raw exp data located: 
+#  Run with:
+#    python -m augernet --config config_examples/cebe_evaluate.yml
+#
+# =============================================================================
+
+model: cebe-gnn
+mode: evaluate
+
+# ── Path to the saved model (.pth) ──────────────────────────────────────────
+# Relative to the working directory, or absolute.
+model_path: param_results/models/cebe_035_random_EQ3_h64_fold1_cfg002.pth
+
+# ── Must match the architecture / features used during training ──────────────
+feature_keys: '035'
+feature_scale: MEANSTD
+out_scale: MEANSTD
+
+layer_type: EQ
+hidden_channels: 64
+n_layers: 3
