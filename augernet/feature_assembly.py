@@ -79,6 +79,31 @@ def compute_feature_tag(feature_keys: Sequence[int]) -> str:
     return ''.join(str(k) for k in sorted(feature_keys))
 
 
+def parse_feature_keys(tag) -> List[int]:
+    """
+    Parse a compact feature-key string into a sorted list of ints.
+
+    Accepts both the compact string form and the list-of-int form
+    (for backward compatibility with old configs).
+
+    >>> parse_feature_keys('035')
+    [0, 3, 5]
+    >>> parse_feature_keys([0, 3, 5])
+    [0, 3, 5]
+    """
+    if isinstance(tag, (list, tuple)):
+        return sorted(int(k) for k in tag)
+    tag = str(tag).strip()
+    keys = sorted(int(ch) for ch in tag)
+    unknown = [k for k in keys if k not in FEATURE_CATALOG]
+    if unknown:
+        raise ValueError(
+            f"Unknown feature key(s) {unknown} in '{tag}'. "
+            f"Valid keys: {sorted(FEATURE_CATALOG.keys())}"
+        )
+    return keys
+
+
 def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
     """
     Compute the total node-feature dimension that ``assemble_node_features``

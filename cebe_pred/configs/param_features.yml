@@ -9,9 +9,9 @@
 
 # Model type and run mode 
 model: cebe-gnn           # 'cebe-gnn' only atm
-mode: train               # cv | train | param | evaluate_cv | evaluate_train | evaluate_param
+mode: param               # cv | train | param | evaluate | predict
 
-# Evaluation on exp.evaluation data 
+# Evaluate on exp data immediately after each training cycle
 run_evaluation: true
 
 # Sanity check permutation invariance & rotational invariance/equivariance
@@ -26,7 +26,7 @@ split_method: random
 #   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot, 
 #   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE), 
 #               5=e_score,      6=env_onehot
-feature_keys: [0, 3, 5]           # skipatom_200 + atomic_be + e_score
+feature_keys: '035'                # skipatom_200 + atomic_be + e_score
 feature_scale: MEANSTD             # MEANSTD | NORM | NONE
 
 # Output scaling
@@ -55,8 +55,6 @@ pct_start: 0.3           # OneCycleLR only
 
 # Hyperparameter search grid
 param_grid:
-  learning_rate: [0.0001, 0.0003, 0.001]
-  weight_decay:  [1.0e-4, 5.0e-4, 1.0e-3]
-  n_layers:      [4, 5, 6]
-  hidden_channels: [48, 64]
-  batch_size:    [24, 32, 48]
+  feature_keys:  ['0', '1', '2', '3', '03', '05', '06', '035', '135', '235', '0356']
+  layer_type:    [EQ,   IN]
+

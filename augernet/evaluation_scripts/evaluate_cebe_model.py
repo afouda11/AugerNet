@@ -6,12 +6,12 @@ Can be used in two ways:
 1. **Standalone CLI** — evaluate any saved model:
 
        python evaluate_cebe_model.py /path/to/model.pth \\
-           --feature-keys 0 3 5 \\
+           --feature-keys 035 \\
            --layer-type IN --hidden-channels 64 --n-layers 10 \\
            --output-dir eval_outputs --png-dir eval_pngs
 
-2. **Imported by train_cebe_model.py** — called automatically after training
-   when ``RUN_EVALUATION = True``:
+2. **Imported by train_driver.py** — called automatically after training
+   when ``run_evaluation: true``:
 
        from evaluate_cebe_model import run_evaluation
 """
@@ -39,6 +39,7 @@ if PROJECT_ROOT not in sys.path:
 from augernet import gnn_train_utils as gtu
 from augernet.feature_assembly import (
     assemble_dataset, compute_feature_tag, describe_features,
+    parse_feature_keys,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,7 +113,6 @@ def run_evaluation(
     model: torch.nn.Module,
     device: torch.device,
     exp_data: list,
-    exp_list: list,
     output_dir: str,
     *,
     fold: Optional[int] = None,
@@ -120,13 +120,14 @@ def run_evaluation(
     norm_stats_file: str = None,
     png_dir: str,
     train_results: list = None,
-    feature_tag: str = '',
-    n_layers: int = 10,
-    layer_type: str = 'IN',
-    exp_dir: str = None,
+    model_id: str = 'cebe',
 ):
     """
     Evaluate a CEBE model on experimental data.
+
+    Molecule names and sizes are read directly from the processed graph
+    Data objects (``data.mol_name`` and ``data.pos``), so no raw XYZ
+    files or external molecule lists are required.
 
     Produces:
       1. Training / validation loss curves (if ``train_results`` provided)
@@ -142,8 +143,6 @@ def run_evaluation(
         Device the model lives on.
     exp_data : list
         List of PyG Data objects for experimental molecules.
-    exp_list : list of str
-        Filenames for each experimental molecule (e.g. ``['ethanol.xyz', ...]``).
     output_dir : str
         Directory for text output files.
     fold : int, optional
@@ -156,14 +155,9 @@ def run_evaluation(
         Directory for PNG plots.
     train_results : list, optional
         List of ``[epoch, train_loss, val_loss]`` for loss-curve plotting.
-    feature_tag : str
-        Feature tag string for filenames (e.g. ``'035'``).
-    n_layers : int
-        Number of GNN layers (for filename).
-    layer_type : str
-        Layer type string (for filename).
-    exp_dir : str, optional
-        Directory containing experimental XYZ files (for molecule size lookup).
+    model_id : str
+        Unified filename stem (e.g. ``'cebe_035_random_EQ3_h64'``).
+        All output files are named ``{model_id}_fold{fold}_<type>.<ext>``.
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(png_dir, exist_ok=True)
@@ -177,12 +171,8 @@ def run_evaluation(
     else:
         mean, std, scale_value = 0.0, 1.0, 1.0
 
-    if out_scale == "FEATURE_SCALE":
-        out_label = f"{layer_type}_{out_scale}_{scale_value}"
-    else:
-        out_label = f"{layer_type}_{out_scale}"
-
-    fold_suffix = f"_fold{fold}_{feature_tag}_{n_layers}" if fold is not None else f"_{feature_tag}_{n_layers}"
+    # Unified file-stem: {model_id}_fold{fold} or just {model_id}
+    file_stem = f"{model_id}_fold{fold}" if fold is not None else model_id
 
     print("\n" + "=" * 80)
     print(f"EVALUATION: Testing on experimental data{f'  (fold {fold})' if fold else ''}")
@@ -216,8 +206,8 @@ def run_evaluation(
         ax.set_xlim(0, epochs[-1] + 2)
         ax.grid(True, alpha=0.3, linewidth=1.0, axis='both', zorder=0)
 
-        loss_plot_path = os.path.join(png_dir, f"loss_curves{fold_suffix}.png")
-        loss_pdf_path  = os.path.join(png_dir, f"loss_curves{fold_suffix}.pdf")
+        loss_plot_path = os.path.join(png_dir, f"{file_stem}_loss.png")
+        loss_pdf_path  = os.path.join(png_dir, f"{file_stem}_loss.pdf")
         fig.savefig(loss_plot_path, dpi=300, bbox_inches='tight')
         fig.savefig(loss_pdf_path, bbox_inches='tight')
         print(f"Loss curves saved to: {loss_plot_path}")
@@ -247,14 +237,13 @@ def run_evaluation(
         if has_true_cebe:
             true_cebe = data.true_cebe.cpu().numpy()
 
-        # Recover atom symbols from feat_onehot
-        if hasattr(data, 'feat_onehot'):
-            onehot = data.feat_onehot.cpu().numpy()
-            atom_syms = [ATOM_SYMBOLS[int(np.argmax(onehot[j]))] for j in range(onehot.shape[0])]
-        else:
-            atom_syms = ['?' for _ in range(len(true_out))]
-
-        mol_name = exp_list[i].split('.')[0] if '.' in exp_list[i] else exp_list[i]
+        # Atom symbols from data
+        atom_syms = data.atom_symbols
+        # Get molecule name from graph Data object
+        mol_name_raw = data.mol_name
+        if isinstance(mol_name_raw, list):
+            mol_name_raw = mol_name_raw[0]  # DataLoader wraps strings in list
+        mol_name = mol_name_raw.split('.')[0] if '.' in mol_name_raw else mol_name_raw
 
         # --- Per-atom results for this molecule ---
         mol_atom_rows = []
@@ -290,8 +279,9 @@ def run_evaluation(
 
         if mol_name not in molecule_results:
             molecule_results[mol_name] = {
-                'true': [], 'pred': [], 'xyz': exp_list[i],
+                'true': [], 'pred': [],
                 'atom_rows': mol_atom_rows,
+                'n_atoms': data.pos.size(0),   # total atoms from graph
             }
         molecule_results[mol_name]['true'] = [r[1] for r in mol_atom_rows if r[1] != -1.0]
         molecule_results[mol_name]['pred'] = [r[2] for r in mol_atom_rows if r[1] != -1.0]
@@ -299,7 +289,7 @@ def run_evaluation(
     # ------------------------------------------------------------------
     #  3) Save label_results file
     # ------------------------------------------------------------------
-    label_path = f"{output_dir}/label_results_{out_label}{fold_suffix}.txt"
+    label_path = os.path.join(output_dir, f"{file_stem}_labels.txt")
     with open(label_path, 'w') as out_file:
         out_file.write(f"# CEBE Evaluation Results\n")
         out_file.write(f"# Columns: atom_symbol  true_BE(eV)  pred_BE(eV)  error(eV)\n")
@@ -317,7 +307,7 @@ def run_evaluation(
 
     # Compact numeric results (carbon atoms only)
     np.savetxt(
-        f"{output_dir}/results_{out_label}{fold_suffix}.txt",
+        os.path.join(output_dir, f"{file_stem}_results.txt"),
         np.column_stack((all_true_out, all_pred_out)),
     )
 
@@ -339,26 +329,8 @@ def run_evaluation(
 
         n_carbon = len(true_arr)
 
-        # Get total molecule size from xyz
-        mol_size = 'N/A'
-        if exp_dir is not None:
-            xyz_file = res['xyz']
-            if not xyz_file.endswith('.xyz'):
-                xyz_file_try = xyz_file + '.xyz'
-            else:
-                xyz_file_try = xyz_file
-            xyz_path = os.path.join(exp_dir, xyz_file_try)
-            if not os.path.isfile(xyz_path):
-                xyz_path = os.path.join(exp_dir, mol_name + '.xyz')
-            try:
-                with open(xyz_path) as f:
-                    lines = f.readlines()
-                    if len(lines) > 0 and lines[0].strip().isdigit():
-                        mol_size = int(lines[0].strip())
-                    else:
-                        mol_size = len([l for l in lines[2:] if l.strip()])
-            except Exception:
-                pass
+        # Get total molecule size from the processed graph data
+        mol_size = res.get('n_atoms', 'N/A')
 
         print(f"{mol_name:<22s} {mol_mae:10.4f} {mol_std:10.4f} {n_carbon:>5d} {str(mol_size):>8s}")
 
@@ -397,7 +369,7 @@ def run_evaluation(
 
     plt.tight_layout()
 
-    plot_path = os.path.join(png_dir, f"results_{out_label}{fold_suffix}.png")
+    plot_path = os.path.join(png_dir, f"{file_stem}_scatter.png")
     plt.savefig(plot_path, dpi=600, bbox_inches='tight')
     print(f"Scatter plot saved to: {plot_path}")
     plt.close()
@@ -443,9 +415,7 @@ def run_pes_evaluation(
     output_dir: str = None,
     png_dir: str,
     pes_raw_dir: str,
-    feature_tag: str = '',
-    n_layers: int = 10,
-    layer_type: str = 'IN',
+    model_id: str = 'cebe',
 ):
     """
     Evaluate a CEBE model on PES (Potential Energy Surface) scan data.
@@ -473,12 +443,8 @@ def run_pes_evaluation(
         Directory for PNG plots.
     pes_raw_dir : str
         Path to ``data/raw/cebe_pes_eval/`` containing ``*_pes.txt`` files.
-    feature_tag : str
-        Feature tag string for filenames.
-    n_layers : int
-        Number of GNN layers (for filename).
-    layer_type : str
-        Layer type string (for filename).
+    model_id : str
+        Unified filename stem (e.g. ``'cebe_035_random_EQ3_h64'``).
     """
     os.makedirs(png_dir, exist_ok=True)
 
@@ -649,7 +615,7 @@ def run_pes_evaluation(
             os.makedirs(output_dir, exist_ok=True)
             csv_path = os.path.join(
                 output_dir,
-                f"pes_{mol_name}_{feature_tag}_{layer_type}_{n_layers}.csv",
+                f"{model_id}_pes_{mol_name}.csv",
             )
             with open(csv_path, 'w') as f:
                 f.write("coordinate,calc_cebe,gnn_cebe\n")
@@ -660,7 +626,7 @@ def run_pes_evaluation(
     plt.suptitle('CEBE along Potential Energy Surface Scans', fontsize=16, fontweight='bold')
     plt.tight_layout()
 
-    plot_path = os.path.join(png_dir, f"pes_cebe_{feature_tag}_{layer_type}_{n_layers}.png")
+    plot_path = os.path.join(png_dir, f"{model_id}_pes.png")
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"\n  PES plot saved to: {plot_path}")
     plt.close()
@@ -702,12 +668,12 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Evaluate with default settings (feature keys [0,3,5])
+  # Evaluate with default settings (feature keys '035')
   python evaluate_cebe_model.py train_results/models/cebe_model_fold3_035.pth
 
   # Evaluate with custom feature keys and architecture
   python evaluate_cebe_model.py /path/to/model.pth \\
-      --feature-keys 0 3 5 6 \\
+      --feature-keys 0356 \\
       --layer-type IN --hidden-channels 64 --n-layers 10
 
   # Evaluate with custom output directory
@@ -726,8 +692,8 @@ Examples:
     # ---- Feature configuration ----
     parser.add_argument(
         '--feature-keys', '-fk',
-        type=int, nargs='+', default=[0, 3, 5],
-        help="Feature keys for node features (default: 0 3 5 = skipatom_200 + atomic_be + e_score).",
+        type=str, default='035',
+        help="Feature keys as a compact string (e.g. '035' = skipatom_200 + atomic_be + e_score).",
     )
     parser.add_argument(
         '--feature-scale', '-fs',
@@ -807,15 +773,20 @@ def main():
 
     # ---- Resolve paths -------------------------------------------------------
     data_path = args.data_path or os.path.join(PROJECT_ROOT, 'data')
-    exp_dir = os.path.join(data_path, 'raw', 'cebe_eval')
     pes_raw_dir = os.path.join(data_path, 'raw', 'cebe_pes_eval')
     norm_stats_file = args.norm_stats_file or os.path.join(SCRIPT_DIR, 'cebe_normalization_stats.pt')
 
     output_dir = args.output_dir or os.path.join(SCRIPT_DIR, 'eval_results', 'outputs')
     png_dir = args.png_dir or os.path.join(SCRIPT_DIR, 'eval_results', 'pngs')
 
-    feature_keys = args.feature_keys
+    feature_keys = parse_feature_keys(args.feature_keys)
     feature_tag = compute_feature_tag(feature_keys)
+
+    # Build model_id for consistent filenames (same format as config.py)
+    model_id = (
+        f"cebe_{feature_tag}_standalone"
+        f"_{args.layer_type}{args.n_layers}_h{args.hidden_channels}"
+    )
 
     mode_label = "PES" if args.pes else "Experimental"
 
@@ -823,8 +794,8 @@ def main():
     print(f"  CEBE MODEL EVALUATION — {mode_label} (standalone)")
     print("=" * 80)
     print(f"  Model:          {args.model_path}")
+    print(f"  Model ID:       {model_id}")
     print(f"  Feature keys:   {feature_keys}  ({describe_features(feature_keys)})")
-    print(f"  Feature tag:    {feature_tag}")
     print(f"  Feature scale:  {args.feature_scale}")
     print(f"  Architecture:   {args.layer_type}, {args.hidden_channels}h, {args.n_layers}L")
     print(f"  Out scale:      {args.out_scale}")
@@ -873,33 +844,18 @@ def main():
             output_dir=output_dir,
             png_dir=png_dir,
             pes_raw_dir=pes_raw_dir,
-            feature_tag=feature_tag,
-            n_layers=args.n_layers,
-            layer_type=args.layer_type,
+            model_id=model_id,
         )
     else:
-        # ---- Load experiment list ------------------------------------------------
-        exp_list_path = os.path.join(exp_dir, 'list_all.txt')
-        if not os.path.exists(exp_list_path):
-            raise FileNotFoundError(
-                f"Experiment list not found: {exp_list_path}\n"
-                f"Check --data-path setting."
-            )
-        with open(exp_list_path) as f:
-            exp_list = [line.strip() for line in f]
-
         run_evaluation(
-            model, device, eval_data, exp_list,
+            model, device, eval_data,
             output_dir=output_dir,
             fold=args.fold,
             out_scale=args.out_scale,
             norm_stats_file=norm_stats_file,
             png_dir=png_dir,
             train_results=None,
-            feature_tag=feature_tag,
-            n_layers=args.n_layers,
-            layer_type=args.layer_type,
-            exp_dir=exp_dir,
+            model_id=model_id,
         )
 
     print("\n✓ Done.")

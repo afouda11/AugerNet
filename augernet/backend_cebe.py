@@ -18,6 +18,7 @@ from sklearn.model_selection import KFold
 from augernet import gnn_train_utils as gtu
 from augernet.feature_assembly import (
     assemble_dataset, compute_feature_tag, describe_features,
+    parse_feature_keys,
 )
 
 from augernet import PROJECT_ROOT, DATA_DIR, DATA_PROCESSED_DIR
@@ -28,34 +29,38 @@ from augernet import PROJECT_ROOT, DATA_DIR, DATA_PROCESSED_DIR
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_data(cfg) -> Dict[str, Any]:
-    """Load CEBE calculated + experimental data, assemble features."""
+    """Load CEBE calculated + experimental data (raw, without feature assembly).
+
+    Feature assembly is deferred to ``train_single_run`` / ``run_evaluation``
+    so that param-search can override ``feature_keys`` per configuration.
+    """
     print(f"\nLoading training data from: {DATA_PROCESSED_DIR}")
-    print(f"Feature keys: {cfg.feature_keys}  ({describe_features(cfg.feature_keys)})")
+    print(f"Feature keys: {cfg.feature_keys}  ({describe_features(cfg.feature_keys_parsed)})")
     print(f"Feature tag:  {cfg.feature_tag}")
-    print(f"Model tag:    {cfg.model_tag}")
+    print(f"Model ID:     {cfg.model_id}")
     print(f"Feature scale: {cfg.feature_scale}")
 
     ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_cebe_data.pt')
     calc_data = [ds[i] for i in range(len(ds))]
     print(f"Loaded feature-store data: {len(calc_data)} molecules")
-    print(f"Assembling features {cfg.feature_keys} with scale={cfg.feature_scale}...")
-    assemble_dataset(calc_data, cfg.feature_keys, scale=cfg.feature_scale)
-    print(f"Calculated data: {len(calc_data)} molecules, "
-          f"x.shape[1]={calc_data[0].x.size(1)}")
 
     # Experimental data
     exp_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_exp_cebe_data.pt')
     exp_data = [exp_ds[i] for i in range(len(exp_ds))]
-    assemble_dataset(exp_data, cfg.feature_keys, scale=cfg.feature_scale)
 
-    exp_list_path = os.path.join(cfg.exp_dir, 'mol_list.txt')
-    with open(exp_list_path) as f:
-        exp_list = [line.strip() for line in f]
+    # Assemble features using the default config keys.
+    # train_single_run will re-assemble if overrides change feature_keys.
+    feature_keys = cfg.feature_keys_parsed
+    print(f"Assembling features {cfg.feature_keys} with scale={cfg.feature_scale}...")
+    assemble_dataset(calc_data, feature_keys, scale=cfg.feature_scale)
+    assemble_dataset(exp_data, feature_keys, scale=cfg.feature_scale)
+    print(f"Calculated data: {len(calc_data)} molecules, "
+          f"x.shape[1]={calc_data[0].x.size(1)}")
 
     return {
         'calc_data': calc_data,
         'exp_data': exp_data,
-        'exp_list': exp_list,
+        'assembled_feature_keys': cfg.feature_keys,  # track what's assembled
     }
 
 
@@ -95,6 +100,27 @@ def train_single_run(
     gradient_clip_norm = overrides.get('gradient_clip_norm', cfg.gradient_clip_norm)
     warmup_epochs   = overrides.get('warmup_epochs',   cfg.warmup_epochs)
     min_lr          = overrides.get('min_lr',          cfg.min_lr)
+
+    # ── Handle feature_keys override ─────────────────────────────────────
+    # If param search overrides feature_keys, re-assemble features on data
+    override_fk = overrides.get('feature_keys')
+    if override_fk is not None:
+        fk_parsed = parse_feature_keys(override_fk)
+        fk_tag = compute_feature_tag(fk_parsed)
+        # Only re-assemble if features actually changed
+        if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
+            print(f"  Re-assembling features for key override: {fk_tag}")
+            assemble_dataset(data['calc_data'], fk_parsed, scale=cfg.feature_scale)
+            assemble_dataset(data['exp_data'], fk_parsed, scale=cfg.feature_scale)
+            data['assembled_feature_keys'] = fk_tag
+    else:
+        fk_tag = cfg.feature_tag
+
+    # Compute a per-config model_id that reflects actual hyperparams
+    model_id = (
+        f"cebe_{fk_tag}_{split_method}"
+        f"_{layer_type}{n_layers}_h{hidden_channels}"
+    )
 
     calc_data = data['calc_data']
 
@@ -157,8 +183,7 @@ def train_single_run(
     model.eval()
 
     # ── save ─────────────────────────────────────────────────────────────
-    model_filename = (f"cebe_model_fold{fold}_{cfg.model_tag}"
-                      f"_{layer_type}_{n_layers}.pth")
+    model_filename = f"{model_id}_fold{fold}.pth"
     model_path = os.path.join(save_dir, model_filename)
     torch.save(model.state_dict(), model_path)
     if verbose:
@@ -187,6 +212,7 @@ def train_single_run(
         'n_epochs': len(train_results),
         'model_path': model_path,
         'train_results': train_results,
+        'model_id': model_id,
     }
 
 
@@ -202,16 +228,8 @@ def _load_model_from_path(
     hidden_channels: int,
     n_layers: int,
 ) -> Tuple[torch.nn.Module, torch.device]:
-    """Load a CEBE GNN from a .pth file (thin wrapper around evaluate script)."""
-    # Import here to avoid circular imports at module load time
-    import sys
-    script_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        'cebe_pred',
-    )
-    if script_dir not in sys.path:
-        sys.path.insert(0, script_dir)
-    from evaluate_cebe_model import load_model as load_eval_model
+    """Load a CEBE GNN from a .pth file."""
+    from .evaluation_scripts.evaluate_cebe_model import load_model as load_eval_model
 
     in_channels = calc_data[0].x.size(1)
     edge_dim = calc_data[0].edge_attr.size(1)
@@ -225,8 +243,7 @@ def _load_model_from_path(
 def load_saved_model(save_dir, fold, data, cfg):
     """Load a saved CEBE model by fold number."""
     calc_data = data['calc_data']
-    model_filename = (f"cebe_model_fold{fold}_{cfg.model_tag}"
-                      f"_{cfg.layer_type}_{cfg.n_layers}.pth")
+    model_filename = f"{cfg.model_id}_fold{fold}.pth"
     model_path = os.path.join(save_dir, model_filename)
     if not os.path.exists(model_path):
         raise FileNotFoundError(
@@ -243,9 +260,20 @@ def load_saved_model(save_dir, fold, data, cfg):
 def load_param_model(model_path, data, cfg, best_params):
     """Load a CEBE model from a param-search result path."""
     calc_data = data['calc_data']
+
+    # If best_params overrode feature_keys, ensure data is assembled correctly
+    fk_override = best_params.get('feature_keys')
+    if fk_override is not None:
+        fk_parsed = parse_feature_keys(fk_override)
+        fk_tag = compute_feature_tag(fk_parsed)
+        if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
+            assemble_dataset(calc_data, fk_parsed, scale=cfg.feature_scale)
+            assemble_dataset(data['exp_data'], fk_parsed, scale=cfg.feature_scale)
+            data['assembled_feature_keys'] = fk_tag
+
     return _load_model_from_path(
         model_path, calc_data,
-        layer_type=cfg.layer_type,
+        layer_type=best_params.get('layer_type', cfg.layer_type),
         hidden_channels=best_params.get('hidden_channels', cfg.hidden_channels),
         n_layers=best_params.get('n_layers', cfg.n_layers),
     )
@@ -265,23 +293,24 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
         model = model_result['model']
         device = model_result['device']
         train_results = model_result.get('train_results', train_results)
+        # Use per-config model_id if present (e.g. from param search overrides)
+        model_id = model_result.get('model_id', cfg.model_id)
     elif isinstance(model_result, tuple):
         model, device = model_result
+        model_id = cfg.model_id
     else:
         model = model_result
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model_id = cfg.model_id
 
     _run_eval(
-        model, device, data['exp_data'], data['exp_list'],
+        model, device, data['exp_data'],
         output_dir=output_dir, fold=fold,
         png_dir=png_dir,
         train_results=train_results,
         out_scale=cfg.out_scale,
         norm_stats_file=cfg.norm_stats_file,
-        feature_tag=cfg.model_tag,
-        n_layers=cfg.n_layers,
-        layer_type=cfg.layer_type,
-        exp_dir=cfg.exp_dir,
+        model_id=model_id,
     )
 
 
@@ -295,3 +324,182 @@ def run_unit_tests(model, data, cfg):
         model = model['model']
     model.eval()
     gtu.run_unit_tests(model, data['calc_data'], layer_type=cfg.layer_type)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Predict (inference on arbitrary .xyz files)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
+    """Build graphs from .xyz files, run inference, and write output files.
+
+    The model is trained on carbon 1s CEBEs only.  Predictions for
+    non-carbon atoms are not meaningful and are marked with ``*`` in
+    the labels file.  The numeric ``_results.txt`` contains carbon
+    predictions only.
+
+    Produces ``{model_id}_fold{fold}_labels.txt`` and
+    ``{model_id}_fold{fold}_results.txt`` in ``predict_results/outputs/``.
+    """
+    from augernet.build_molecular_graphs import (
+        _mol_from_xyz_order,
+        _build_node_and_edge_features,
+        _initialize_all_atom_encoders,
+    )
+    from augernet import DATA_RAW_DIR, DATA_PROCESSED_DIR
+    from torch_geometric.data import Data
+    from torch_geometric.loader import DataLoader
+
+    # ── Discover .xyz files ──────────────────────────────────────────────
+    xyz_files = sorted(
+        f for f in os.listdir(predict_dir) if f.endswith('.xyz')
+    )
+    if not xyz_files:
+        raise FileNotFoundError(
+            f"No .xyz files found in: {predict_dir}"
+        )
+
+    mol_names = [os.path.splitext(f)[0] for f in xyz_files]
+
+    print(f"\n  Predict directory: {predict_dir}")
+    print(f"  Found {len(xyz_files)} .xyz files")
+
+    # ── Build graphs ─────────────────────────────────────────────────────
+    skipatom_dir = os.path.join(DATA_RAW_DIR, 'skipatom')
+    all_encoders = _initialize_all_atom_encoders(skipatom_dir)
+
+    # Load normalization stats (needed for output denormalization)
+    norm_stats_file = cfg.norm_stats_file
+    norm_stats = torch.load(norm_stats_file)
+    mean = norm_stats['mean']
+    std  = norm_stats['std']
+
+    category_feature = np.array([1, 0, 0])   # CEBE category
+    feature_keys = cfg.feature_keys_parsed
+    data_list = []
+
+    print(f"  Building molecular graphs...")
+    for xyz_file, mol_name in zip(xyz_files, mol_names):
+        xyz_path = os.path.join(predict_dir, xyz_file)
+        mol, xyz_symbols, pos, smiles = _mol_from_xyz_order(xyz_path, labeled_atoms=False)
+
+        # For prediction we have no CEBE values — pass all -1 sentinels
+        n_atoms = mol.GetNumAtoms()
+        dummy_cebe = np.full(n_atoms, -1.0)
+
+        node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
+            _build_node_and_edge_features(mol, all_encoders, category_feature, dummy_cebe)
+
+        data = Data(
+            x=x, edge_index=edge_index, edge_attr=edge_attr,
+            pos=torch.tensor(pos, dtype=torch.float),
+            atomic_be=atomic_be,
+            atom_symbols=xyz_symbols,
+            smiles=smiles,
+            mol_name=mol_name,
+        )
+
+        # Attach all feat_* attributes
+        for attr_name, tensor in node_features.items():
+            setattr(data, attr_name, tensor)
+
+        data_list.append(data)
+
+    print(f"  Assembled {len(data_list)} graphs")
+
+    # ── Assemble features ────────────────────────────────────────────────
+    print(f"  Assembling features {cfg.feature_keys} with scale={cfg.feature_scale}...")
+    assemble_dataset(data_list, feature_keys, scale=cfg.feature_scale)
+
+    # ── Load model ───────────────────────────────────────────────────────
+    in_channels = data_list[0].x.size(1)
+    edge_dim = data_list[0].edge_attr.size(1)
+    model, device = _load_model_from_path(
+        model_path, data_list,
+        layer_type=cfg.layer_type,
+        hidden_channels=cfg.hidden_channels,
+        n_layers=cfg.n_layers,
+    )
+
+    # ── Inference ────────────────────────────────────────────────────────
+    output_dir = os.path.join(cfg.predict_output_dir, 'outputs')
+    os.makedirs(output_dir, exist_ok=True)
+
+    file_stem = f"{cfg.model_id}_fold{fold}" if fold is not None else cfg.model_id
+
+    print(f"\n{'=' * 80}")
+    print(f"  PREDICT: Running inference on {len(data_list)} molecules")
+    print(f"  NOTE: Model is trained on carbon 1s CEBEs only.")
+    print(f"        Predictions for non-carbon atoms are not meaningful.")
+    print(f"{'=' * 80}")
+
+    loader = DataLoader(data_list, batch_size=1, shuffle=False)
+
+    all_pred = []
+    all_atoms = []
+    molecule_results = {}
+
+    for i, data in enumerate(loader):
+        data = data.to(device)
+        with torch.no_grad():
+            out = model(data)
+
+        pred_out = out.cpu().numpy()
+        atomic_be_vals = data.atomic_be.cpu().numpy()
+
+        # atom_symbols and mol_name are already on the graph from build step
+        atom_syms = data.atom_symbols
+        mol_name_raw = data.mol_name
+        if isinstance(mol_name_raw, list):
+            mol_name_raw = mol_name_raw[0]  # DataLoader wraps strings in list
+        mol_name = mol_name_raw
+        mol_rows = []
+
+        for j in range(len(pred_out)):
+            sym = atom_syms[j] if j < len(atom_syms) else '?'
+            ref = atomic_be_vals[j]
+
+            # Denormalize: predicted CEBE = atomic_BE - (pred * std + mean)
+            if cfg.out_scale == 'MEANSTD':
+                pred_be = float(ref - (pred_out[j] * std + mean))
+            else:
+                pred_be = float(ref - pred_out[j])
+
+            mol_rows.append((sym, pred_be))
+            all_pred.append(pred_be)
+            all_atoms.append(sym)
+
+        molecule_results[mol_name] = mol_rows
+
+    # ── Write _labels.txt ────────────────────────────────────────────────
+    label_path = os.path.join(output_dir, f"{file_stem}_labels.txt")
+    with open(label_path, 'w') as f:
+        f.write(f"# CEBE Predictions\n")
+        f.write(f"# Model: {cfg.model_id}\n")
+        f.write(f"# NOTE: Only carbon (C) predictions are meaningful.\n")
+        f.write(f"#       Non-carbon rows are marked with * and should be ignored.\n")
+        f.write(f"# Columns: atom_symbol  pred_BE(eV)\n")
+        f.write(f"#\n")
+        for mol_name, rows in molecule_results.items():
+            f.write(f"# --- {mol_name} ---\n")
+            for sym, pred_be in rows:
+                marker = ' ' if sym == 'C' else '*'
+                f.write(f"{sym:>3s}{marker}   {pred_be:10.4f}\n")
+            f.write(f"\n")
+    print(f"  Label results saved to {label_path}")
+
+    # ── Write _results.txt (numeric, carbon atoms only) ──────────────────
+    carbon_preds = [p for s, p in zip(all_atoms, all_pred) if s == 'C']
+    results_path = os.path.join(output_dir, f"{file_stem}_results.txt")
+    np.savetxt(results_path, np.array(carbon_preds).reshape(-1, 1))
+    print(f"  Numeric results saved to {results_path}")
+
+    # ── Summary table ────────────────────────────────────────────────────
+    print(f"\n{'Molecule':<22s} {'N_C':>5s} {'N_atoms':>8s} {'Mean C_1s (eV)':>15s}")
+    print("-" * 55)
+    for mol_name, rows in molecule_results.items():
+        c_preds = [p for s, p in rows if s == 'C']
+        n_c = len(c_preds)
+        n_tot = len(rows)
+        mean_c = np.mean(c_preds) if c_preds else float('nan')
+        print(f"{mol_name:<22s} {n_c:>5d} {n_tot:>8d} {mean_c:>15.4f}")

@@ -19,7 +19,8 @@ import sys
 def main():
     parser = argparse.ArgumentParser(
         prog='augernet',
-        description='AugerNet — training, evaluation and predictions of GNNs for CEBEs',
+        description='AugerNet — training, evaluation and predictions of GNNs for CEBEs.\n'
+                    'Modes: cv | train | param | evaluate | predict',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
