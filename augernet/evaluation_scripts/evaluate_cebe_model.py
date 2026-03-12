@@ -61,6 +61,7 @@ def load_model(
     layer_type: str = 'EQ',
     hidden_channels: int = 64,
     n_layers: int = 3,
+    dropout: float = 0.0,
 ) -> tuple:
     """
     Load a saved CEBE model from a ``.pth`` file.
@@ -79,6 +80,8 @@ def load_model(
         Hidden channel width.
     n_layers : int
         Number of GNN layers.
+    dropout : float
+        Dropout probability between message passing layers (must match training config).
 
     Returns
     -------
@@ -91,6 +94,7 @@ def load_model(
         num_layers=n_layers, emb_dim=hidden_channels,
         in_dim=in_channels, edge_dim=edge_dim,
         out_dim=1, layer_type=layer_type, pred_type=PRED_TYPE,
+        dropout=dropout,
     ).to(device)
 
     if not os.path.exists(model_path):
@@ -116,11 +120,12 @@ def run_evaluation(
     output_dir: str,
     *,
     fold: Optional[int] = None,
-    out_scale: str = 'MEANSTD',
     norm_stats_file: str = None,
     png_dir: str,
     train_results: list = None,
     model_id: str = 'cebe',
+    config_id: str = None,
+    param_file_prefix: str = None,
 ):
     """
     Evaluate a CEBE model on experimental data.
@@ -147,8 +152,6 @@ def run_evaluation(
         Directory for text output files.
     fold : int, optional
         Fold number (used in filenames). ``None`` for standalone evaluation.
-    out_scale : str
-        Output scaling used during training: ``'MEANSTD'`` | ``'FEATURE_SCALE'`` | ``'NONE'``.
     norm_stats_file : str, optional
         Path to ``cebe_normalization_stats.pt``.
     png_dir : str
@@ -158,21 +161,28 @@ def run_evaluation(
     model_id : str
         Unified filename stem (e.g. ``'cebe_035_random_EQ3_h64'``).
         All output files are named ``{model_id}_fold{fold}_<type>.<ext>``.
+    config_id : str, optional
+        Param-search config identifier (e.g. ``'cfg003'``).
+        Appended to filenames to prevent overwrites during param search.
+    param_file_prefix : str, optional
+        Prefix prepended to all output filenames (e.g. the ``search_id``
+        from a param search). Produces filenames like
+        ``{param_file_prefix}_{model_id}_fold{fold}_{config_id}_<type>.<ext>``.
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(png_dir, exist_ok=True)
 
     # Load normalization stats
-    if norm_stats_file and os.path.exists(norm_stats_file):
-        norm_stats = torch.load(norm_stats_file)
-        mean = norm_stats['mean']
-        std = norm_stats['std']
-        scale_value = norm_stats.get('scale_value', 1.0)
-    else:
-        mean, std, scale_value = 0.0, 1.0, 1.0
+    norm_stats = torch.load(norm_stats_file)
+    mean = norm_stats['mean']
+    std = norm_stats['std']
 
-    # Unified file-stem: {model_id}_fold{fold} or just {model_id}
+    # Unified file-stem: [{param_file_prefix}_]{model_id}_fold{fold}[_{config_id}]
     file_stem = f"{model_id}_fold{fold}" if fold is not None else model_id
+    if config_id is not None:
+        file_stem = f"{file_stem}_{config_id}"
+    if param_file_prefix is not None:
+        file_stem = f"{param_file_prefix}_{file_stem}"
 
     print("\n" + "=" * 80)
     print(f"EVALUATION: Testing on experimental data{f'  (fold {fold})' if fold else ''}")
@@ -213,6 +223,14 @@ def run_evaluation(
         print(f"Loss curves saved to: {loss_plot_path}")
         plt.close(fig)
 
+        # Write raw loss data to a text file
+        loss_txt_path = os.path.join(output_dir, f"{file_stem}_loss.txt")
+        with open(loss_txt_path, 'w') as f:
+            f.write(f"{'epoch':>8s}  {'train_loss':>14s}  {'val_loss':>14s}\n")
+            for ep, tl, vl in zip(epochs, train_loss, val_loss):
+                f.write(f"{int(ep):>8d}  {tl:>14.8f}  {vl:>14.8f}\n")
+        print(f"Loss data saved to:   {loss_txt_path}")
+
     # ------------------------------------------------------------------
     #  2) Inference on experimental data
     # ------------------------------------------------------------------
@@ -239,6 +257,12 @@ def run_evaluation(
 
         # Atom symbols from data
         atom_syms = data.atom_symbols
+        # If DataLoader wrapped it in another list, unwrap it
+        if isinstance(atom_syms, list):
+            atom_syms = atom_syms[0]  # Unwrap the outer list
+        # Ensure all elements are strings
+        atom_syms = [str(s).strip() for s in atom_syms]
+
         # Get molecule name from graph Data object
         mol_name_raw = data.mol_name
         if isinstance(mol_name_raw, list):
@@ -250,22 +274,12 @@ def run_evaluation(
         for j, val in enumerate(true_out):
             sym = atom_syms[j] if j < len(atom_syms) else '?'
             if val != -1:
-                if out_scale == "MEANSTD":
-                    pred_be = atomic_be[j] - ((pred_out[j] * std) + mean)
-                elif out_scale == "FEATURE_SCALE":
-                    pred_be = atomic_be[j] - (pred_out[j] * scale_value)
-                else:
-                    pred_be = atomic_be[j] - pred_out[j]
+                pred_be = atomic_be[j] - ((pred_out[j] * std) + mean)
 
                 if has_true_cebe:
                     true_be_f = float(true_cebe[j])
                 else:
-                    if out_scale == "MEANSTD":
-                        true_be = atomic_be[j] - ((true_out[j] * std) + mean)
-                    elif out_scale == "FEATURE_SCALE":
-                        true_be = atomic_be[j] - (true_out[j] * scale_value)
-                    else:
-                        true_be = atomic_be[j] - true_out[j]
+                    true_be = atomic_be[j] - ((true_out[j] * std) + mean)
                     true_be_f = float(np.squeeze(true_be))
 
                 pred_be_f = float(np.squeeze(pred_be))
@@ -410,7 +424,6 @@ def run_pes_evaluation(
     device: torch.device,
     pes_data: list,
     *,
-    out_scale: str = 'MEANSTD',
     norm_stats_file: str = None,
     output_dir: str = None,
     png_dir: str,
@@ -432,8 +445,6 @@ def run_pes_evaluation(
         Device the model lives on.
     pes_data : list
         List of 80 PyG Data objects (4 molecules × 20 structures).
-    out_scale : str
-        Output scaling: ``'MEANSTD'`` | ``'FEATURE_SCALE'`` | ``'NONE'``.
     norm_stats_file : str, optional
         Path to ``cebe_normalization_stats.pt``.
     output_dir : str, optional
@@ -449,13 +460,9 @@ def run_pes_evaluation(
     os.makedirs(png_dir, exist_ok=True)
 
     # Load normalization stats
-    if norm_stats_file and os.path.exists(norm_stats_file):
-        norm_stats = torch.load(norm_stats_file)
-        mean = norm_stats['mean']
-        std = norm_stats['std']
-        scale_value = norm_stats.get('scale_value', 1.0)
-    else:
-        mean, std, scale_value = 0.0, 1.0, 1.0
+    norm_stats = torch.load(norm_stats_file)
+    mean = norm_stats['mean']
+    std = norm_stats['std']
 
     print("\n" + "=" * 80)
     print("PES EVALUATION: CEBE along potential energy surfaces")
@@ -502,12 +509,7 @@ def run_pes_evaluation(
         pred_cebe = np.full(n_atoms, -1.0)
         for j in range(n_atoms):
             if true_cebe[j] != -1.0:
-                if out_scale == 'MEANSTD':
-                    pred_cebe[j] = atomic_be[j] - ((pred_out[j] * std) + mean)
-                elif out_scale == 'FEATURE_SCALE':
-                    pred_cebe[j] = atomic_be[j] - (pred_out[j] * scale_value)
-                else:
-                    pred_cebe[j] = atomic_be[j] - pred_out[j]
+                pred_cebe[j] = atomic_be[j] - ((pred_out[j] * std) + mean)
 
         name = data.name[0] if isinstance(data.name, list) else data.name
         predictions[name] = {
@@ -695,12 +697,6 @@ Examples:
         type=str, default='035',
         help="Feature keys as a compact string (e.g. '035' = skipatom_200 + atomic_be + e_score).",
     )
-    parser.add_argument(
-        '--feature-scale', '-fs',
-        type=str, default='MEANSTD',
-        choices=['MEANSTD', 'NORM', 'NONE'],
-        help="Feature scaling method (default: MEANSTD).",
-    )
 
     # ---- Model architecture ----
     parser.add_argument(
@@ -720,13 +716,6 @@ Examples:
         help="Number of GNN layers (default: 10).",
     )
 
-    # ---- Output scaling ----
-    parser.add_argument(
-        '--out-scale',
-        type=str, default='MEANSTD',
-        choices=['MEANSTD', 'FEATURE_SCALE', 'NONE'],
-        help="Output scaling method used during training (default: MEANSTD).",
-    )
     parser.add_argument(
         '--norm-stats-file',
         type=str, default=None,
@@ -796,9 +785,7 @@ def main():
     print(f"  Model:          {args.model_path}")
     print(f"  Model ID:       {model_id}")
     print(f"  Feature keys:   {feature_keys}  ({describe_features(feature_keys)})")
-    print(f"  Feature scale:  {args.feature_scale}")
     print(f"  Architecture:   {args.layer_type}, {args.hidden_channels}h, {args.n_layers}L")
-    print(f"  Out scale:      {args.out_scale}")
     print(f"  Data path:      {data_path}")
     print(f"  Output dir:     {output_dir}")
     print(f"  PNG dir:        {png_dir}")
@@ -818,8 +805,8 @@ def main():
     print(f"Loaded {len(eval_data)} molecules/structures")
 
     # Assemble features
-    print(f"Assembling features {feature_keys} with scale={args.feature_scale}...")
-    assemble_dataset(eval_data, feature_keys, scale=args.feature_scale)
+    print(f"Assembling features {feature_keys}")
+    assemble_dataset(eval_data, feature_keys)
 
     in_channels = eval_data[0].x.size(1)
     edge_dim = eval_data[0].edge_attr.size(1)
@@ -839,7 +826,6 @@ def main():
     if args.pes:
         run_pes_evaluation(
             model, device, eval_data,
-            out_scale=args.out_scale,
             norm_stats_file=norm_stats_file,
             output_dir=output_dir,
             png_dir=png_dir,
@@ -851,7 +837,6 @@ def main():
             model, device, eval_data,
             output_dir=output_dir,
             fold=args.fold,
-            out_scale=args.out_scale,
             norm_stats_file=norm_stats_file,
             png_dir=png_dir,
             train_results=None,

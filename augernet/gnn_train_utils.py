@@ -310,7 +310,8 @@ class EquivariantMPNNLayer(MessagePassing):
 
 class MPNN(nn.Module):
     def __init__(self, num_layers=4, emb_dim=64, in_dim=11, edge_dim=4, out_dim=1, 
-                layer_type="IN", pred_type="AUGER", spectrum_type='stick', spectrum_dim=300):
+                layer_type="IN", pred_type="AUGER", spectrum_type='stick', spectrum_dim=300,
+                dropout=0.0):
 
         """Message Passing Neural Network model for graph property prediction
 
@@ -331,6 +332,7 @@ class MPNN(nn.Module):
             spectrum_dim: (int) - per-head output dimension
                 stick mode:  300  (energy 300 + intensity 300 = 600)
                 fitted mode: 731  (intensity only on common energy grid)
+            dropout: (float) - dropout probability between message passing layers (0 = off)
         """
         super().__init__()
         
@@ -385,6 +387,7 @@ class MPNN(nn.Module):
         self.pred_type  = pred_type
         self.spectrum_type = spectrum_type
         self.spectrum_dim = spectrum_dim
+        self.dropout = dropout
 
     def forward(self, data):
         """
@@ -407,6 +410,9 @@ class MPNN(nn.Module):
                 # Residual connection + LayerNorm
                 h = norm(h + h_update) # (n, d) -> (n, d)
 
+                # Dropout (only active during training)
+                h = F.dropout(h, p=self.dropout, training=self.training)
+
                 # Update node coordinates
                 pos = pos_update # (n, 3) -> (n, 3)    
         elif self.layer_type == "IN":
@@ -419,10 +425,16 @@ class MPNN(nn.Module):
 
                 # Residual connection + LayerNorm
                 h = norm(h + h_update) # (n, d) -> (n, d)
+
+                # Dropout (only active during training)
+                h = F.dropout(h, p=self.dropout, training=self.training)
         elif self.layer_type == "PE":
             for conv, norm in zip(self.convs, self.norms):
                 h_update = conv(h, data.edge_index, data.edge_attr)
                 h = norm(h + h_update)
+
+                # Dropout (only active during training)
+                h = F.dropout(h, p=self.dropout, training=self.training)
         
         if self.pred_type == "CEBE": 
             out = self.lin_pred(h)

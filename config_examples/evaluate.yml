@@ -20,8 +20,6 @@ model_path: param_results/models/cebe_035_random_EQ3_h64_fold1_cfg002.pth
 
 # ── Must match the architecture / features used during training ──────────────
 feature_keys: '035'
-feature_scale: MEANSTD
-out_scale: MEANSTD
 
 layer_type: EQ
 hidden_channels: 64
