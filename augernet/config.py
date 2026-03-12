@@ -48,10 +48,6 @@ class AugerNetConfig:
 
     # node features 
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
-    feature_scale: str = 'MEANSTD'  # MEANSTD | NORM | NONE (scaled per graph)
-
-    # output scaling
-    out_scale: str = 'MEANSTD'       # NONE | FEATURE_SCALE | MEANSTD (scaled across graphs)
     norm_stats_file: str = ''
 
     # GNN hyper-parameters
@@ -63,6 +59,9 @@ class AugerNetConfig:
     batch_size: int = 24
     learning_rate: float = 0.001
     random_seed: int = 42
+
+    # regularisation
+    dropout: float = 0.0              # dropout between message-passing layers
 
     # optimizer
     optimizer_type: str = 'adamw'

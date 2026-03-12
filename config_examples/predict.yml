@@ -26,8 +26,6 @@ predict_dir: /Users/foudaae/AugerNet/data/raw/exp_cebe #raw exp data as example
 
 # ── Must match the architecture / features used during training ──────────────
 feature_keys: '035'
-feature_scale: MEANSTD
-out_scale: MEANSTD
 
 layer_type: EQ
 hidden_channels: 64

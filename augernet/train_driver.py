@@ -12,7 +12,7 @@ The backend exports hooks:
   load_data(cfg)                → data dict
   train_single_run(data, …)    → result dict
   load_saved_model(…)           → (model, device) or result dict
-  run_evaluation(…)             → None
+  run_evaluation(…)             → eval metrics dict
   run_unit_tests(…)             → None
   run_predict(…)                → None
 
@@ -48,7 +48,6 @@ def _get_backend(model_name: str):
         raise ValueError(
             f"Unknown model '{model_name}'. "
             f"Only cebe-gnn currently available"
-            #f"Choose from: cebe-gnn, auger-gnn, auger-cnn"
         )
     return backend
 
@@ -106,39 +105,38 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
         )
 
         # Save loss curve and run evaluation for this fold
+        eval_metrics = None
         if cfg.run_evaluation:
-            backend.run_evaluation(
+            eval_metrics = backend.run_evaluation(
                 result, data, fold,
                 output_dir=outputs_dir, png_dir=pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
             )
 
         # Build a JSON-serialisable record
-        entry = _fold_entry(result, fold)
+        entry = _run_entry(result, eval_metrics=eval_metrics)
+        entry['fold'] = fold
         fold_results.append(entry)
 
     # ── Identify best fold ───────────────────────────────────────────────
-    best = min(fold_results, key=lambda r: r['combined_val_loss'])
+    best = min(fold_results, key=lambda r: r['best_val_loss'])
 
     # ── Print summary table ──────────────────────────────────────────────
-    _print_cv_summary(fold_results, n_folds, best)
+    has_eval = any(r.get('eval_mae') is not None for r in fold_results)
+    _print_cv_summary(fold_results, n_folds, best, has_eval=has_eval)
 
-    combined = [r['combined_val_loss'] for r in fold_results]
+    combined = [r['best_val_loss'] for r in fold_results]
     print(f"\n  Mean Val Loss: {np.mean(combined):.6f} ± {np.std(combined):.6f}")
-    print(f"  Best fold: Fold {best['fold']}  (loss={best['combined_val_loss']:.6f})")
+    if has_eval:
+        eval_maes = [r['eval_mae'] for r in fold_results if r.get('eval_mae') is not None]
+        print(f"  Mean Exp MAE:  {np.mean(eval_maes):.4f} ± {np.std(eval_maes):.4f} eV")
+    print(f"  Best fold: Fold {best['fold']}  (loss={best['best_val_loss']:.6f})")
 
     # ── Save JSON summary ────────────────────────────────────────────────
-    cv_summary = {
-        'n_folds': n_folds,
-        'model': cfg.model,
-        'model_id': cfg.model_id,
-        'feature_tag': cfg.feature_tag,
-        'split_method': cfg.split_method,
-        'best_fold_by_loss': best['fold'],
-        'mean_val_loss': float(np.mean(combined)),
-        'std_val_loss':  float(np.std(combined)),
-        'folds': fold_results,
-    }
+    cv_summary = _build_summary(fold_results, cfg)
+    cv_summary['n_folds'] = n_folds
+    cv_summary['best_fold'] = best['fold']
+
     summary_path = os.path.join(cv_dir, f'{cfg.model_id}_cv_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(cv_summary, f, indent=2, default=str)
@@ -184,6 +182,9 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
     configs = _build_param_configs(param_grid)
     n_configs = len(configs)
 
+    # Build a unique search identifier for this grid
+    search_id = _param_search_id(cfg, param_grid)
+
     # Cap epochs for search speed
     search_epochs  = min(cfg.num_epochs, 300)
     search_patience = min(cfg.patience, 40)
@@ -222,7 +223,8 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
                 save_dir=models_dir,
                 output_dir=models_dir,
                 cfg=cfg,
-                verbose=False,
+                verbose=True,
+                param_file_prefix=search_id,
                 **overrides,
             )
             elapsed = time.time() - t0
@@ -231,37 +233,39 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
             _rename_model_file(result, config_id)
 
             # Save loss curve and run evaluation for this fold
+            eval_metrics = None
             if cfg.run_evaluation:
-                backend.run_evaluation(
+                eval_metrics = backend.run_evaluation(
                     result, data, fold,
                     output_dir=outputs_dir, png_dir=pngs_dir, cfg=cfg,
                     train_results=result.get('train_results'),
+                    config_id=config_id,
+                    param_file_prefix=search_id,
                 )
 
-            entry = {
+            entry = _run_entry(result, eval_metrics=eval_metrics)
+            entry.update({
                 'config_id': config_id,
                 'rank': 0,
-                'model_id': result.get('model_id', cfg.model_id),
                 **config,
-                'combined_val_loss': result['combined_val_loss'],
-                'best_val_loss': result.get('best_val_loss',
-                                            result['combined_val_loss']),
-                'n_epochs': result.get('n_epochs', 0),
-                'model_path': result.get('model_path'),
                 'elapsed_sec': round(elapsed, 1),
                 'status': 'ok',
-            }
+            })
 
         except Exception as e:
             elapsed = time.time() - t0
             entry = {
+                'model_id': cfg.model_id,
+                'best_val_loss': float('inf'),
+                'best_train_loss': None,
+                'best_val_epoch': None,
+                'n_epochs': 0,
+                'model_path': None,
+                'final_train_loss': None,
+                'final_val_loss': None,
                 'config_id': config_id,
                 'rank': 999,
                 **config,
-                'combined_val_loss': float('inf'),
-                'best_val_loss': float('inf'),
-                'n_epochs': 0,
-                'model_path': None,
                 'elapsed_sec': round(elapsed, 1),
                 'status': f'error: {e}',
             }
@@ -271,41 +275,41 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
 
     total_elapsed = time.time() - t0_total
 
-    # Sort by combined_val_loss
-    results.sort(key=lambda r: r['combined_val_loss'])
+    # Sort by best_val_loss
+    results.sort(key=lambda r: r['best_val_loss'])
     for rank, r in enumerate(results):
         r['rank'] = rank + 1
 
     # ── Leaderboard ──────────────────────────────────────────────────────
-    _print_param_leaderboard(results, n_configs, total_elapsed, param_grid)
+    has_eval = any(r.get('eval_mae') is not None for r in results)
+    _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
+                             has_eval=has_eval)
 
     best = results[0]
     print(f"\n  ★ Best config: {best['config_id']}")
     for k in sorted(param_grid.keys()):
         print(f"      {k}: {best.get(k)}")
-    print(f"      val_loss: {best['combined_val_loss']:.6f}")
+    print(f"      val_loss: {best['best_val_loss']:.6f}")
+    if has_eval and best.get('eval_mae') is not None:
+        print(f"      exp_mae:  {best['eval_mae']:.4f} eV")
 
     # ── Save JSON summary ────────────────────────────────────────────────
-    summary = {
-        'model': cfg.model,
-        'model_id': cfg.model_id,
-        'fold': fold,
-        'n_folds': n_folds,
-        'n_configs': n_configs,
-        'search_epochs': search_epochs,
-        'search_patience': search_patience,
-        'total_elapsed_min': round(total_elapsed / 60, 1),
-        'param_grid': {k: [str(v) if isinstance(v, float) else v
-                           for v in vals]
-                       for k, vals in param_grid.items()},
-        'best_config_id': best['config_id'],
-        'best_val_loss': best['combined_val_loss'],
-        'best_params': {k: best.get(k) for k in sorted(param_grid.keys())},
-        'feature_tag': cfg.feature_tag,
-        'leaderboard': results,
+    summary = _build_summary(results, cfg)
+    summary['search_id'] = search_id
+    summary['n_configs'] = n_configs
+    summary['search_epochs'] = search_epochs
+    summary['search_patience'] = search_patience
+    summary['total_elapsed_min'] = round(total_elapsed / 60, 1)
+    summary['param_grid'] = {
+        k: [str(v) if isinstance(v, float) else v for v in vals]
+        for k, vals in param_grid.items()
     }
+    summary['best_config_id'] = best['config_id']
+    summary['best_params'] = {k: best.get(k)
+                              for k in sorted(param_grid.keys())}
+
     summary_path = os.path.join(param_dir,
-                                f'{cfg.model_id}_param_summary.json')
+                                f'{search_id}_param_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2, default=str)
     print(f"\n✓ Saved param search summary → {summary_path}")
@@ -353,7 +357,7 @@ def run(cfg: AugerNetConfig):
         cv_summary = run_kfold_cv(backend, data, cfg)
         # Load the best-fold model for unit tests
         if getattr(cfg, 'run_unit_tests', False):
-            best_fold = cv_summary['best_fold_by_loss']
+            best_fold = cv_summary['best_fold']
             models_dir = os.path.join(cfg.cv_dir, 'models')
             result = backend.load_saved_model(models_dir, best_fold, data, cfg)
 
@@ -500,55 +504,120 @@ def _run_predict(backend, cfg):
     )
 
 
-def _fold_entry(result: dict, fold: int) -> dict:
-    """Extract a JSON-serialisable fold record from a training result dict."""
+def _build_summary(entries: List[dict], cfg) -> dict:
+    """Build the common top-level JSON summary shared by CV and param search.
+
+    Computes aggregate statistics (mean/std of val loss, train loss, and
+    eval MAE when available) and returns an ``OrderedDict``-style dict.
+    Callers add mode-specific keys (``n_folds``, ``param_grid``, etc.)
+    after this returns.
+    """
+    val_losses = [r['best_val_loss'] for r in entries]
+    train_losses = [r['best_train_loss'] for r in entries
+                    if r.get('best_train_loss') is not None]
+    has_eval = any(r.get('eval_mae') is not None for r in entries)
+
+    summary: Dict[str, Any] = {
+        'model': cfg.model,
+        'model_id': cfg.model_id,
+        'feature_tag': cfg.feature_tag,
+        'split_method': cfg.split_method,
+        'mean_val_loss':   float(np.mean(val_losses)),
+        'std_val_loss':    float(np.std(val_losses)),
+        'mean_train_loss': float(np.mean(train_losses)) if train_losses else None,
+        'std_train_loss':  float(np.std(train_losses))  if train_losses else None,
+        'best_val_loss':   float(min(val_losses)),
+        'best_train_loss': None,
+    }
+
+    # best_train_loss corresponding to the run with the lowest val loss
+    best_idx = int(np.argmin(val_losses))
+    summary['best_train_loss'] = entries[best_idx].get('best_train_loss')
+
+    if has_eval:
+        eval_maes = [r['eval_mae'] for r in entries
+                     if r.get('eval_mae') is not None]
+        summary['mean_eval_mae'] = float(np.mean(eval_maes))
+        summary['std_eval_mae']  = float(np.std(eval_maes))
+
+    summary['runs'] = entries
+    return summary
+
+
+def _run_entry(result: dict, eval_metrics: dict = None) -> dict:
+    """Build the common JSON-serialisable record from a training result.
+
+    Both CV folds and param-search configs share this base structure.
+    Callers add ``fold`` or ``config_id`` / ``rank`` as needed.
+    """
     entry = {
-        'fold': fold,
-        'combined_val_loss': result.get('combined_val_loss',
-                                        result.get('best_val_loss', float('inf'))),
+        'model_id': result.get('model_id', ''),
         'best_val_loss': result.get('best_val_loss', float('inf')),
+        'best_train_loss': result.get('best_train_loss'),
+        'best_val_epoch': result.get('best_val_epoch'),
         'n_epochs': result.get('n_epochs', 0),
         'model_path': result.get('model_path'),
         'final_train_loss': result.get('final_train_loss'),
         'final_val_loss': result.get('final_val_loss'),
     }
+    if eval_metrics is not None:
+        entry['eval_mae'] = eval_metrics.get('mae')
+        entry['eval_r2']  = eval_metrics.get('r2')
+        entry['eval_std'] = eval_metrics.get('std')
     return entry
 
 
-def _print_cv_summary(fold_results, n_folds, best):
+def _print_cv_summary(fold_results, n_folds, best, has_eval=False):
     """Print a human-readable CV summary table."""
     print(f"\n{'=' * 90}")
     print(f"  K-FOLD CROSS-VALIDATION SUMMARY  ({n_folds} folds)")
     print(f"{'=' * 90}")
 
-    print(f"  {'Fold':>4}  {'Epochs':>6}  {'Val Loss':>12}")
-    print(f"  {'─'*4}  {'─'*6}  {'─'*12}")
+    if has_eval:
+        print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}  {'Exp MAE (eV)':>12}  {'Exp R²':>8}")
+        print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*8}")
+    else:
+        print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}")
+        print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}")
+
     for r in fold_results:
         m = ' ◀ best' if r['fold'] == best['fold'] else ''
-        print(f"  {r['fold']:>4}  {r['n_epochs']:>6}  "
-              f"{r['best_val_loss']:>12.6f}{m}")
+        trn = f"{r['best_train_loss']:>12.6f}" if r.get('best_train_loss') is not None else f"{'—':>12}"
+        line = (f"  {r['fold']:>4}  {r['n_epochs']:>6}  "
+                f"{trn}  {r['best_val_loss']:>12.6f}")
+        if has_eval:
+            mae_str = f"{r['eval_mae']:>12.4f}" if r.get('eval_mae') is not None else f"{'—':>12}"
+            r2_str  = f"{r['eval_r2']:>8.4f}"   if r.get('eval_r2')  is not None else f"{'—':>8}"
+            line += f"  {mae_str}  {r2_str}"
+        print(f"{line}{m}")
 
     print(f"{'=' * 90}")
 
 
-def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid):
+def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
+                             has_eval=False):
     """Print the top results from a param search."""
-    print(f"\n{'=' * 100}")
+    print(f"\n{'=' * 110}")
     print(f"  HYPERPARAMETER SEARCH — LEADERBOARD  ({n_configs} configs)")
     print(f"  Total time: {total_elapsed/60:.1f} minutes")
-    print(f"{'=' * 100}")
+    print(f"{'=' * 110}")
 
     grid_keys = sorted(param_grid.keys())
     header = f"  {'Rank':>4}  {'ID':>6}"
     for k in grid_keys:
         header += f"  {k:>10}"
-    header += f"  {'ValLoss':>10}  {'Epochs':>6}  {'Time':>6}"
+    header += f"  {'TrnLoss':>10}  {'ValLoss':>10}  {'Epochs':>6}  {'Time':>6}"
+    if has_eval:
+        header += f"  {'ExpMAE':>10}  {'ExpR²':>8}"
     print(header)
-    print(f"  {'─'*4}  {'─'*6}" +
-          ''.join(f"  {'─'*10}" for _ in grid_keys) +
-          f"  {'─'*10}  {'─'*6}  {'─'*6}")
+    sep = (f"  {'─'*4}  {'─'*6}" +
+           ''.join(f"  {'─'*10}" for _ in grid_keys) +
+           f"  {'─'*10}  {'─'*10}  {'─'*6}  {'─'*6}")
+    if has_eval:
+        sep += f"  {'─'*10}  {'─'*8}"
+    print(sep)
 
-    for r in results[:20]:
+    for r in results:
         if r['status'] != 'ok':
             continue
         line = f"  {r['rank']:>4}  {r['config_id']:>6}"
@@ -558,12 +627,17 @@ def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid):
                 line += f"  {v:>10.5f}"
             else:
                 line += f"  {str(v):>10}"
-        line += (f"  {r['combined_val_loss']:>10.6f}  "
+        trn = f"{r['best_train_loss']:>10.6f}" if r.get('best_train_loss') is not None else f"{'—':>10}"
+        line += (f"  {trn}  {r['best_val_loss']:>10.6f}  "
                  f"{r.get('n_epochs',0):>6}  "
                  f"{r['elapsed_sec']:>5.0f}s")
+        if has_eval:
+            mae_str = f"{r['eval_mae']:>10.4f}" if r.get('eval_mae') is not None else f"{'—':>10}"
+            r2_str  = f"{r['eval_r2']:>8.4f}"   if r.get('eval_r2')  is not None else f"{'—':>8}"
+            line += f"  {mae_str}  {r2_str}"
         print(line)
 
-    print(f"{'=' * 100}")
+    print(f"{'=' * 110}")
 
 
 def _rename_model_file(result: dict, config_id: str):
@@ -576,3 +650,29 @@ def _rename_model_file(result: dict, config_id: str):
     if path != new_path:
         os.rename(path, new_path)
         result['model_path'] = new_path
+
+
+def _param_search_id(cfg, param_grid: dict) -> str:
+    """Build a unique search identifier for param-search output filenames.
+
+    The id encodes the searched dimensions only — each searched parameter
+    name and the number of values explored.  The fixed hyperparameters are
+    already captured in the per-config ``model_id``, so repeating them here
+    would cause duplication in filenames.
+
+    Example
+    -------
+    Searching ``layer_type`` (2 values) and ``n_layers`` (3 values):
+
+    → ``search_layer_type2_n_layers3``
+
+    The searched parameter names are sorted alphabetically.
+    """
+    grid_keys = sorted(param_grid.keys())
+
+    search_parts = []
+    for k in grid_keys:
+        n_vals = len(param_grid[k])
+        search_parts.append(f"{k}{n_vals}")
+
+    return f"search_{'_'.join(search_parts)}"

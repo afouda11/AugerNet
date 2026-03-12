@@ -34,7 +34,7 @@ Usage
 >>>
 >>> # Before creating DataLoader — modifies data.x in-place
 >>> for data in data_list:
-...     assemble_node_features(data, FEATURE_KEYS, scale='MEANSTD')
+...     assemble_node_features(data, FEATURE_KEYS)
 """
 
 import torch
@@ -121,8 +121,10 @@ def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
     int
         Total ``data.x`` width after assembly.
     """
-    # category_feature is already in data.x
-    cat_dim = data.x.size(1) if data.x is not None else 0
+    # Use stashed category_feature if available (after first assembly),
+    # otherwise fall back to current data.x (before first assembly).
+    base = getattr(data, '_category_feature', data.x)
+    cat_dim = base.size(1) if base is not None else 0
     feat_dim = 0
     for key in feature_keys:
         attr_name = FEATURE_CATALOG[key]
@@ -139,7 +141,7 @@ def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
     return cat_dim + feat_dim
 
 
-def _scale_tensor(t: torch.Tensor, method: str) -> torch.Tensor:
+def _scale_tensor(t: torch.Tensor) -> torch.Tensor:
     """
     Apply per-molecule (per-graph) scaling to a feature tensor.
 
@@ -147,37 +149,25 @@ def _scale_tensor(t: torch.Tensor, method: str) -> torch.Tensor:
     ----------
     t : torch.Tensor
         Shape (N, D) or (N,)
-    method : str
-        'MEANSTD' | 'NORM' | 'NONE'
 
     Returns
     -------
     torch.Tensor  — same shape, scaled.
     """
-    if method == 'NONE':
-        return t
 
     if t.dim() == 1:
         t = t.unsqueeze(1)
     
-    if method == 'MEANSTD':
-        mu = t.mean(dim=0, keepdim=True)
-        sigma = t.std(dim=0, keepdim=True)
-        sigma = sigma.clamp(min=1e-8)  # avoid division by zero for single-atom molecules
-        return (t - mu) / sigma
+    mu = t.mean(dim=0, keepdim=True)
+    sigma = t.std(dim=0, keepdim=True)
+    sigma = sigma.clamp(min=1e-8)  # avoid division by zero for single-atom molecules
+    return (t - mu) / sigma
 
-    if method == 'NORM':
-        tmax = t.abs().max(dim=0, keepdim=True).values
-        tmax = tmax.clamp(min=1e-8)
-        return t / tmax
-
-    raise ValueError(f"Unknown scaling method: {method}")
 
 
 def assemble_node_features(
     data,
     feature_keys: Sequence[int],
-    scale: str = 'MEANSTD',
     inplace: bool = True,
 ):
     """
@@ -192,11 +182,6 @@ def assemble_node_features(
         A single graph.  Must have ``feat_*`` attributes set during preparation.
     feature_keys : sequence of int
         Which features to include (see FEATURE_CATALOG).
-    scale : str
-        Per-molecule scaling method for scalar/vector features:
-        ``'MEANSTD'`` | ``'NORM'`` | ``'NONE'``.
-        SkipAtom / onehot / env_onehot features are never scaled (already
-        normalised or categorical).
     inplace : bool
         If True, modifies ``data.x`` directly.  If False, returns a copy.
 
@@ -207,7 +192,13 @@ def assemble_node_features(
     if not inplace:
         data = copy(data)
 
-    parts = [data.x]  # category_feature is already here
+    # On first call, stash the original category_feature so that
+    # subsequent calls (e.g. param search with different feature_keys)
+    # always start from the base columns, not previously assembled ones.
+    if not hasattr(data, '_category_feature'):
+        data._category_feature = data.x.clone()
+
+    parts = [data._category_feature]
 
     # Features that should NOT be scaled (categorical / pre-normalized)
     no_scale_keys = {0, 1, 2, 6, 7}
@@ -228,7 +219,7 @@ def assemble_node_features(
         if key in no_scale_keys:
             parts.append(tensor.float())
         else:
-            parts.append(_scale_tensor(tensor.float(), scale))
+            parts.append(_scale_tensor(tensor.float()))
 
     data.x = torch.cat(parts, dim=1)
     return data
@@ -237,7 +228,6 @@ def assemble_node_features(
 def assemble_dataset(
     data_list: list,
     feature_keys: Sequence[int],
-    scale: str = 'MEANSTD',
 ) -> list:
     """
     Apply ``assemble_node_features`` to every graph in a list (in-place).
@@ -245,7 +235,7 @@ def assemble_dataset(
     Returns the same list for convenience.
     """
     for data in data_list:
-        assemble_node_features(data, feature_keys, scale=scale, inplace=True)
+        assemble_node_features(data, feature_keys, inplace=True)
     return data_list
 
 

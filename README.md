@@ -39,9 +39,28 @@ python -m augernet --config config_examples/cebe_train_default.yml
 
 AugerNet supports five run modes, set via `mode:` in the YAML config.
 
+ 1. train
+    Train one GNN on single k-fold split. Option for post evaluation on exp.
+ 
+ 2. cv
+    Train one GNN per fold, evaluates each, and writes a JSON summary with per-fold metrics.
+ 
+ 3. param 
+    Trains one fold per configuration from a Cartesian-product grid.
+    Evaluates every configuration (not just the best) and writes a ranked leaderboard to JSON.
+ 
+ 4. evaluate
+    Loads a previously trained `.pth` model and evaluates it on the built-in experimental evalution dataset in AugerNet/data/processed/gnn_exp_cebe_data.pt
+    Requires `model_path` in the config.
+
+ 5. predict
+    Runs inference on user specified directory of `.xyz` files using a saved model.
+    No pre-processing is needed — molecular graphs are built on the fly.
+
+
 ### `train` — Train a single model
 
-Trains one GNN on a single k-fold split. Optionally evaluates on experimental data afterwards.
+Train one GNN on single k-fold split. Option for post evaluation on exp.
 
 ```yaml
 mode: train
@@ -55,7 +74,7 @@ run_unit_tests: true   # check permutation/rotation invariance
 
 ### `cv` — K-fold cross-validation
 
-Trains one model per fold, evaluates each, and writes a JSON summary with per-fold metrics.
+Train one GNN per fold, evaluates each, and writes a JSON summary with per-fold metrics.
 
 ```yaml
 mode: cv
@@ -69,7 +88,7 @@ split_method: random   # random | stratified | umap | size
 ### `param` — Hyperparameter search
 
 Trains one fold per configuration from a Cartesian-product grid.
-Evaluates every configuration (not just the best) and writes a ranked leaderboard.
+Evaluates every configuration (not just the best) and writes a ranked leaderboard to JSON.
 
 ```yaml
 mode: param
@@ -100,7 +119,7 @@ The fold number is inferred automatically from the filename.
 
 ### `predict` — Predict on new molecules
 
-Runs inference on a directory of `.xyz` files using a saved model.
+Runs inference on user specified directory of `.xyz` files using a saved model.
 No pre-processing is needed — molecular graphs are built on the fly.
 
 ```yaml
@@ -147,7 +166,6 @@ from the catalog below. For example, `'035'` selects SkipAtom-200 + atomic BE + 
 
 ```yaml
 feature_keys: '035'        # SkipAtom-200 + atomic_be + e_score
-feature_scale: MEANSTD     # MEANSTD | NORM | NONE
 ```
 
 ### GNN Architecture
@@ -170,7 +188,6 @@ feature_scale: MEANSTD     # MEANSTD | NORM | NONE
 | `weight_decay` | `5e-4` | L2 regularisation |
 | `scheduler_type` | `cosine` | LR scheduler: `cosine` \| `onecycle` |
 | `random_seed` | `42` | Random seed for reproducibility |
-| `out_scale` | `MEANSTD` | Output scaling: `MEANSTD` \| `NONE` |
 
 ### Evaluate / Predict
 

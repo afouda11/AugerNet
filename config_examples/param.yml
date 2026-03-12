@@ -29,10 +29,6 @@ split_method: random
 #   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE), 
 #               5=e_score,      6=env_onehot
 feature_keys: '035'                # skipatom_200 + atomic_be + e_score
-feature_scale: MEANSTD             # MEANSTD | NORM | NONE
-
-# Output scaling
-out_scale: MEANSTD                 # NONE | FEATURE_SCALE | MEANSTD
 
 # Model hyper-parameters
 layer_type: EQ                     # EQ (equivariant) | IN (invariant)
