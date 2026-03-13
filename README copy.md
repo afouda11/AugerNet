@@ -86,7 +86,7 @@ run_evaluation: true   # evaluate on experimental data after training
 run_unit_tests: true   # check permutation/rotation invariance
 ```
 
-**Output:** `results/train/models/`, `results/train/outputs/`, `results/train/pngs/`
+**Output:** `train_results/models/`, `train_results/outputs/`, `train_results/pngs/`
 
 ### `cv` — K-fold cross-validation
 
@@ -98,8 +98,8 @@ n_folds: 5
 split_method: random   # random | stratified | umap | size
 ```
 
-**Output:** `results/cv/models/`, `results/cv/outputs/`, `results/cv/pngs/`,
-`results/cv/{model_id}_cv_summary.json`
+**Output:** `cv_results/models/`, `cv_results/outputs/`, `cv_results/pngs/`,
+`cv_results/{model_id}_cv_summary.json`
 
 ### `param` — Hyperparameter search
 
@@ -116,8 +116,8 @@ param_grid:
   batch_size: [24, 32]
 ```
 
-**Output:** `results/param/models/`, `results/param/outputs/`, `results/param/pngs/`,
-`results/param/{search_id}_param_summary.json`
+**Output:** `param_results/models/`, `param_results/outputs/`, `param_results/pngs/`,
+`param_results/{search_id}_param_summary.json`
 
 The `search_id` encodes the searched dimensions so that different grid searches
 never overwrite each other's files. For example, if `layer_type` (2 values)
@@ -149,7 +149,7 @@ model_path: train_results/models/cebe_035_random_EQ3_h64_fold3.pth
 
 The fold number is inferred automatically from the filename.
 
-**Output:** `results/evaluate/outputs/`, `results/evaluate/pngs/`
+**Output:** `evaluate_results/outputs/`, `evaluate_results/pngs/`
 
 ### `predict` — Predict on new molecules
 
@@ -168,8 +168,8 @@ Each file in `predict_dir/` should be a standard XYZ file named `molecule_name.x
 > non-carbon atoms (H, N, O, F) are not meaningful and are marked with `*` in the
 > output labels file. The numeric `_results.txt` file contains carbon predictions only.
 
-**Output:** `results/predict/outputs/{model_id}_fold{fold}_labels.txt` (per-atom predictions)
-and `results/predict/outputs/{model_id}_fold{fold}_results.txt` (numeric carbon values).
+**Output:** `predict_results/outputs/{model_id}_fold{fold}_labels.txt` (per-atom predictions)
+and `predict_results/outputs/{model_id}_fold{fold}_results.txt` (numeric carbon values).
 
 ## Configuration Reference
 
@@ -292,88 +292,38 @@ Pre-processed data files are provided in `data/processed/`. To regenerate
 them from the raw XYZ and CEBE files in `data/raw/`:
 
 ```bash
-python scripts/prepare_data.py
-```
-
-## Artifact Generation
-
-After running cross-validation, use `scripts/export_best_model.py` to identify
-the best fold and copy its weights, plots, and config into the tracked
-`artifacts/` directory for release.
-
-```bash
-# From the repo root (uses results/cv/ and config_examples/cv.yml by default):
-uv run python scripts/export_best_model.py
-
-# Run with custom results directory and config file
-uv run python scripts/export_best_model.py --cv-dir path/to/results/cv --cv-config path/to/config.yml
-
-# Overwrite previously exported artifacts:
-uv run python scripts/export_best_model.py --overwrite
-```
-
-This produces:
-
-```
-artifacts/
-├── config/
-│   └── cv.yml                                    # training config used
-├── model_weights/
-│   └── {model_id}_fold{best_fold}.pth            # best-fold model weights
-└── plots/
-    ├── {model_id}_fold{best_fold}_loss.pdf        # loss curve (print-quality)
-    ├── {model_id}_fold{best_fold}_loss.png        # loss curve
-    └── {model_id}_fold{best_fold}_scatter.png     # predicted vs experimental
-```
-
-The script exits non-zero if any source file is missing. The `artifacts/` directory is tracked in git and
-can be committed and attached to a GitHub release.
-
-`artifacts/data_manifest.yml` records the Zenodo DOI and SHA-256 checksums for all data files.
-Update the `doi` and `url` fields before publishing a release. To verify data integrity after downloading:
-
-```bash
-shasum -a 256 data/processed/*.pt data/raw/*.tar.gz
+cd prepare_data
+python prepare_data.py
 ```
 
 ## Project Structure
 
 ```
 AugerNet/
-├── src/
-│   └── augernet/                # Python package (src layout)
-│       ├── __init__.py
-│       ├── __main__.py              # CLI entry point
-│       ├── config.py                # YAML → AugerNetConfig dataclass
-│       ├── train_driver.py          # Mode dispatch, CV, param search
-│       ├── backend_cebe.py          # CEBE model hooks (data, train, eval, predict)
-│       ├── feature_assembly.py      # Runtime feature selection & scaling
-│       ├── gnn_train_utils.py       # MPNN model, train loop, unit tests
-│       ├── build_molecular_graphs.py  # XYZ → PyG graphs
-│       ├── eneg_diff.py             # Electronegativity scoring
-│       └── evaluation_scripts/
-│           └── evaluate_cebe_model.py  # Evaluation plots & metrics
-├── scripts/
-│   ├── prepare_data.py          # Regenerate processed datasets from raw
-│   └── export_best_model.py     # Export best CV fold to artifacts/
+├── augernet/                    # Python package
+│   ├── __init__.py
+│   ├── __main__.py              # CLI entry point
+│   ├── config.py                # YAML → AugerNetConfig dataclass
+│   ├── train_driver.py          # Mode dispatch, CV, param search
+│   ├── backend_cebe.py          # CEBE model hooks (data, train, eval, predict)
+│   ├── feature_assembly.py      # Runtime feature selection & scaling
+│   ├── gnn_train_utils.py       # MPNN model, train loop, unit tests
+│   ├── build_molecular_graphs.py  # XYZ → PyG graphs
+│   ├── eneg_diff.py             # Electronegativity scoring
+│   └── evaluation_scripts/
+│       └── evaluate_cebe_model.py  # Evaluation plots & metrics
 ├── config_examples/             # Example YAML configs
-│   ├── train.yml
-│   ├── cv.yml
-│   ├── param.yml
-│   ├── evaluate.yml
-│   └── predict.yml
+│   ├── cebe_train_default.yml
+│   ├── cebe_train_cv_random.yml
+│   ├── cebe_evaluate.yml
+│   └── cebe_predict.yml
 ├── data/
 │   ├── raw/                     # Raw XYZ + CEBE files
 │   └── processed/               # Pre-built PyG datasets
-├── artifacts/                   # Release artifacts (tracked in git)
-│   ├── data_manifest.yml        # Zenodo DOI + SHA-256 checksums for data files
-│   ├── config/                  # Training config used for release model
-│   ├── model_weights/           # Best-fold model weights (.pth)
-│   └── plots/                   # Diagnostic plots (loss curves, scatter)
-├── cebe_pred/                   # Publication analysis scripts
-├── results/                     # Runtime outputs (gitignored)
+├── prepare_data/
+│   └── prepare_data.py          # Data preparation script
 ├── environment.yml              # Conda environment specification
-├── pyproject.toml
+├── setup.py
 └── README.md
 ```
 

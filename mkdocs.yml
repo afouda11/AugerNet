@@ -1,0 +1,63 @@
+site_name: AugerNet
+site_url: https://afouda11.github.io/AugerNet
+site_description: GNN predictions of carbon 1s core-electron binding energies from molecular geometry.
+repo_url: https://github.com/afouda11/AugerNet
+repo_name: afouda11/AugerNet
+
+theme:
+  name: material
+  palette:
+    primary: deep purple
+    accent: teal
+  features:
+    - navigation.expand
+    - navigation.instant
+    - navigation.path
+    - navigation.sections
+    - toc.follow
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Run Modes: run-modes.md
+  - Configuration: configuration.md
+  - Artifact Generation: artifacts.md
+  - API:
+    - Overview: api/index.md
+    - CLI: api/cli.md
+    - Config: api/config.md
+    - Training: api/train.md
+    - Features: api/features.md
+    - Model: api/model.md
+    - Graphs: api/graphs.md
+    - Evaluation: api/evaluation.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            docstring_style: numpy
+            show_signature: true
+            show_source: true
+            line_length: 100
+
+markdown_extensions:
+  - admonition
+  - codehilite:
+      linenums: true
+      use_pygments: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - toc:
+      permalink: true
+      toc_depth: 3

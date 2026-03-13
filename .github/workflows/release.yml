@@ -1,0 +1,85 @@
+name: Release
+
+# Triggered manually from the Actions tab, or automatically on push to main.
+# Manual dispatch lets you choose the version bump type (default: patch).
+#
+# Prerequisites before triggering a release:
+#   1. Run `uv run python scripts/export_best_model.py --overwrite` locally
+#   2. Commit the updated artifacts/ directory
+#   3. Push to main — the workflow will handle versioning, tagging, the
+#      GitHub release with model weights and training plots attached, and a
+#      post-release evaluation whose output plots are appended to the same release.
+#
+# Note: the evaluate job downloads processed data from Zenodo using the URLs
+# in artifacts/data_manifest.yml. Update those URLs once the Zenodo record is
+# published before expecting the evaluate job to succeed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: false
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Version bump, tag, and GitHub release Job
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # PAT_TOKEN allows the version-bump commit to trigger downstream
+          # workflows; falls back to GITHUB_TOKEN if no PAT is configured.
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # Bump pyproject.toml, commit, push, and tag in one step.
+      # The version string is captured as a step output for the release and
+      # evaluate jobs to reference.
+      - name: Bump version, commit, and tag
+        id: version
+        env:
+          UV_NO_SYNC: "1"
+        run: |
+          uv version --bump "${{ github.event.inputs.bump || 'patch' }}"
+          VERSION=$(uv version | awk '{print $2}')
+          echo "app_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          git config user.name  "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git commit -am "chore: bump version to ${VERSION}"
+          git push
+          git tag -a "v${VERSION}" -m "Version ${VERSION}"
+          git push origin "v${VERSION}"
+
+      # Attach the pre-committed artifacts/ contents as downloadable release
+      # assets. Release notes are auto-generated from commits since the last tag.
+      - name: Create GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          generateReleaseNotes: true
+          name: "v${{ steps.version.outputs.app_version }}"
+          tag:  "v${{ steps.version.outputs.app_version }}"
+          artifacts: >
+            artifacts/model_weights/*.pth,
+            artifacts/plots/*.pdf,
+            artifacts/plots/*.png,
+            artifacts/config/cv.yml,
+            artifacts/data_manifest.yml
