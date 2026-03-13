@@ -303,7 +303,7 @@ def compute_locality_data(max_radius=7):
 #  Write per-radius group files
 # ═════════════════════════════════════════════════════════════════════════
 
-def write_group_files(loc_data, out_dir='locality_analysis_groups'):
+def write_group_files(loc_data, out_dir='locality_analysis'):
     """Write per-radius summary + per-group member lists.
 
     Creates ``out_dir/radius_{r}/_summary.txt`` and

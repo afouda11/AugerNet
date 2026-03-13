@@ -309,7 +309,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
                               for k in sorted(param_grid.keys())}
 
     summary_path = os.path.join(param_dir,
-                                f'{search_id}_param_summary.json')
+                                f'{search_id}_{cfg.model_id}_param_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2, default=str)
     print(f"\n✓ Saved param search summary → {summary_path}")

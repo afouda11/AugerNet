@@ -32,7 +32,7 @@ All runs are controlled by a single YAML config file.
 Example configs are provided in `config_examples/`.
 
 ```bash
-python -m augernet --config config_examples/cebe_train_default.yml
+python -m augernet --config config_examples/train.yml
 ```
 
 ## Run Modes
@@ -101,7 +101,25 @@ param_grid:
 ```
 
 **Output:** `param_results/models/`, `param_results/outputs/`, `param_results/pngs/`,
-`param_results/{model_id}_param_summary.json`
+`param_results/{search_id}_param_summary.json`
+
+The `search_id` encodes the searched dimensions so that different grid searches
+never overwrite each other's files. For example, if `layer_type` (2 values)
+and `feature_keys` (3 values) are searched:
+
+```
+search_id = search_feature_keys3_layer_type2
+```
+
+Every model and evaluation file is also prefixed with `{search_id}_` and suffixed with
+`_{config_id}` (e.g. `cfg000`, `cfg001`, …), producing filenames like:
+
+```
+{search_id}_{model_id}_fold{fold}_{config_id}.pth
+{search_id}_{model_id}_fold{fold}_{config_id}_loss.png
+{search_id}_{model_id}_fold{fold}_{config_id}_scatter.png
+{search_id}_{model_id}_fold{fold}_{config_id}_results.txt
+```
 
 ### `evaluate` — Evaluate a saved model
 
@@ -206,17 +224,37 @@ cebe_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}
 
 For example: `cebe_035_random_EQ3_h64`
 
+### Train / CV mode
+
 Files produced per fold:
 
 | File | Description |
 |------|-------------|
 | `{model_id}_fold{fold}.pth` | Saved model weights |
 | `{model_id}_fold{fold}_loss.png` | Training/validation loss curves |
+| `{model_id}_fold{fold}_loss.txt` | Epoch-level loss data (tab-separated) |
 | `{model_id}_fold{fold}_scatter.png` | Predicted vs experimental scatter plot |
 | `{model_id}_fold{fold}_labels.txt` | Per-atom predicted and true CEBEs |
 | `{model_id}_fold{fold}_results.txt` | Numeric predicted vs true (carbon only) |
 | `{model_id}_cv_summary.json` | Cross-validation summary (cv mode) |
-| `{model_id}_param_summary.json` | Parameter search leaderboard (param mode) |
+
+### Param search mode
+
+A unique `search_id` is built from the fixed hyperparameters and the searched
+dimensions (e.g. `cebe_random_3_h64_search_feature_keys3_layer_type2`).
+Each configuration also receives a `config_id` (`cfg000`, `cfg001`, …).
+All files are prefixed with `{search_id}_` and suffixed with `_{config_id}`
+so that different searches never overwrite each other.
+
+| File | Description |
+|------|-------------|
+| `{search_id}_{model_id}_fold{fold}_{config_id}.pth` | Saved model weights |
+| `{search_id}_{model_id}_fold{fold}_{config_id}_loss.png` | Loss curves |
+| `{search_id}_{model_id}_fold{fold}_{config_id}_loss.txt` | Epoch-level loss data |
+| `{search_id}_{model_id}_fold{fold}_{config_id}_scatter.png` | Scatter plot |
+| `{search_id}_{model_id}_fold{fold}_{config_id}_labels.txt` | Per-atom CEBEs |
+| `{search_id}_{model_id}_fold{fold}_{config_id}_results.txt` | Numeric results |
+| `{search_id}_param_summary.json` | Ranked leaderboard JSON |
 
 ## Data Preparation
 
