@@ -1,0 +1,3 @@
+# `augernet.config`
+
+::: augernet.config
