@@ -26,9 +26,13 @@ import os
 import json
 import numpy as np
 import torch
+from typing import List
 from torch_geometric.data import Data
 from rdkit import Chem
 from rdkit.Chem import rdmolops, rdchem, rdDetermineBonds, AllChem
+from rdkit.Chem import rdFingerprintGenerator
+from rdkit import DataStructs
+from rdkit.ML.Cluster import Butina
 from skipatom import SkipAtomInducedModel # Alt. options: OneHotVectors, RandomVectors, AtomVectors 
 
 from . import eneg_diff as ed
@@ -45,9 +49,7 @@ _EN_MAT = ed.get_eleneg_diff_mat(num_elements=100)
 # Constants
 au2eV = 27.21139
 
-# Morgan fingerprint defaults (per-atom structural environment encoding)
-MORGAN_RADIUS = 1       # ECFP2 — immediate neighbors (matches Auger lineshape locality)
-MORGAN_N_BITS = 256     # compact representation (trade-off: 1024 is standard but large for GNN)
+
 
 # Permitted bond types for edge encoding
 # Default: AUGER-NET (4 types)
@@ -260,61 +262,6 @@ def _extract_edge_attributes(mol, edge_index_order):
 
 
 
-# =============================================================================
-# MORGAN FINGERPRINT (PER-ATOM)
-# =============================================================================
-
-def _compute_per_atom_morgan_fp(mol, radius=MORGAN_RADIUS, n_bits=MORGAN_N_BITS):
-    """
-    Compute per-atom Morgan fingerprint vectors for ALL atoms in a molecule.
-
-    Uses the ``bitInfo`` output of ``GetMorganFingerprintAsBitVect`` to assign
-    each set bit to the atom(s) that contributed to it.  This gives every atom
-    a binary vector describing its local structural environment.
-
-    Parameters
-    ----------
-    mol : RDKit Mol
-        Must already have hydrogens (``Chem.AddHs``).
-    radius : int
-        Morgan FP radius.  1 = ECFP2 (nearest neighbors only).
-    n_bits : int
-        Number of bits in the hashed fingerprint.
-
-    Returns
-    -------
-    np.ndarray, shape (n_atoms, n_bits), dtype float32
-        Binary fingerprint vectors for every atom.
-    """
-    from rdkit.Chem import rdFingerprintGenerator
-
-    n_atoms = mol.GetNumAtoms()
-    atom_fps = np.zeros((n_atoms, n_bits), dtype=np.float32)
-
-    # Create the modern MorganGenerator (hashed to n_bits)
-    gen = rdFingerprintGenerator.GetMorganGenerator(
-        radius=radius,
-        fpSize=n_bits,
-    )
-
-    # Set up AdditionalOutput to capture atom-to-bit mapping
-    ao = rdFingerprintGenerator.AdditionalOutput()
-    ao.AllocateAtomToBits()
-
-    # Generate the HASHED fingerprint (bit indices are in [0, n_bits))
-    # AdditionalOutput is populated as a side effect
-    gen.GetFingerprintAsNumPy(mol, additionalOutput=ao)
-
-    # atomToBits: list of length n_atoms
-    # Each element is a list of bit indices that atom contributed to
-    atom_to_bits = ao.GetAtomToBits()
-
-    for atom_idx, bit_list in enumerate(atom_to_bits):
-        for bit_idx in bit_list:
-            atom_fps[atom_idx, bit_idx] = 1.0
-
-    return atom_fps
-
 
 # =============================================================================
 # NODE AND EDGE FEATURE BUILDING
@@ -444,11 +391,6 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
 
     node_features['feat_env_onehot'] = torch.tensor(
         env_onehot_np, dtype=torch.float)                 # (N, NUM_CARBON_CATEGORIES)
-
-    # ── per-atom Morgan fingerprint ──
-    morgan_fp = _compute_per_atom_morgan_fp(mol)
-    node_features['feat_morgan_fp'] = torch.tensor(
-        morgan_fp, dtype=torch.float)                     # (N, MORGAN_N_BITS)
 
     # ── category feature → data.x ──
     if category_feature is not None:
@@ -639,6 +581,7 @@ def _compute_cebe_normalization_stats(cebe_dir, mol_list):
     
     return mean, std
 
+
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
@@ -737,3 +680,109 @@ def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False)
     print("Total molecules processed:", len(data_list))
 
     return data_list
+
+# =============================================================================
+# BUTINA CLUSTERING (for scaffold-aware train/val splits)
+# =============================================================================
+
+# Butina clustering uses whole-molecule ECFP4 (radius 2, 1024 bits — standard)
+BUTINA_RADIUS = 2
+BUTINA_N_BITS = 1024
+
+def _taylor_butina_clustering(fp_list, cutoff=0.65):
+    """Cluster fingerprints using the RDKit Taylor-Butina algorithm.
+
+    Parameters
+    ----------
+    fp_list : list of DataStructs.ExplicitBitVect
+        Molecular fingerprints.
+    cutoff : float
+        Distance cutoff (1 − Tanimoto similarity).  Molecules within
+        this distance are placed in the same cluster.
+
+    Returns
+    -------
+    list of int
+        Cluster ID for each molecule (0-indexed, ordered by decreasing
+        cluster size — cluster 0 is the largest).
+    """
+    nfps = len(fp_list)
+    dists = []
+    for i in range(1, nfps):
+        sims = DataStructs.BulkTanimotoSimilarity(fp_list[i], fp_list[:i])
+        dists.extend([1.0 - x for x in sims])
+
+    cluster_res = Butina.ClusterData(dists, nfps, cutoff, isDistData=True)
+
+    cluster_ids = np.zeros(nfps, dtype=int)
+    for cluster_num, members in enumerate(cluster_res):
+        for member in members:
+            cluster_ids[member] = cluster_num
+    return cluster_ids.tolist()
+
+def get_butina_clusters(smiles_list, cutoff=0.65):
+    """Assign Butina cluster IDs from a list of SMILES strings.
+
+    Uses Morgan radius-2 / 1024-bit fingerprints (ECFP4) for the
+    Tanimoto distance matrix, then Taylor-Butina clustering.
+
+    Parameters
+    ----------
+    smiles_list : list of str
+        SMILES for every molecule in the dataset.
+    cutoff : float
+        Distance cutoff passed to :func:`_taylor_butina_clustering`.
+
+    Returns
+    -------
+    list of int
+        One cluster ID per molecule.
+    """
+    gen = rdFingerprintGenerator.GetMorganGenerator(
+        radius=BUTINA_RADIUS, fpSize=BUTINA_N_BITS)
+    fp_list = []
+    for smi in smiles_list:
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            raise ValueError(f"RDKit could not parse SMILES: {smi}")
+        fp_list.append(gen.GetFingerprint(mol))
+    return _taylor_butina_clustering(fp_list, cutoff=cutoff)
+
+# =============================================================================
+# MORGAN FINGERPRINT (PER-ATOM)
+# =============================================================================
+
+def get_per_atom_morgan_bits(mol, radius=1, n_bits=2048):
+    """Compute per-atom Morgan fingerprint bit sets for every atom.
+
+    This is the canonical low-level function used by all Morgan-FP
+    consumers in this project (node features, locality analysis, etc.).
+
+    Parameters
+    ----------
+    mol : RDKit Mol
+        Must already have explicit hydrogens (``Chem.AddHs``).
+    radius : int
+        Morgan FP radius.  1 = ECFP2, 2 = ECFP4, …
+    n_bits : int
+        Number of bits in the hashed fingerprint.
+
+    Returns
+    -------
+    list[frozenset[int]]
+        One ``frozenset`` of active bit indices per atom (length = n_atoms).
+    """
+    n_atoms = mol.GetNumAtoms()
+
+    gen = rdFingerprintGenerator.GetMorganGenerator(
+        radius=radius, fpSize=n_bits,
+    )
+
+    ao = rdFingerprintGenerator.AdditionalOutput()
+    ao.AllocateAtomToBits()
+
+    # Side-effect: populates ao with atom→bit mapping
+    gen.GetFingerprintAsNumPy(mol, additionalOutput=ao)
+
+    atom_to_bits = ao.GetAtomToBits()
+    return [frozenset(atom_to_bits[i]) for i in range(n_atoms)]
