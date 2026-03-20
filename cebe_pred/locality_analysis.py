@@ -28,7 +28,6 @@ import torch
 from collections import defaultdict
 from rdkit import Chem
 from rdkit.Chem import rdDetermineBonds
-from rdkit.Chem import rdFingerprintGenerator
 
 # ── Paths ────────────────────────────────────────────────────────────────
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -38,10 +37,12 @@ DATA_PATH    = os.path.join(PROJECT_ROOT, 'data', 'processed',
 
 sys.path.insert(0, PROJECT_ROOT)
 from augernet.carbon_environment import IDX_TO_CARBON_ENV
+from augernet.build_molecular_graphs import (
+    get_per_atom_morgan_bits
 
-# Morgan fingerprint size (must match build_molecular_graphs.py)
-MORGAN_N_BITS = 2048
+)
 
+LOCALITY_N_BITS = 2048
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Build RDKit Mol from .pt graph data
@@ -95,21 +96,6 @@ def _mol_from_pt(collated, slices, mol_idx):
     return mol, symbols
 
 
-def _morgan_fp_for_atom(mol, atom_idx, radius, n_bits=MORGAN_N_BITS):
-    """Hashable Morgan fingerprint (frozenset of bit indices) for one atom."""
-    gen = rdFingerprintGenerator.GetMorganGenerator(
-        radius=radius, fpSize=n_bits)
-    ao = rdFingerprintGenerator.AdditionalOutput()
-    ao.AllocateBitInfoMap()
-    gen.GetFingerprintAsNumPy(mol, additionalOutput=ao)
-    bit_info = ao.GetBitInfoMap()
-    atom_bits = set()
-    for bit_idx, contributors in bit_info.items():
-        for contributing_atom, _r in contributors:
-            if contributing_atom == atom_idx:
-                atom_bits.add(bit_idx)
-    return frozenset(atom_bits)
-
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Load carbon sites
@@ -150,6 +136,12 @@ def _load_carbon_sites(max_radius=7):
             skipped += 1
             continue
 
+        # Pre-compute per-atom Morgan bits at each radius (once per molecule)
+        all_bits_by_radius = {}
+        for r in range(1, max_radius + 1):
+            all_bits_by_radius[r] = get_per_atom_morgan_bits(
+                mol_h, radius=r, n_bits=LOCALITY_N_BITS)
+
         for j in range(n_atoms_pt):
             if node_mask[j] < 0.5:          # not a carbon
                 continue
@@ -162,7 +154,7 @@ def _load_carbon_sites(max_radius=7):
 
             fps = {}
             for r in range(1, max_radius + 1):
-                fps[f'morgan_{r}'] = _morgan_fp_for_atom(mol_h, j, r)
+                fps[f'morgan_{r}'] = all_bits_by_radius[r][j]
 
             sites.append({
                 'mol_name': name,

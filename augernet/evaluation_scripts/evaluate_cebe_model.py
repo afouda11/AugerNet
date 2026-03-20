@@ -202,15 +202,15 @@ def run_evaluation(
         fig, ax = plt.subplots(figsize=(5, 4))
 
         ax.semilogy(epochs, train_loss, color='#0072B2', lw=1.6,
-                    label='Training loss', zorder=3)
+                    label='Train', zorder=3)
         ax.semilogy(epochs, val_loss,   color='#E69F00', lw=1.6,
-                    label='Validation loss', alpha=0.92, zorder=3)
+                    label='Validation', alpha=0.92, zorder=3)
 
         # Vertical dashed line at best val epoch
         ax.axvline(best_epoch, color='#d62728', ls='--', lw=1.3, alpha=0.8)
 
         ax.set_xlabel('Epoch', fontsize=10, fontweight='bold')
-        ax.set_ylabel('MSE Loss', fontsize=10, fontweight='bold')
+        ax.set_ylabel('Loss (MSE)', fontsize=10, fontweight='bold')
         ax.legend(fontsize=8, framealpha=0.85, loc='lower left')
         ax.tick_params(axis='both', labelsize=9)
         ax.set_xlim(0, epochs[-1] + 2)

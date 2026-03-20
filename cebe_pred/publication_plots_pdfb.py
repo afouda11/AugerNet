@@ -62,7 +62,8 @@ def locality_plot(ax, loc_data, LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
                         s=35, alpha=0.7, edgecolors='white',
                         linewidths=0.4, zorder=2)
         if fig is not None:
-            cbar = fig.colorbar(sc, ax=ax, pad=0.02, aspect=25, shrink=0.85)
+            cax = ax.inset_axes([1.02, 0.0, 0.03, 0.85])
+            cbar = fig.colorbar(sc, cax=cax)
             cbar.set_label('Carbons in group', fontsize=AXIS_FONT)
             cbar.ax.tick_params(labelsize=TICK_FONT - 1)
 
@@ -72,7 +73,7 @@ def locality_plot(ax, loc_data, LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
 
     ax.set_xlabel('Topological (Bond) Radius', fontsize=AXIS_FONT,
                   fontweight='bold')
-    ax.set_ylabel('Exp. CEBE Std (eV) (Intra Env.)', fontsize=AXIS_FONT,
+    ax.set_ylabel('Exp. Intra-Env. Std (eV) ', fontsize=AXIS_FONT,
                   fontweight='bold')
     ax.set_xticks(radii)
     if xlim is not None:
@@ -80,7 +81,7 @@ def locality_plot(ax, loc_data, LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
     if ylim is not None:
         ax.set_ylim(*ylim)
     ax.tick_params(axis='both', labelsize=TICK_FONT)
-    ax.legend(fontsize=STATS_FONT - 1, loc='upper right', framealpha=0.85)
+    #ax.legend(fontsize=STATS_FONT - 1, loc='upper right', framealpha=0.85)
     ax.grid(True, alpha=0.25, linewidth=1.0, zorder=0)
     ax.set_axisbelow(True)
  
@@ -107,8 +108,13 @@ def locality_plot(ax, loc_data, LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
                 ha='center', va='bottom', zorder=5)
 
     # Text box explaining the star annotations
+    if subplot:
+        fontsize=14
+    else:
+        fontsize=10
+
     ax.text(3.8, 0.6, '* Para-di-substituted fluorobenzenes\n  C-F spread = 1.22 eV',
-              fontsize=14, color='orange', fontweight='bold',
+              fontsize=fontsize, color='orange', fontweight='bold',
               ha='center', va='center', zorder=5,
               bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
                         edgecolor='none', alpha=0.9))
@@ -273,7 +279,7 @@ def _parse_atom_predictions(labels_path):
     return results
 
 
-def _load_cf_spread_data(param_json,model_type='h32', 
+def _load_cf_spread_data(param_json, model_type='h32', param='feature_keys',
                          group_file=CF_GROUP_FILE):
     """Compute C–F predicted spread and MAE at each layer count.
 
@@ -296,11 +302,12 @@ def _load_cf_spread_data(param_json,model_type='h32',
     output_dir = 'param_results/outputs'
 
     # Filter runs matching the requested hidden dim, sorted by n_layers
-    hid = int(model_type.replace('h', ''))
+    if param == 'hidden_channels':
+        model_type = int(model_type.replace('h', ''))
     runs = sorted(
-        [r for r in summary['runs'] if r['hidden_channels'] == hid],
-        key=lambda r: r['n_layers'],
-    )
+            [r for r in summary['runs'] if r[param] == model_type],
+            key=lambda r: r['n_layers'],
+        )
 
     layer_counts = []
     pred_spreads = []
@@ -309,7 +316,7 @@ def _load_cf_spread_data(param_json,model_type='h32',
     for run in runs:
         labels_path = os.path.join(
             output_dir,
-            f"{search_id}_{run['model_id']}_fold1_{run['config_id']}_labels.txt",
+            f"{search_id}_{run['model_id']}_fold5_{run['config_id']}_labels.txt",
         )
         atom_data = _parse_atom_predictions(labels_path)
 
@@ -404,7 +411,11 @@ def aryl_fluoride_spread_plot(ax, layer_counts, pred_spreads,
                               color='#0072B2', marker='o',
                               label='Predicted spread',
                               show_exp_line=True,
-                              draw_axes_labels=True):
+                              draw_axes_labels=True,
+                              pred_maes=None,
+                              mae_color=None, mae_marker=None,
+                              mae_label=None,
+                              ax_mae=None):
     """Single-axis panel: C–F predicted spread vs layers (no MAE axis).
 
     Call once per series to overlay multiple models on the same axes.
@@ -417,6 +428,13 @@ def aryl_fluoride_spread_plot(ax, layer_counts, pred_spreads,
     color, marker, label : styling for this series.
     show_exp_line : bool – draw the horizontal experimental-spread line.
     draw_axes_labels : bool – set axis labels, ticks, grid.
+    pred_maes : array-like or None
+        If given, plot C–F MAE on a right-hand twin axis.
+    mae_color, mae_marker, mae_label : styling for the MAE series.
+    ax_mae : matplotlib.axes.Axes or None
+        Pre-existing twin axis for MAE (reuse across calls).
+        If *pred_maes* is given but *ax_mae* is None, a new twin
+        axis is created and returned.
     """
     if show_exp_line:
         ax.axhline(exp_spread, ls=':', color='grey',
@@ -430,7 +448,8 @@ def aryl_fluoride_spread_plot(ax, layer_counts, pred_spreads,
                   label=label, zorder=3)
 
     if draw_axes_labels:
-        ax.set_ylabel('C–F CEBE Spread (eV)', fontsize=AXIS_FONT,
+        #ax.set_ylabel('C–F CEBE Spread (eV)', fontsize=AXIS_FONT,
+        ax.set_ylabel('C–F Spread (eV)', fontsize=AXIS_FONT,
                       fontweight='bold')
         ax.tick_params(axis='both', labelsize=TICK_FONT)
         ax.set_xlabel('Number of GNN Layers', fontsize=AXIS_FONT,
@@ -440,15 +459,39 @@ def aryl_fluoride_spread_plot(ax, layer_counts, pred_spreads,
         ax.grid(True, alpha=0.25, zorder=0)
         ax.set_axisbelow(True)
 
-    legend = ax.legend(fontsize=STATS_FONT, loc='lower right',
-                       framealpha=0.85)
+    # ── Optional MAE on right-hand twin axis ─────────────────────────────
+    if pred_maes is not None:
+        if ax_mae is None:
+            ax_mae = ax.twinx()
+        _mc = mae_color or '#D55E00'
+        _mm = mae_marker or '^'
+        _ml = mae_label or 'C–F MAE'
+        ax_mae.plot(layer_counts, pred_maes, f'--{_mm}', color=_mc,
+                    markersize=7, linewidth=LINE_WIDTH,
+                    label=_ml, zorder=3)
+        if draw_axes_labels:
+            #ax_mae.set_ylabel('C–F CEBE MAE (eV)', fontsize=AXIS_FONT,
+            ax_mae.set_ylabel('C–F MAE (eV)', fontsize=AXIS_FONT,
+                              fontweight='bold', color=_mc)
+            ax_mae.tick_params(axis='y', labelcolor=_mc, labelsize=TICK_FONT)
+            ax_mae.set_ylim(bottom=0)
+
+    # ── Combined legend (gather handles from ax + ax_mae) ────────────────
+    handles, labels_ = ax.get_legend_handles_labels()
+    if ax_mae is not None:
+        h2, l2 = ax_mae.get_legend_handles_labels()
+        handles += h2
+        labels_ += l2
+
+    legend = ax.legend(handles, labels_, fontsize=STATS_FONT,
+                       loc='lower right', framealpha=0.85)
     legend.set_zorder(10)
 
     if subplot:
         ax.text(-0.12, 1.05, panel_label, transform=ax.transAxes,
                 fontsize=16, fontweight='bold', va='top')
 
-    return ax
+    return ax, ax_mae
 
 
 def aryl_fluoride_spread_mae(param_json, model_type='h32'):
@@ -501,12 +544,12 @@ def locality_and_spread(param_json, model_type='h64',
     loc_data = compute_locality_data()
 
     # First model
-    lc1, sp1, _m1, exp_spread = _load_cf_spread_data(param_json, model_type)
+    lc1, sp1, mae1, exp_spread = _load_cf_spread_data(param_json, model_type)
 
     # Optional second model
-    lc2, sp2 = None, None
+    lc2, sp2, mae2 = None, None, None
     if param_json_2 is not None and model_type_2 is not None:
-        lc2, sp2, _m2, _ = _load_cf_spread_data(param_json_2, model_type_2)
+        lc2, sp2, mae2, _ = _load_cf_spread_data(param_json_2, model_type_2)
 
     # ── Style (matches layer_scan_2_panel) ───────────────────────────────
     sns.set_style("whitegrid")
@@ -535,29 +578,36 @@ def locality_and_spread(param_json, model_type='h64',
     ax_top.set_xlabel('')
     ax_top.tick_params(axis='x', labelbottom=False)
 
-    # Panel (b) — C–F spread (single y-axis, one or two series)
+    # Panel (b) — C–F spread (left axis) + MAE (right axis)
     ax_bot = fig.add_subplot(gs[1, 0])
 
     # First series (always drawn)
-    aryl_fluoride_spread_plot(
+    _, ax_mae = aryl_fluoride_spread_plot(
         ax_bot, lc1, sp1, exp_spread,
         LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
         subplot=True, panel_label='(b)',
         color='#0072B2', marker='o',
-        label=f'Skipatom-200 + At-BE + E-neg.',
+        label=f'Spread: Skipatom-200 + At-BE + E-neg.',
         show_exp_line=True, draw_axes_labels=True,
+        pred_maes=mae1,
+        mae_color='#0072B2', mae_marker='^',
+        mae_label=f'MAE: Skipatom-200 + At-BE + E-neg.',
     )
 
     # Second series (optional)
     if lc2 is not None:
-        aryl_fluoride_spread_plot(
+        _, ax_mae = aryl_fluoride_spread_plot(
             ax_bot, lc2, sp2, exp_spread,
             LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
             subplot=False,          # panel label already drawn
             color='#D55E00', marker='s',
-            label=f'Skipatom-200',
+            label=f'Spread: Skipatom-200',
             show_exp_line=False,    # already drawn by first call
             draw_axes_labels=False, # already drawn by first call
+            pred_maes=mae2,
+            mae_color='#D55E00', mae_marker='v',
+            mae_label=f'MAE: Skipatom-200',
+            ax_mae=ax_mae,          # reuse same twin axis
         )
 
     # ── Save ─────────────────────────────────────────────────────────────
@@ -569,6 +619,142 @@ def locality_and_spread(param_json, model_type='h64',
         tag = f'_{model_type}'
     png_path = f'locality_analysis/locality_and_spread{tag}.png'
     pdf_path = f'locality_analysis/locality_and_spread{tag}.pdf'
+    fig.savefig(png_path, dpi=300, bbox_inches='tight')
+    fig.savefig(pdf_path, bbox_inches='tight')
+    print(f"  ✓ {png_path}")
+    print(f"  ✓ {pdf_path}")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Two-panel figure: (a) C–F spread vs layers  (b) C–F MAE vs layers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mae_plot(ax, layer_counts, pred_maes, LINE_WIDTH, STATS_FONT,
+              AXIS_FONT, TICK_FONT,
+              subplot=True, panel_label='(b)',
+              color='#0072B2', marker='^',
+              label='C–F MAE',
+              draw_axes_labels=True):
+    """Plot C–F MAE vs GNN layers on *ax*.
+
+    Call once per model series.  Set *draw_axes_labels* to ``False``
+    for the second call so axis decorations are drawn only once.
+    """
+    ax.plot(layer_counts, pred_maes, f'-{marker}', color=color,
+            markersize=7, linewidth=LINE_WIDTH,
+            label=label, zorder=3)
+
+    if draw_axes_labels:
+        ax.set_ylabel('C–F MAE (eV)', fontsize=AXIS_FONT,
+                      fontweight='bold')
+        ax.tick_params(axis='both', labelsize=TICK_FONT)
+        ax.set_xlabel('Number of GNN Layers', fontsize=AXIS_FONT,
+                      fontweight='bold')
+        ax.set_xticks(layer_counts)
+        ax.set_ylim(0.2, 0.7)
+        ax.grid(True, alpha=0.25, zorder=0)
+        ax.set_axisbelow(True)
+
+    if panel_label == '(a)':
+        legend = ax.legend(fontsize=STATS_FONT, loc='upper right',
+                           framealpha=0.85)
+        legend.set_zorder(10)
+
+    if subplot:
+        ax.text(-0.12, 1.05, panel_label, transform=ax.transAxes,
+                fontsize=16, fontweight='bold', va='top')
+
+    return ax
+
+
+def spread_and_mae(param_json, model_type='h64',
+                   param_json_2=None, model_type_2=None,
+                   param=None,
+                   name=None):
+    """1-col 2-row figure: C–F spread (top) + C–F MAE (bottom).
+
+    If *param_json_2* / *model_type_2* are given, a second series
+    is overlaid on both panels for comparison.
+    """
+    # First model
+    lc1, sp1, mae1, exp_spread = _load_cf_spread_data(param_json, model_type, param)
+
+    # Optional second model
+    lc2, sp2, mae2 = None, None, None
+    if param_json_2 is not None and model_type_2 is not None:
+        lc2, sp2, mae2, _ = _load_cf_spread_data(param_json_2, model_type_2, param)
+
+    # ── Style ────────────────────────────────────────────────────────────
+    sns.set_style("whitegrid")
+    plt.rcParams.update({
+        'font.size': 10, 'axes.linewidth': 1.2,
+        'xtick.direction': 'in', 'ytick.direction': 'in',
+        'xtick.major.width': 1.0, 'ytick.major.width': 1.0,
+        'xtick.major.size': 5,    'ytick.major.size': 5,
+        'legend.frameon': True,
+    })
+    AXIS_FONT  = 16
+    TICK_FONT  = 17
+    STATS_FONT = 12
+    LINE_WIDTH = 2.2
+
+    fig = plt.figure(figsize=(8, 10), constrained_layout=True)
+    gs  = GridSpec(2, 1, figure=fig, hspace=0.05)
+
+    # Panel (a) — C–F spread vs layers
+    ax_top = fig.add_subplot(gs[0, 0])
+    aryl_fluoride_spread_plot(
+        ax_top, lc1, sp1, exp_spread,
+        LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
+        subplot=True, panel_label='(a)',
+        color='#0072B2', marker='o',
+        label='Skipatom-200 + At-BE + E-neg.',
+        show_exp_line=True, draw_axes_labels=True,
+    )
+    if lc2 is not None:
+        aryl_fluoride_spread_plot(
+            ax_top, lc2, sp2, exp_spread,
+            LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
+            subplot=False,
+            color='#D55E00', marker='s',
+            label='Skipatom-200',
+            show_exp_line=False, draw_axes_labels=False,
+        )
+
+    # Hide x-axis label on top panel (shared x-axis)
+    ax_top.set_xlabel('')
+    ax_top.tick_params(axis='x', labelbottom=False)
+
+    # Panel (b) — C–F MAE vs layers
+    ax_bot = fig.add_subplot(gs[1, 0])
+    _mae_plot(
+        ax_bot, lc1, mae1,
+        LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
+        subplot=True, panel_label='(c)',
+        color='#0072B2', marker='^',
+        label='Skipatom-200 + At-BE + E-neg.',
+        draw_axes_labels=True,
+    )
+    if lc2 is not None:
+        _mae_plot(
+            ax_bot, lc2, mae2,
+            LINE_WIDTH, STATS_FONT, AXIS_FONT, TICK_FONT,
+            subplot=False,
+            color='#D55E00', marker='v',
+            label='Skipatom-200',
+            draw_axes_labels=False,
+        )
+
+    # ── Save ─────────────────────────────────────────────────────────────
+    if name:
+        tag = f'_{name}'
+    elif model_type_2:
+        tag = f'_{model_type}_{model_type_2}'
+    else:
+        tag = f'_{model_type}'
+    png_path = f'locality_analysis/spread_and_mae{tag}.png'
+    pdf_path = f'locality_analysis/spread_and_mae{tag}.pdf'
     fig.savefig(png_path, dpi=300, bbox_inches='tight')
     fig.savefig(pdf_path, bbox_inches='tight')
     print(f"  ✓ {png_path}")
@@ -754,20 +940,24 @@ def aryl_fluoride_spread_vs_layers(param_json, model_type='h32'):
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
 
-    param_json_1 = 'param_results/search_layer_type2_n_layers8_param_summary.json'
-    param_json_2 = 'param_results/search_hidden_channels2_n_layers8_param_summary.json'
-    param_json_3 = 'param_results/search_hidden_channels2_n_layers8_cebe_0_random_EQ3_h64_param_summary.json'
+#     param_json_1 = 'param_results/search_layer_type2_n_layers8_param_summary.json'
+#     param_json_2 = 'param_results/search_hidden_channels2_n_layers8_param_summary.json'
+#     param_json_3 = 'param_results/search_hidden_channels2_n_layers8_cebe_0_random_EQ3_h64_param_summary.json'
 
-    model_EQ_1 = f'cebe_035_random_EQ3_h64_fold1'
-    model_IN_1 = f'cebe_035_random_IN3_h64_fold1'
+#     model_EQ_1 = f'cebe_035_random_EQ3_h64_fold1'
+#     model_IN_1 = f'cebe_035_random_IN3_h64_fold1'
+# 
+#     model_EQ_2 = f'cebe_035_random_EQ4_h32_fold1'
+#     model_IN_2 = f'cebe_035_random_IN4_h32_fold1'
 
-    model_EQ_2 = f'cebe_035_random_EQ4_h32_fold1'
-    model_IN_2 = f'cebe_035_random_IN4_h32_fold1'
+    param_json = 'param_results/search_feature_keys2_n_layers8_cebe_035_butina_EQ3_h64_param_summary.json'
 
-#     locality()
+    locality()
 #     layer_scan_and_locality(param_json_3, model_type='h64')
 #     locality_and_spread(param_json_3, model_type='h32')
 #     aryl_fluoride_spread_mae(param_json_3, model_type='h64')
 #     aryl_fluoride_spread_vs_layers(param_json_3, model_type='h64')
-    locality_and_spread(param_json_2, model_type='h32',
-                        param_json_2=param_json_3, model_type_2='h32')
+#     locality_and_spread(param_json, model_type='035',
+#                         param_json_2=param_json, model_type_2='0')
+    spread_and_mae(param_json, model_type='035',
+                   param_json_2=param_json, model_type_2='0', param="feature_keys")
