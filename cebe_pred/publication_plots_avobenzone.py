@@ -580,10 +580,10 @@ def write_avobenzone_latex(mol_data, tag=''):
                  r"CEBE's of ketoavobenzone and enolavobenzone with the approximate "
                  r'mean average errors (MAE) of the predictions with respect to the '
                  r'experimental values, all energies are given in (eV). The C column '
-                 r'has the label for each carbon atom given in Figure \ref{fig:avobenzone} '
+                 r'has the label for each carbon atom given in Figure \ref{fig:avo} '
                  r'b) and the Env.\ column contains the carbons environment class, '
                  r'determined by the SMARTS pattern matching procedure given in the SI.}')
-    lines.append(r'\label{tab:avobenzone}')
+    lines.append(r'\label{tab:avo}')
     lines.append(r'\footnotesize')
     lines.append(r'\setlength{\tabcolsep}{9.5pt}')
     lines.append(r'\begin{tabular}{llcrr@{\hskip 2em}llcrr}')
@@ -659,10 +659,10 @@ def write_avobenzone_latex(mol_data, tag=''):
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
 
-    model = f'cebe_035_random_EQ4_h32_fold1'
+    model = f'cebe_035_butina_EQ3_h64_fold5'
 
     # Labels file is in the param_results/outputs directory
-    labels_path = f'train_results/outputs/{model}_labels.txt'
+    labels_path = f'train_results/outputs/expeval_{model}_labels.txt'
 
     xps_overlay(labels_path, name=model)
 
