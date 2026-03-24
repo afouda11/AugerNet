@@ -13,7 +13,7 @@ import os
 import numpy as np
 import torch
 from typing import Any, Dict, List, Optional, Tuple
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, GroupKFold
 
 from augernet import gnn_train_utils as gtu
 from augernet.feature_assembly import (
@@ -27,6 +27,72 @@ from augernet import PROJECT_ROOT, DATA_DIR, DATA_PROCESSED_DIR
 # ─────────────────────────────────────────────────────────────────────────────
 #  Data loading
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _load_exp_split_names(split):
+    """Load mol-name sets for the experimental val/eval split.
+
+    Reads ``mol_list_val.txt`` and ``mol_list_eval.txt`` from the raw
+    exp_cebe directory.  Returns ``(val_names, eval_names)`` as sets.
+    """
+    from augernet import DATA_RAW_DIR
+    exp_dir = os.path.join(DATA_RAW_DIR, 'exp_cebe')
+
+    def _read(fname):
+        path = os.path.join(exp_dir, fname)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Exp split file not found: {path}\n"
+                f"Run  generate_exp_split.py  to create it."
+            )
+        with open(path) as f:
+            return {line.strip() for line in f if line.strip()}
+
+    return _read('mol_list_val.txt'), _read('mol_list_eval.txt')
+
+
+def _split_exp_data(exp_data_all, cfg):
+    """Partition experimental data according to ``cfg.exp_split``.
+
+    Returns ``(exp_val_data, exp_eval_data)``.  Depending on the mode:
+
+    - ``'all'``  — both lists contain all 113 molecules (legacy behaviour)
+    - ``'val'``  — val = 63 validation, eval = empty
+    - ``'eval'`` — val = empty, eval = 50 evaluation
+    - ``'both'`` — val = 63, eval = 50  (run evaluation on each separately)
+    """
+    split = cfg.exp_split
+
+    if split == 'all':
+        return exp_data_all, exp_data_all
+
+    val_names, eval_names = _load_exp_split_names(split)
+
+    exp_val  = [d for d in exp_data_all if d.mol_name in val_names]
+    exp_eval = [d for d in exp_data_all if d.mol_name in eval_names]
+
+    # Sanity check
+    found = {d.mol_name for d in exp_val} | {d.mol_name for d in exp_eval}
+    missing_val  = val_names  - {d.mol_name for d in exp_val}
+    missing_eval = eval_names - {d.mol_name for d in exp_eval}
+    if missing_val:
+        print(f"  ⚠ Val split: {len(missing_val)} names not found in data: "
+              f"{sorted(missing_val)[:5]}")
+    if missing_eval:
+        print(f"  ⚠ Eval split: {len(missing_eval)} names not found in data: "
+              f"{sorted(missing_eval)[:5]}")
+
+    if split == 'val':
+        return exp_val, []
+    elif split == 'eval':
+        return [], exp_eval
+    elif split == 'both':
+        return exp_val, exp_eval
+    else:
+        raise ValueError(
+            f"Unknown exp_split '{split}'. "
+            f"Supported: 'all', 'val', 'eval', 'both'."
+        )
+
 
 def load_data(cfg) -> Dict[str, Any]:
     """Load CEBE calculated + experimental data (raw, without feature assembly).
@@ -43,23 +109,35 @@ def load_data(cfg) -> Dict[str, Any]:
     calc_data = [ds[i] for i in range(len(ds))]
     print(f"Loaded feature-store data: {len(calc_data)} molecules")
 
-    # Experimental data
+    # Experimental data — load all, then split
     exp_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_exp_cebe_data.pt')
-    exp_data = [exp_ds[i] for i in range(len(exp_ds))]
+    exp_data_all = [exp_ds[i] for i in range(len(exp_ds))]
+
+    exp_val, exp_eval = _split_exp_data(exp_data_all, cfg)
+
+    exp_split = cfg.exp_split
+    if exp_split == 'all':
+        print(f"Exp split: all ({len(exp_data_all)} molecules)")
+    else:
+        print(f"Exp split: {exp_split}  "
+              f"(val={len(exp_val)}, eval={len(exp_eval)})")
 
     # Assemble features using the default config keys.
     # train_single_run will re-assemble if overrides change feature_keys.
     feature_keys = cfg.feature_keys_parsed
     print(f"Assembling features {cfg.feature_keys}")
     assemble_dataset(calc_data, feature_keys)
-    assemble_dataset(exp_data, feature_keys)
+    # Assemble on all exp molecules (val + eval may overlap for 'all')
+    assemble_dataset(exp_data_all, feature_keys)
     print(f"Calculated data: {len(calc_data)} molecules, "
           f"x.shape[1]={calc_data[0].x.size(1)}")
 
     return {
         'calc_data': calc_data,
-        'exp_data': exp_data,
-        'assembled_feature_keys': cfg.feature_keys,  # track what's assembled
+        'exp_data': exp_data_all,      # full set (backward compat)
+        'exp_val_data': exp_val,       # validation subset
+        'exp_eval_data': exp_eval,     # evaluation subset
+        'assembled_feature_keys': cfg.feature_keys,
     }
 
 
@@ -149,8 +227,25 @@ def train_single_run(
         print(f"{'=' * 70}")
 
     n_molecules = len(calc_data)
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
-    folds = list(kf.split(np.arange(n_molecules)))
+    if split_method == 'random':
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
+        folds = list(kf.split(np.arange(n_molecules)))
+    elif split_method == 'butina':
+        from augernet.build_molecular_graphs import get_butina_clusters
+        smiles_list = [d.smiles for d in calc_data]
+        cluster_ids = get_butina_clusters(smiles_list, cutoff=0.65)
+        n_clusters = len(set(cluster_ids))
+        if verbose:
+            print(f"  Butina clustering → {n_clusters} clusters "
+                  f"(cutoff=0.65)")
+        gkf = GroupKFold(n_splits=n_folds)
+        folds = list(gkf.split(np.arange(n_molecules),
+                                groups=cluster_ids))
+    else:
+        raise ValueError(
+            f"Unknown split_method '{split_method}'. "
+            f"Supported: 'random', 'butina'."
+        )
     train_idx, val_idx = folds[fold - 1]  # fold is 1-indexed
     train_idx = train_idx.tolist() if hasattr(train_idx, 'tolist') else list(train_idx)
     val_idx = val_idx.tolist() if hasattr(val_idx, 'tolist') else list(val_idx)
@@ -297,8 +392,20 @@ def load_param_model(model_path, data, cfg, best_params):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
-                   train_results=None, config_id=None, param_file_prefix=None):
-    """Run CEBE evaluation (calls evaluate_cebe_model.run_evaluation)."""
+                   train_results=None, config_id=None, param_file_prefix=None,
+                   exp_split=None):
+    """Run CEBE evaluation (calls evaluate_cebe_model.run_evaluation).
+
+    Parameters
+    ----------
+    exp_split : str or None
+        Which experimental subset to evaluate on.
+        'val'  : validation molecules only (for HP tuning / CV).
+        'eval' : held-out evaluation molecules only (blind test).
+        'both' : run evaluation separately on val and eval subsets.
+        'all'  : use the full experimental set (legacy behaviour).
+        If *None*, falls back to ``cfg.exp_split``.
+    """
 
     from .evaluation_scripts.evaluate_cebe_model import run_evaluation as _run_eval
 
@@ -306,7 +413,6 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
         model = model_result['model']
         device = model_result['device']
         train_results = model_result.get('train_results', train_results)
-        # Use per-config model_id if present (e.g. from param search overrides)
         model_id = model_result.get('model_id', cfg.model_id)
     elif isinstance(model_result, tuple):
         model, device = model_result
@@ -316,16 +422,38 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_id = cfg.model_id
 
-    return _run_eval(
-        model, device, data['exp_data'],
-        output_dir=output_dir, fold=fold,
-        png_dir=png_dir,
-        train_results=train_results,
-        norm_stats_file=cfg.norm_stats_file,
-        model_id=model_id,
-        config_id=config_id,
-        param_file_prefix=param_file_prefix,
-    )
+    split = exp_split if exp_split is not None else cfg.exp_split
+
+    def _call(exp_data, suffix=''):
+        pfx = param_file_prefix
+        if suffix and pfx:
+            pfx = f"{pfx}_{suffix}"
+        elif suffix:
+            pfx = suffix
+        return _run_eval(
+            model, device, exp_data,
+            output_dir=output_dir, fold=fold,
+            png_dir=png_dir,
+            train_results=train_results,
+            norm_stats_file=cfg.norm_stats_file,
+            model_id=model_id,
+            config_id=config_id,
+            param_file_prefix=pfx or None,
+        )
+
+    if split == 'val' and data.get('exp_val_data'):
+        return _call(data['exp_val_data'])
+    elif split == 'eval' and data.get('exp_eval_data'):
+        return _call(data['exp_eval_data'])
+    elif split == 'both' and data.get('exp_val_data') and data.get('exp_eval_data'):
+        val_metrics = _call(data['exp_val_data'], suffix='expval')
+        _call(data['exp_eval_data'], suffix='expeval')
+        # Return val metrics so upstream selectors (param search, CV) use
+        # validation performance for ranking.
+        return val_metrics
+    else:
+        # 'all' or lists not available → full experimental set
+        return _call(data['exp_data'])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -455,6 +583,28 @@ def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
     molecule_results = {}
 
     for i, data in enumerate(loader):
+        # Check for isolated nodes (bond dissociation beyond RDKit cutoff)
+        n_nodes = data.x.size(0)
+        nodes_in_edges = set(
+            data.edge_index[0].tolist() + data.edge_index[1].tolist()
+        )
+        if len(nodes_in_edges) < n_nodes:
+            # Skip — graph is disconnected; inference would fail
+            mol_name_raw = data.mol_name
+            if isinstance(mol_name_raw, list):
+                mol_name_raw = mol_name_raw[0]
+            atom_syms = data.atom_symbols
+            if isinstance(atom_syms, list):
+                atom_syms = atom_syms[0]
+            atom_syms = [str(s).strip() for s in atom_syms]
+            mol_rows = [(sym, float('nan')) for sym in atom_syms]
+            molecule_results[mol_name_raw] = mol_rows
+            all_pred.extend([float('nan')] * n_nodes)
+            all_atoms.extend(atom_syms)
+            print(f"    ⚠  Skipping {mol_name_raw}: disconnected graph "
+                  f"({len(nodes_in_edges)}/{n_nodes} nodes in edges)")
+            continue
+
         data = data.to(device)
         with torch.no_grad():
             out = model(data)

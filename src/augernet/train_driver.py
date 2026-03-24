@@ -111,6 +111,7 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
                 result, data, fold,
                 output_dir=outputs_dir, png_dir=pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
+                exp_split='val',  # CV uses validation subset only
             )
 
         # Build a JSON-serialisable record
@@ -241,6 +242,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
                     train_results=result.get('train_results'),
                     config_id=config_id,
                     param_file_prefix=search_id,
+                    exp_split='val',  # param search uses validation subset only
                 )
 
             entry = _run_entry(result, eval_metrics=eval_metrics)

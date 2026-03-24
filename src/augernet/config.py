@@ -35,13 +35,15 @@ class AugerNetConfig:
 
     # Evaluation on exp.evaluation data
     run_evaluation: bool = True
+    # experimental data split
+    exp_split: str = 'both'           # all | val | eval | both
     # Sanity check permutation invariance & rotational invariance/equivariance
     run_unit_tests: bool = False
 
     # k-fold
     n_folds: int = 5
     train_fold: int = 3
-    split_method: str = 'random'     # stratified | random | umap | size
+    split_method: str = 'random'     # random | butina
 
     # data paths
     data_path: str = ''              # base data directory (resolved at runtime)
@@ -54,14 +56,14 @@ class AugerNetConfig:
     layer_type: str = 'EQ'           # EQ (equivariant) | IN (invariant)
     hidden_channels: int = 64
     n_layers: int = 3
-    num_epochs: int = 500
-    patience: int = 50
+    num_epochs: int = 300
+    patience: int = 30
     batch_size: int = 24
     learning_rate: float = 0.001
     random_seed: int = 42
 
     # regularisation
-    dropout: float = 0.0              # dropout between message-passing layers
+    dropout: float = 0.1              # dropout between message-passing layers
 
     # optimizer
     optimizer_type: str = 'adamw'
@@ -76,6 +78,7 @@ class AugerNetConfig:
 
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
+
 
     # evaluate / predict modes
     model_path: str = ''             # relative path to a saved .pth model file
@@ -165,6 +168,17 @@ class AugerNetConfig:
                 f"cebe_{self.feature_tag}_{self.split_method}"
                 f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
             )
+
+            # In predict / evaluate mode, if model_path is given, infer
+            # model_id from the filename so output files match the loaded
+            # model rather than the (possibly default) split_method.
+            if self.mode in ('predict', 'evaluate') and self.model_path:
+                import re as _re
+                stem = os.path.splitext(os.path.basename(self.model_path))[0]
+                # Strip trailing _foldN if present
+                stem = _re.sub(r'_fold\d+$', '', stem)
+                if stem.startswith('cebe_'):
+                    self.model_id = stem
 
         return self
 
