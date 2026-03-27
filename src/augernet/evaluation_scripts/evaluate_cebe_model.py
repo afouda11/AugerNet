@@ -100,7 +100,7 @@ def load_model(
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
     model = model.to(device)
     model.eval()
 
@@ -173,7 +173,7 @@ def run_evaluation(
     os.makedirs(png_dir, exist_ok=True)
 
     # Load normalization stats
-    norm_stats = torch.load(norm_stats_file)
+    norm_stats = torch.load(norm_stats_file, weights_only=False)
     mean = norm_stats['mean']
     std = norm_stats['std']
 
@@ -460,7 +460,7 @@ def run_pes_evaluation(
     os.makedirs(png_dir, exist_ok=True)
 
     # Load normalization stats
-    norm_stats = torch.load(norm_stats_file)
+    norm_stats = torch.load(norm_stats_file, weights_only=False)
     mean = norm_stats['mean']
     std = norm_stats['std']
 

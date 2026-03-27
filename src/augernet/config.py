@@ -29,26 +29,26 @@ from augernet import PROJECT_ROOT, DATA_PROCESSED_DIR
 class AugerNetConfig:
     """Complete configuration for a single AugerNet run."""
 
-    # Model type and run mode 
+    # Model type and run mode
     model: str = 'cebe-gnn'          # 'cebe-gnn' only atm
     mode: str = 'train'              # cv | train | param | evaluate | predict
 
-    # Evaluation on exp.evaluation data 
+    # Evaluation on exp.evaluation data
     run_evaluation: bool = True
     # experimental data split
     exp_split: str = 'both'           # all | val | eval | both
     # Sanity check permutation invariance & rotational invariance/equivariance
     run_unit_tests: bool = False
 
-    # k-fold 
+    # k-fold
     n_folds: int = 5
     train_fold: int = 3
     split_method: str = 'random'     # random | butina
 
-    # data paths 
+    # data paths
     data_path: str = ''              # base data directory (resolved at runtime)
 
-    # node features 
+    # node features
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
     norm_stats_file: str = ''
 
@@ -128,11 +128,12 @@ class AugerNetConfig:
         # place before running the CLI.  Evaluation modes will then find
         # the saved models in the same directory.
         cwd = os.getcwd()
-        self.cv_dir = os.path.join(cwd, 'cv_results')
-        self.train_dir = os.path.join(cwd, 'train_results')
-        self.param_dir = os.path.join(cwd, 'param_results')
-        self.evaluate_dir = os.path.join(cwd, 'evaluate_results')
-        self.predict_output_dir = os.path.join(cwd, 'predict_results')
+        results = os.path.join(cwd, 'results')
+        self.cv_dir             = os.path.join(results, 'cv')
+        self.train_dir          = os.path.join(results, 'train')
+        self.param_dir          = os.path.join(results, 'param')
+        self.evaluate_dir       = os.path.join(results, 'evaluate')
+        self.predict_output_dir = os.path.join(results, 'predict')
 
         # ── feature_tag + model_id (GNN models) ─────────────────────────
         # feature_tag  = pure feature identity, e.g. '035'

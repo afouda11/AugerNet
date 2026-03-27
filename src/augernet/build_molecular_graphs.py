@@ -615,7 +615,7 @@ def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False)
 
     # Load norm stats  from calc data for exp eval and other predictions
     if data_type in ['exp', 'pes']:
-        norm_stats = torch.load(norm_stats_path)
+        norm_stats = torch.load(norm_stats_path, weights_only=False)
         mean = norm_stats['mean']
         std = norm_stats['std']
 
