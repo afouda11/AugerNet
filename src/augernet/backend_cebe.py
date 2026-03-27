@@ -512,7 +512,7 @@ def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
 
     # Load normalization stats (needed for output denormalization)
     norm_stats_file = cfg.norm_stats_file
-    norm_stats = torch.load(norm_stats_file)
+    norm_stats = torch.load(norm_stats_file, weights_only=False)
     mean = norm_stats['mean']
     std  = norm_stats['std']
 

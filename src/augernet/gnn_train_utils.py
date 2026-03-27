@@ -17,7 +17,7 @@ from torch_geometric.utils import to_dense_adj, dense_to_sparse
 from scipy.stats import ortho_group
 
 
-#from gnn.train_utils import MPNN 
+#from gnn.train_utils import MPNN
 
 def seed(seed=0):
     os.environ["PYTHONHASHSEED"]      = str(seed)  # enforce hash-based ops order
@@ -60,7 +60,7 @@ class LoadDataset(InMemoryDataset):
     def __init__(self, root: str | Path, *, file_name: str = "data.pt", **kwargs):
         self._processed_name = file_name        # store before super().__init__
         super().__init__(root, **kwargs)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
     # ── hooks that InMemoryDataset expects ──────────────────────────────────
     @property
@@ -83,7 +83,7 @@ class InvariantMPNNLayer(MessagePassing):
         """
         Message Passing Neural Network Layer
         This layer is equivariant to 3D rotations and translations.
-        
+
         Args:
             emb_dim: (int) - hidden dimension `d`
             edge_dim: (int) - edge feature dimension `d_e`
@@ -93,7 +93,7 @@ class InvariantMPNNLayer(MessagePassing):
         super().__init__(aggr=aggr)
         self.emb_dim = emb_dim
         self.edge_dim = edge_dim
-        
+
         # --- Define the MLPs for the layer ---
         # MLP for the message function (ψ)
         # Input: concatenation of [h_i, h_j, edge_attr, d_ij^2]
@@ -103,7 +103,7 @@ class InvariantMPNNLayer(MessagePassing):
             ReLU(),
             Linear(emb_dim, emb_dim)
         )
-        
+
         # MLP for updating node features (φ)
         # Input: concatenation of [old h, aggregated feature message]
         self.mlp_upd = Seq(
@@ -111,34 +111,34 @@ class InvariantMPNNLayer(MessagePassing):
             ReLU(),
             Linear(emb_dim, emb_dim)
         )
-    
+
     def forward(self, h, pos, edge_index, edge_attr):
         """
         Forward pass: one round of message passing.
-        
+
         Args:
             h: (n, d) - initial node features
             pos: (n, 3) - initial node coordinates
             edge_index: (2, e) - edge index tensor with shape [2, num_edges]
             edge_attr: (e, d_e) - edge features
-            
+
         Returns:
             out: tuple of [(n, d), (n, 3)] - updated node features and coordinates
         """
         # The propagate function will call message(), aggregate(), and update() for us.
         out = self.propagate(edge_index, h=h, pos=pos, edge_attr=edge_attr)
         return out
-    
+
     def message(self, h_i, h_j, pos_i, pos_j, edge_attr):
         """
         Message function.
-        
+
         For each edge (i, j):
           - Compute the invariant squared distance: d2 = ||pos_i - pos_j||^2.
           - Compute a feature message based on h_i, h_j, edge_attr, and d2.
           - Compute a scalar weight (via mlp_coord) and form the coordinate message as:
               weight * (pos_i - pos_j)
-        
+
         Returns a tuple of (feature_message, coordinate_message).
         """
         # Invariant: squared Euclidean distance (remains the same under rotations and translations)
@@ -150,40 +150,40 @@ class InvariantMPNNLayer(MessagePassing):
         msg = torch.cat([h_i, h_j, edge_attr, d2], dim=-1)
 
         return self.mlp_msg(msg)
-    
+
     def aggregate(self, inputs, index, ptr=None, dim_size=None):
         """
         Aggregates messages from neighboring nodes.
-        
+
         Since message() returns a tuple (feature_message, coordinate_message),
         we aggregate each component separately using the chosen aggregator.
         """
 #         return (agg_feat, agg_coord)
         return scatter(inputs, index, dim=self.node_dim, reduce=self.aggr)
-    
+
     def update(self, aggr_out, h, pos):
         """
         Updates the node features and coordinates.
-        
+
         - The new node features are computed as φ(concat(old features, aggregated feature messages)).
           This update is invariant.
         - The new coordinates are given by pos + (aggregated coordinate messages).
           Because the coordinate messages are equivariant, this update is equivariant.
         """
-        
+
         h_updated = self.mlp_upd(torch.cat([h, aggr_out], dim=-1))
 #         return (h_updated, pos_updated)
         return h_updated
-    
+
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(emb_dim={self.emb_dim}, aggr={self.aggr})'
-    
+
 class EquivariantMPNNLayer(MessagePassing):
     def __init__(self, emb_dim=64, edge_dim=4, aggr='add'):
         """
         Message Passing Neural Network Layer
         This layer is equivariant to 3D rotations and translations.
-        
+
         Args:
             emb_dim: (int) - hidden dimension `d`
             edge_dim: (int) - edge feature dimension `d_e`
@@ -193,7 +193,7 @@ class EquivariantMPNNLayer(MessagePassing):
         super().__init__(aggr=aggr)
         self.emb_dim = emb_dim
         self.edge_dim = edge_dim
-        
+
         # --- Define the MLPs for the layer ---
         # MLP for the message function (ψ)
         # Input: concatenation of [h_i, h_j, edge_attr, d_ij^2]
@@ -203,7 +203,7 @@ class EquivariantMPNNLayer(MessagePassing):
             ReLU(),
             Linear(emb_dim, emb_dim)
         )
-        
+
         # MLP for coordinate update weight
         # Input: message from mlp_msg, output: a scalar weight
         self.mlp_coord = Seq(
@@ -212,7 +212,7 @@ class EquivariantMPNNLayer(MessagePassing):
             Linear(emb_dim, 1),
             Tanh()
         )
-        
+
         # MLP for updating node features (φ)
         # Input: concatenation of [old h, aggregated feature message]
         self.mlp_upd = Seq(
@@ -220,34 +220,34 @@ class EquivariantMPNNLayer(MessagePassing):
             ReLU(),
             Linear(emb_dim, emb_dim)
         )
-    
+
     def forward(self, h, pos, edge_index, edge_attr):
         """
         Forward pass: one round of message passing.
-        
+
         Args:
             h: (n, d) - initial node features
             pos: (n, 3) - initial node coordinates
             edge_index: (2, e) - edge index tensor with shape [2, num_edges]
             edge_attr: (e, d_e) - edge features
-            
+
         Returns:
             out: tuple of [(n, d), (n, 3)] - updated node features and coordinates
         """
         # The propagate function will call message(), aggregate(), and update() for us.
         out = self.propagate(edge_index, h=h, pos=pos, edge_attr=edge_attr)
         return out
-    
+
     def message(self, h_i, h_j, pos_i, pos_j, edge_attr):
         """
         Message function.
-        
+
         For each edge (i, j):
           - Compute the invariant squared distance: d2 = ||pos_i - pos_j||^2.
           - Compute a feature message based on h_i, h_j, edge_attr, and d2.
           - Compute a scalar weight (via mlp_coord) and form the coordinate message as:
               weight * (pos_i - pos_j)
-        
+
         Returns a tuple of (feature_message, coordinate_message).
         """
         # Invariant: squared Euclidean distance (remains the same under rotations and translations)
@@ -258,20 +258,20 @@ class EquivariantMPNNLayer(MessagePassing):
         # Concatenate inputs for the message MLP
         msg_input = torch.cat([h_i, h_j, edge_attr, d2], dim=-1)
         msg = self.mlp_msg(msg_input)  # shape: (E, emb_dim)
-        
+
         # Compute a scalar weight from the message for coordinate update
         w = self.mlp_coord(msg)  # shape: (E, 1)
 
         # Equivariant coordinate message: scales the relative position
         msg_coord = w * (pos_i - pos_j)  # shape: (E, 3)
-        
+
         # Return both messages
         return (msg, msg_coord)
-        
+
     def aggregate(self, inputs, index, ptr=None, dim_size=None):
         """
         Aggregates messages from neighboring nodes.
-        
+
         Since message() returns a tuple (feature_message, coordinate_message),
         we aggregate each component separately using the chosen aggregator.
         """
@@ -287,11 +287,11 @@ class EquivariantMPNNLayer(MessagePassing):
         agg_coord = agg_coord * scale
 
         return (agg_feat, agg_coord)
-    
+
     def update(self, aggr_out, h, pos):
         """
         Updates the node features and coordinates.
-        
+
         - The new node features are computed as φ(concat(old features, aggregated feature messages)).
           This update is invariant.
         - The new coordinates are given by pos + (aggregated coordinate messages).
@@ -304,12 +304,12 @@ class EquivariantMPNNLayer(MessagePassing):
         pos_updated = pos + agg_coord
 
         return (h_updated, pos_updated)
-    
+
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(emb_dim={self.emb_dim}, aggr={self.aggr})'
 
 class MPNN(nn.Module):
-    def __init__(self, num_layers=4, emb_dim=64, in_dim=11, edge_dim=4, out_dim=1, 
+    def __init__(self, num_layers=4, emb_dim=64, in_dim=11, edge_dim=4, out_dim=1,
                 layer_type="IN", pred_type="AUGER", spectrum_type='stick', spectrum_dim=300,
                 dropout=0.0):
 
@@ -335,11 +335,11 @@ class MPNN(nn.Module):
             dropout: (float) - dropout probability between message passing layers (0 = off)
         """
         super().__init__()
-        
+
         # Linear projection for initial node features
         # dim: d_n -> d
         self.lin_in = Linear(in_dim, emb_dim)
-        
+
         # Stack of MPNN layers with LayerNorm after each
         self.convs = torch.nn.ModuleList()
         self.norms = torch.nn.ModuleList()
@@ -349,7 +349,7 @@ class MPNN(nn.Module):
             elif layer_type == "IN":
                 self.convs.append(InvariantMPNNLayer(emb_dim, edge_dim, aggr='add'))
             self.norms.append(nn.LayerNorm(emb_dim))
-        
+
         if pred_type == "CEBE":
             # Linear prediction head
             # dim: d -> out_dim
@@ -414,7 +414,7 @@ class MPNN(nn.Module):
                 h = F.dropout(h, p=self.dropout, training=self.training)
 
                 # Update node coordinates
-                pos = pos_update # (n, 3) -> (n, 3)    
+                pos = pos_update # (n, 3) -> (n, 3)
         elif self.layer_type == "IN":
 
             pos = data.pos
@@ -435,8 +435,8 @@ class MPNN(nn.Module):
 
                 # Dropout (only active during training)
                 h = F.dropout(h, p=self.dropout, training=self.training)
-        
-        if self.pred_type == "CEBE": 
+
+        if self.pred_type == "CEBE":
             out = self.lin_pred(h)
         elif self.pred_type == "AUGER":
             if self.spectrum_type == 'fitted':
@@ -455,7 +455,7 @@ def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim
     total_samples = 0
 
     model.train()
-    
+
     for data in data_loader:
         optimizer.zero_grad()
         #out = model(data, layer_type, pred_type)
@@ -470,7 +470,7 @@ def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim
             mask = data.mask_bin[idx]
             out_sel = out[idx]
             y_sel = data.y[idx]
-            
+
             # Ensure mask and y/out have same dimensions
             if mask.shape != y_sel.shape:
                 if y_sel.shape[1] == 300 and mask.shape[1] == 600:
@@ -479,7 +479,7 @@ def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim
                 elif y_sel.shape[1] == 600 and mask.shape[1] == 600:
                     # Both 600-dim: keep as is
                     pass
-            
+
             loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
         loss.backward()
         optimizer.step()
@@ -495,7 +495,7 @@ def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim
 
 def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='stick'):
     """One pass over data_loader without gradient to compute mean loss.
-    
+
     Args:
         spectrum_type: 'stick' (600-dim energy+intensity) or 'fitted' (n_points intensity)
     """
@@ -532,10 +532,10 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
 
 class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     """Cosine Annealing with Linear Warmup scheduler.
-    
+
     During warmup phase: linearly increases LR from 0 to max_lr
     During cosine phase: decreases LR using cosine annealing to min_lr
-    
+
     Args:
         optimizer: PyTorch optimizer
         warmup_epochs: Number of epochs for linear warmup
@@ -543,21 +543,21 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
         min_lr: Minimum learning rate (default: 1e-7)
         last_epoch: The index of last epoch (default: -1)
     """
-    def __init__(self, optimizer, warmup_epochs: int, max_epochs: int, 
+    def __init__(self, optimizer, warmup_epochs: int, max_epochs: int,
                  min_lr: float = 1e-7, last_epoch: int = -1):
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
         self.min_lr = min_lr
         super().__init__(optimizer, last_epoch)
-    
+
     def get_lr(self):
         """Calculate learning rate for current epoch."""
         current_epoch = self.last_epoch
-        
+
         if current_epoch < self.warmup_epochs:
             # Linear warmup phase
             lr_range = self.base_lrs[0] - self.min_lr
-            return [self.min_lr + lr_range * current_epoch / self.warmup_epochs 
+            return [self.min_lr + lr_range * current_epoch / self.warmup_epochs
                     for _ in self.base_lrs]
         else:
             # Cosine annealing phase
@@ -567,13 +567,13 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             return [self.min_lr + lr_range * cosine_decay for _ in self.base_lrs]
 
 
-def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2, 
+def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
                 pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", plot_results=False, val_data_list=None,
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7,
                 spectrum_type='stick', scheduler_type='cosine'):
     """
     Advanced training loop with gradient clipping, configurable optimizer and LR scheduler.
-    
+
     Args:
         data_list: Training data
         model: Neural network model
@@ -626,7 +626,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr, weight_decay=weight_decay, betas=(0.9, 0.999))
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=max_lr, weight_decay=weight_decay)
-    
+
     # ============================================================================
     # SCHEDULER SETUP
     # ============================================================================
@@ -671,7 +671,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
         model.train()
         running_loss, n_batches = 0.0, 0
-        
+
         for data in train_loader:
             optimizer.zero_grad()
             data = data.to(device)
@@ -683,7 +683,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
                 out_sel = out[idx]
-                
+
                 # DEBUG: Print shapes on first batch of first epoch
                 if epoch == 0 and n_batches == 0:
                     print(f"DEBUG AUGER ({spectrum_type}): idx.shape={idx.shape}")
@@ -709,12 +709,12 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
 
             loss.backward()
-            
+
             # ============================================================================
             # GRADIENT CLIPPING - Prevent gradient explosion
             # ============================================================================
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
-            
+
             optimizer.step()
 
             # OneCycleLR steps per batch
@@ -731,7 +731,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         # CosineAnnealingWarmup steps per epoch
         if not scheduler_per_batch:
             scheduler.step()
-        
+
         # Early stopping with model checkpoint
         if val_loss < best_val_loss:
             best_val_loss = val_loss
