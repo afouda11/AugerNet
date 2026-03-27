@@ -1,0 +1,27 @@
+# =============================================================================
+#  AugerNet — PES Predict Config  (IGNN: IN3, h64)
+# =============================================================================
+#
+#  Run predictions on PES .xyz files using the IGNN model.
+#  Results are written to predict_results/outputs/ in the working directory.
+#
+#  Run with:
+#    cd cebe_pred && python -m augernet --config configs/predict_pes_IN.yml
+#
+# =============================================================================
+
+model: cebe-gnn
+mode: predict
+
+# ── Path to the saved model (.pth) ──────────────────────────────────────────
+model_path: train_results/models/cebe_035_butina_IN3_h64_fold5.pth
+
+# ── Directory of PES .xyz files ─────────────────────────────────────────────
+predict_dir: pes/xyz_files
+
+# ── Must match the architecture / features used during training ──────────────
+feature_keys: '035'
+
+layer_type: IN
+hidden_channels: 64
+n_layers: 3

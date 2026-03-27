@@ -1,0 +1,76 @@
+# =============================================================================
+#  AugerNet — Auger CNN Param Search: FWHM × Augmentation × Merge Scheme
+# =============================================================================
+#
+#  Searches over:
+#    - broadening_fwhm:  [0.5, 1.0, 1.5, 2.0]
+#    - use_augmented:    [true, false]   (CEBE delta_be augmentation)
+#    - merge_scheme:     [chemical, practical]
+#
+#  Total configs: 4 × 2 × 2 = 16
+#
+#  Run with:
+#    python -m augernet --config auger_cnn/configs/auger_cnn_param_fwhm_merge.yml
+#
+# =============================================================================
+
+# ── Identity ─────────────────────────────────────────────────────────────────
+model: auger-cnn
+mode: param
+
+# ── Run flags ────────────────────────────────────────────────────────────────
+run_evaluation: true
+
+# ── K-fold ───────────────────────────────────────────────────────────────────
+n_folds: 5
+train_fold: 1
+split_method: butina
+
+# ── Base merge scheme (overridden by param_grid) ─────────────────────────────
+merge_scheme: chemical
+
+# ── Model architecture ───────────────────────────────────────────────────────
+architecture:
+  conv_filters:   [16, 32, 64]
+  conv_kernels:   [21, 11, 7]
+  pool_size:      3
+  fc_hidden:      [128]
+  use_batch_norm: true
+  dropout:        0.4
+  dropout_conv:   0.15
+
+# ── Training hyper-parameters ────────────────────────────────────────────────
+num_epochs: 300
+patience: 30
+batch_size: 24
+learning_rate: 3.0e-4
+weight_decay: 1.0e-4
+random_seed: 42
+
+# ── LR schedule ──────────────────────────────────────────────────────────────
+use_cosine_schedule: true
+
+# ── Input representation (base; overridden by param_grid) ────────────────────
+use_augmented: true
+augmented_scaled: false
+delta_be_scale: 100.0
+late_fusion: false
+
+# ── Regularisation ───────────────────────────────────────────────────────────
+label_smoothing: 0.0
+mixup_alpha: 0.0
+
+# ── Broadening (base; overridden by param_grid) ─────────────────────────────
+broadening_fwhm: 1.6
+energy_min: 200.0
+energy_max: 273.0
+n_spectrum_points: 731
+
+# ── Splits ───────────────────────────────────────────────────────────────────
+reuse_splits: true
+
+# ── Hyperparameter search grid ──────────────────────────────────────────────
+param_grid:
+  broadening_fwhm: [0.5, 1.0, 1.5, 2.0]
+  use_augmented:   [true, false]
+  merge_scheme:    [chemical, practical]

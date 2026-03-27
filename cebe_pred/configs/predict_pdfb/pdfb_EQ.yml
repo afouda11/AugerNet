@@ -1,0 +1,33 @@
+# =============================================================================
+#  AugerNet — CEBE GNN Predict Config
+# =============================================================================
+#
+#  Run predictions on a directory of .xyz files using a saved model.
+#  Builds molecular graphs on the fly — no pre-processing needed.
+#  Results are written to predict_results/ in the working directory.
+#
+#  Run with:
+#    python -m augernet --config config_examples/cebe_predict.yml
+#
+# =============================================================================
+
+model: cebe-gnn
+mode: predict
+
+# ── Path to the saved model (.pth) ──────────────────────────────────────────
+# Relative to the working directory, or absolute.
+#model_path: param_results/models/search_hidden_channels2_n_layers8_cebe_035_random_EQ1_h32_fold1_cfg008.pth
+model_path: param_results/models/search_hidden_channels2_n_layers8_cebe_0_random_EQ1_h32_fold1_cfg000.pth
+
+# ── Directory of .xyz files to predict on ────────────────────────────────────
+# Each file should be named "molecule_name.xyz" in standard XYZ format.
+# NOTE: The model is trained on carbon 1s CEBEs only. Predictions for
+#       non-carbon atoms (H, N, O, F) are not meaningful.
+predict_dir: /Users/foudaae/AugerNet/data/raw/para_template_cebe #raw exp data as example
+
+# ── Must match the architecture / features used during training ──────────────
+feature_keys: '0'
+
+layer_type: EQ
+hidden_channels: 32
+n_layers: 1

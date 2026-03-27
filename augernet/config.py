@@ -30,7 +30,7 @@ class AugerNetConfig:
     """Complete configuration for a single AugerNet run."""
 
     # Model type and run mode 
-    model: str = 'cebe-gnn'          # 'cebe-gnn' only atm
+    model: str = 'cebe-gnn'          # 'cebe-gnn' | 'auger-gnn' | 'auger-cnn'
     mode: str = 'train'              # cv | train | param | evaluate | predict
 
     # Evaluation on exp.evaluation data 
@@ -79,7 +79,6 @@ class AugerNetConfig:
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
 
-
     # evaluate / predict modes
     model_path: str = ''             # relative path to a saved .pth model file
     predict_dir: str = ''            # directory of .xyz files for predict mode
@@ -101,6 +100,36 @@ class AugerNetConfig:
     model_tag: str = ''              # full filename label: e.g. '035_random_EQ_3'
     model_id: str = ''               # unified filename stem: e.g. 'cebe_035_random_EQ3_h64'
 
+    # ── Spectrum ─────────────────────────────────────────────────────────────────
+    spectrum_type: str = 'stick'                # stick | fitted
+    max_spec_len: int = 300
+    max_ke: int = 273
+    min_ke: int = 200
+    n_points: int = 731
+    fwhm: float = 3.768
+    ke_shift_calc: float = -2.0
+
+    # ── CNN-specific (auger-cnn) ─────────────────────────────────────────
+    architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
+    train_data: str = ''             # path to CNN training pickle
+    eval_data: str = ''              # path to CNN eval pickle
+    exp_data: str = ''               # path to CNN experimental pickle
+    use_augmented: bool = True       # normalised delta_be augmentation
+    augmented_scaled: bool = False   # scaled delta_be augmentation
+    delta_be_scale: float = 100.0    # scale factor for delta_be
+    late_fusion: bool = False        # inject delta_be into FC head
+    use_cosine_schedule: bool = True # cosine-annealing LR schedule
+    broadening_fwhm: float = 1.6    # FWHM for Gaussian broadening (eV)
+    energy_min: float = 200.0        # energy grid minimum (eV)
+    energy_max: float = 273.0        # energy grid maximum (eV)
+    n_spectrum_points: int = 731     # number of spectrum grid points
+    merge_scheme: str = 'none'       # class merging scheme
+    label_smoothing: float = 0.0     # label smoothing (0 = off)
+    mixup_alpha: float = 0.0         # mixup alpha (0 = off)
+    reuse_splits: bool = True        # reuse split files across runs
+    cv_suffix: str = ''              # suffix for CNN output filenames
+
+
     # ─────────────────────────────────────────────────────────────────────
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -116,8 +145,8 @@ class AugerNetConfig:
         # Normalise the string form so it's always canonical
         self.feature_keys = compute_feature_tag(self.feature_keys_parsed)
 
-        # ── norm_stats_file (CEBE) ──────────────────────────────────────
-        if self.model == 'cebe-gnn' and not self.norm_stats_file:
+        # ── norm_stats_file (CEBE only) ──────────────────────────
+        if not self.norm_stats_file and self.model == 'cebe-gnn':
             self.norm_stats_file = os.path.join(
                 DATA_PROCESSED_DIR, 'cebe_norm_stats.pt'
             )
@@ -149,7 +178,7 @@ class AugerNetConfig:
         #   {model_id}_cv_summary.json     (CV summary)
         #   etc.
 
-        if self.model == 'cebe-gnn':
+        if self.model in ('cebe-gnn', 'auger-gnn'):
             self.feature_tag = compute_feature_tag(self.feature_keys_parsed)
 
             # Start building model_tag from pure feature_tag
@@ -163,10 +192,16 @@ class AugerNetConfig:
             # model_id — single unified stem for ALL output filenames.
             # Format: cebe_{feature_tag}_{split}_{layer_type}{n_layers}_h{hidden}
             # Example: cebe_035_random_EQ3_h64
-            self.model_id = (
-                f"cebe_{self.feature_tag}_{self.split_method}"
-                f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-            )
+            if self.model == 'cebe-gnn': 
+                self.model_id = (
+                    f"cebe_{self.feature_tag}_{self.split_method}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                )
+            if self.model == 'auger-gnn':
+                self.model_id = (
+                    f"auger_{self.feature_tag}_{self.split_method}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                )
 
             # In predict / evaluate mode, if model_path is given, infer
             # model_id from the filename so output files match the loaded
@@ -176,8 +211,27 @@ class AugerNetConfig:
                 stem = os.path.splitext(os.path.basename(self.model_path))[0]
                 # Strip trailing _foldN if present
                 stem = _re.sub(r'_fold\d+$', '', stem)
-                if stem.startswith('cebe_'):
+                if stem.startswith(('cebe_', 'auger_')):
                     self.model_id = stem
+
+        elif self.model == 'auger-cnn':
+            # CNN model — model_id uses split method + CNN suffix
+            # The CNN doesn't use GNN feature_keys / layer_type.
+            _split = getattr(self, 'split_method', 'size')
+            _ms = getattr(self, 'merge_scheme', 'none')
+            _fwhm = getattr(self, 'broadening_fwhm', 1.6)
+            _fwhm_str = f"fwhm{str(_fwhm).replace('.', 'pt')}"
+            parts = ['cnn', _split]
+            if _ms != 'none':
+                parts.append(_ms)
+            parts.append(_fwhm_str)
+            self.model_id = '_'.join(parts)
+
+            # cv_suffix for CNN output filenames
+            self.cv_suffix = f"_{_split}"
+            if _ms != 'none':
+                self.cv_suffix += f"_{_ms}"
+            self.cv_suffix += f"_{_fwhm_str}"
 
         return self
 

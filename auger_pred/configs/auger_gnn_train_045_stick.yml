@@ -1,0 +1,77 @@
+# =============================================================================
+#  AugerNet — Auger GNN Default Configuration
+# =============================================================================
+#
+#  Run with:
+#    python -m augernet --model auger-gnn --mode train --config configs/auger_gnn_default.yml
+#
+#  Supports two spectrum modes (set spectrum_type):
+#    stick  — separate singlet + triplet stick spectra (trains 2 models/fold)
+#    fitted — combined Gaussian-broadened spectrum (trains 1 model/fold)
+#
+# =============================================================================
+
+# ── Identity ─────────────────────────────────────────────────────────────────
+model: auger-gnn
+mode: train
+
+# ── Run flags ────────────────────────────────────────────────────────────────
+run_evaluation: true
+run_unit_tests: true
+
+# ── K-fold ───────────────────────────────────────────────────────────────────
+n_folds: 10
+train_fold: 1
+split_method: butina
+
+# Node Feature Specification
+#   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot, 
+#   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE), 
+#               5=e_score,      6=env_onehot
+feature_keys: '045'                # skipatom_200 + atomic_be + e_score
+
+# ── Model hyper-parameters ───────────────────────────────────────────────────
+layer_type: EQ
+hidden_channels: 64
+n_layers: 3
+num_epochs: 300
+patience: 30
+batch_size: 24
+learning_rate: 0.003
+random_seed: 42
+
+# ── Optimizer ────────────────────────────────────────────────────────────────
+optimizer_type: adamw
+weight_decay: 1.0e-4
+gradient_clip_norm: 1.0
+warmup_epochs: 10
+min_lr: 1.0e-7
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+scheduler_type: onecycle            # cosine | onecycle
+pct_start: 0.3
+
+# ── Spectrum ─────────────────────────────────────────────────────────────────
+spectrum_type: stick               # stick | fitted
+max_spec_len: 300
+max_ke: 273
+min_ke: 200.0
+n_points: 731
+fwhm: 3.768
+ke_shift_calc: -2.0
+
+# ── Hyperparameter search grids ─────────────────────────────────────────────
+# Used when spectrum_type=stick
+param_grid:
+  scheduler_type:  [onecycle]
+  learning_rate:   [0.003, 0.001]
+  n_layers:        [6, 8, 10]
+  hidden_channels: [64, 96, 128]
+  weight_decay:    [1.0e-4, 5.0e-4]
+
+# Uncomment to use when spectrum_type=fitted:
+# param_grid:
+#   scheduler_type:  [cosine, onecycle]
+#   learning_rate:   [0.001, 0.0003]
+#   weight_decay:    [1.0e-4, 5.0e-4, 1.0e-3]
+#   hidden_channels: [64, 96]
