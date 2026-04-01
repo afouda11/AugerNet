@@ -33,7 +33,7 @@ jobs:
         # uv sync reads uv.lock and installs the full locked environment
         # (including torch, torch-scatter, torch-sparse, rdkit, etc.) into
         # a local .venv.  On a cache hit this is nearly instant.
-        run: uv sync --extra test
+        run: uv sync
 
       - name: Run tests
         run: uv run pytest tests/ -v --tb=short

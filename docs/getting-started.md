@@ -2,25 +2,27 @@
 
 ## Installation
 
-Requires Python ≥ 3.13 and [`uv`](https://docs.astral.sh/uv/).
+Requires Python >= 3.10. Install with [conda](https://docs.conda.io/en/latest/miniconda.html)
+or [uv](https://docs.astral.sh/uv/).
+
+```bash
+# Clone the repository
+git clone https://github.com/afouda11/AugerNet.git
+cd AugerNet
+
+# Create the conda environment (installs all dependencies + the package)
+conda env create -f environment.yml
+conda activate augernet
+```
+
+### uv alternative
 
 ```bash
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Clone the repository
-git clone https://github.com/afouda11/AugerNet.git
-cd AugerNet
-
 # Install all dependencies
 uv sync
-```
-
-### Conda alternative
-
-```bash
-conda env create -f environment.yml
-conda activate augernet
 ```
 
 !!! note
@@ -32,14 +34,14 @@ conda activate augernet
 ## Quick Start
 
 All runs are controlled by a single YAML config file. Example configs are provided in
-`config_examples/`.
+`examples/gnn_cebe_configs/`.
 
 ```bash
-# Run with uv
-uv run augernet --config config_examples/train.yml
+# With conda
+python -m augernet --config examples/gnn_cebe_configs/train.yml
 
-# Or with plain Python (after activating your environment)
-python -m augernet --config config_examples/train.yml
+# With uv
+uv run python -m augernet --config examples/gnn_cebe_configs/train.yml
 ```
 
 ## Data Preparation
@@ -60,10 +62,10 @@ AugerNet/
 │   └── augernet/                # Python package (src layout)
 │       ├── __init__.py
 │       ├── __main__.py          # CLI entry point
-│       ├── config.py            # YAML → AugerNetConfig dataclass
+│       ├── config.py            # YAML -> AugerNetConfig dataclass
 │       ├── train_driver.py      # Mode dispatch, CV, param search
 │       ├── backend_cebe.py      # CEBE model hooks
-│       ├── feature_assembly.py  # Runtime feature selection & scaling
+│       ├── feature_assembly.py  # Runtime feature selection and scaling
 │       ├── gnn_train_utils.py   # MPNN model, train loop, unit tests
 │       ├── build_molecular_graphs.py
 │       └── evaluation_scripts/
@@ -71,11 +73,11 @@ AugerNet/
 ├── scripts/
 │   ├── prepare_data.py
 │   └── export_best_model.py
-├── config_examples/
+├── examples/
+│   └── gnn_cebe_configs/        # Example YAML configs for each run mode
 ├── data/
 │   ├── raw/
 │   └── processed/
 ├── artifacts/
-├── results/                     # Runtime outputs (gitignored)
 └── pyproject.toml
 ```

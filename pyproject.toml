@@ -15,6 +15,7 @@ dependencies = [
     "numba>=0.63.1",
     "numpy>=1.26.4",
     "pandas>=2.2.3",
+    "pytest>=8.0",
     "pyyaml>=6.0.3",
     "rdkit>=2025.03.1",
     "scikit-learn>=1.7.2",
@@ -44,9 +45,6 @@ packages = ["src/augernet"]
 docs = [
     "mkdocs-material",
     "mkdocstrings[python]",
-]
-test = [
-    "pytest>=8.0",
 ]
 
 [project.scripts]
