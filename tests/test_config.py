@@ -103,11 +103,6 @@ class TestAugerNetConfigResolve:
         cfg.resolve()
         assert cfg.feature_keys == "035"
 
-    def test_feature_tag_set(self):
-        cfg = AugerNetConfig(feature_keys="035")
-        cfg.resolve()
-        assert cfg.feature_tag == "035"
-
     def test_feature_keys_parsed(self):
         cfg = AugerNetConfig(feature_keys="035")
         cfg.resolve()

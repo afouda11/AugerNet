@@ -34,11 +34,14 @@ uv sync
 ## Quick Start
 
 All runs are controlled by a single YAML config file. Example configs are provided in
-`examples/gnn_cebe_configs/`.
+`examples/`.
 
 ```bash
-# With conda
-python -m augernet --config examples/gnn_cebe_configs/train.yml
+# CEBE GNN — cross-validation
+python -m augernet --config examples/gnn_cebe_configs/cv.yml
+
+# Auger CNN — train
+python -m augernet --config examples/auger_cnn_configs/train.yml
 
 # With uv
 uv run python -m augernet --config examples/gnn_cebe_configs/train.yml
@@ -59,25 +62,37 @@ python scripts/prepare_data.py
 ```
 AugerNet/
 ├── src/
-│   └── augernet/                # Python package (src layout)
+│   └── augernet/                    # Python package (src layout)
 │       ├── __init__.py
-│       ├── __main__.py          # CLI entry point
-│       ├── config.py            # YAML -> AugerNetConfig dataclass
-│       ├── train_driver.py      # Mode dispatch, CV, param search
-│       ├── backend_cebe.py      # CEBE model hooks
-│       ├── feature_assembly.py  # Runtime feature selection and scaling
-│       ├── gnn_train_utils.py   # MPNN model, train loop, unit tests
+│       ├── __main__.py              # CLI entry point
+│       ├── config.py                # YAML -> AugerNetConfig dataclass
+│       ├── train_driver.py          # Mode dispatch, CV, param search
+│       ├── backend_gnn.py           # Unified GNN backend (cebe-gnn + auger-gnn)
+│       ├── backend_cnn.py           # CNN backend (auger-cnn)
+│       ├── feature_assembly.py      # Runtime feature selection and scaling
+│       ├── gnn_train_utils.py       # MPNN model, train loop, unit tests
+│       ├── cnn_train_utils.py       # AugerCNN1D model, CNN trainer
+│       ├── carbon_dataframe.py      # CarbonDataset for CNN spectra
+│       ├── carbon_environment.py    # Carbon environment patterns and labels
+│       ├── class_merging.py         # Carbon-class merging schemes
+│       ├── spec_utils.py            # Spectrum broadening and processing
 │       ├── build_molecular_graphs.py
+│       ├── eneg_diff.py
 │       └── evaluation_scripts/
-│           └── evaluate_cebe_model.py
+│           ├── evaluate_cebe_model.py
+│           └── evaluate_auger_cnn_model.py
 ├── scripts/
 │   ├── prepare_data.py
 │   └── export_best_model.py
 ├── examples/
-│   └── gnn_cebe_configs/        # Example YAML configs for each run mode
+│   ├── gnn_cebe_configs/            # Example YAML configs for CEBE GNN
+│   └── auger_cnn_configs/           # Example YAML configs for Auger CNN
 ├── data/
 │   ├── raw/
 │   └── processed/
 ├── artifacts/
+├── tests/
+│   ├── test_config.py
+│   └── test_feature_assembly.py
 └── pyproject.toml
 ```

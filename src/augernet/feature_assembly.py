@@ -28,13 +28,12 @@ attributes and is assembled here at training time.
 
 Usage
 -----
->>> from augernet.feature_assembly import assemble_node_features, compute_feature_tag
->>> FEATURE_KEYS = [0, 3, 5]          # skipatom_200 + atomic_be + e_score
->>> FEATURE_TAG  = compute_feature_tag(FEATURE_KEYS)   # '035'
+>>> from augernet.feature_assembly import assemble_node_features, parse_feature_keys
+>>> feature_keys_parsed = parse_feature_keys('035')  # [0, 3, 5]
 >>>
 >>> # Before creating DataLoader — modifies data.x in-place
 >>> for data in data_list:
-...     assemble_node_features(data, FEATURE_KEYS)
+...     assemble_node_features(data, feature_keys_parsed)
 """
 
 import torch
@@ -78,21 +77,20 @@ def compute_feature_tag(feature_keys: Sequence[int]) -> str:
     return ''.join(str(k) for k in sorted(feature_keys))
 
 
-def parse_feature_keys(tag) -> List[int]:
+def parse_feature_keys(tag: str) -> List[int]:
     """
     Parse a compact feature-key string into a sorted list of ints.
 
-    Accepts both the compact string form and the list-of-int form
-    (for backward compatibility with old configs).
+    Each character in the string is one feature key digit.
 
     >>> parse_feature_keys('035')
     [0, 3, 5]
-    >>> parse_feature_keys([0, 3, 5])
-    [0, 3, 5]
+    >>> parse_feature_keys('7')
+    [7]
     """
-    if isinstance(tag, (list, tuple)):
-        return sorted(int(k) for k in tag)
     tag = str(tag).strip()
+    if not tag:
+        return []
     keys = sorted(int(ch) for ch in tag)
     unknown = [k for k in keys if k not in FEATURE_CATALOG]
     if unknown:
