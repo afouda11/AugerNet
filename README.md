@@ -371,13 +371,11 @@ AugerNet/
       eneg_diff.py                      # Electronegativity scoring
       evaluation_scripts/
         evaluate_cebe_model.py          # CEBE evaluation plots and metrics
-        evaluate_auger_cnn_model.py     # CNN evaluation plots and metrics
   scripts/
     prepare_data.py                     # Regenerate processed datasets from raw
     export_best_model.py                # Export best CV fold to artifacts/
   examples/
     gnn_cebe_configs/                   # Example YAML configs for CEBE GNN
-    auger_cnn_configs/                  # Example YAML configs for Auger CNN
   data/
     raw/                                # Raw XYZ + CEBE files
     processed/                          # Pre-built PyG datasets + CNN pickles
@@ -387,9 +385,14 @@ AugerNet/
     model_weights/
     plots/
   tests/
+    conftest.py 
     test_config.py
     test_feature_assembly.py
-  environment.yml
+    test_carbon_environment.py
+    test_config.py
+    test_eneg_diff.py
+    test_gnn_utils.py
+  environment.ym
   pyproject.toml
   README.md
 ```
