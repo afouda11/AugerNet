@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import numpy as np
 import torch
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Tuple
 from sklearn.model_selection import KFold, GroupKFold
 
 from augernet import gnn_train_utils as gtu
