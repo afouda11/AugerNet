@@ -37,6 +37,7 @@ from skipatom import SkipAtomInducedModel # Alt. options: OneHotVectors, RandomV
 
 from . import eneg_diff as ed
 from . import carbon_environment as ce
+from . import spec_utils
 
 import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -586,14 +587,17 @@ def _compute_cebe_normalization_stats(cebe_dir, mol_list):
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
 
-def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False):
+def build_graphs(data_type, mol_file="mol_list.txt", 
+                 auger_spin=None, auger_max_ke=273,
+                 auger_max_spec_len = 300,
+                 DEBUG=False):
     """
     Process calculated CEBE data using the feature-store approach.
     
     All node features are stored as separate ``data.feat_*`` attributes.
     ``data.x`` contains only the category_feature.
     """
-    mol_dir = os.path.join(DATA_RAW_DIR, data_dir)
+    mol_dir = os.path.join(DATA_RAW_DIR, data_type)
 
     skipatom_dir = os.path.join(DATA_RAW_DIR, "skipatom")
 
@@ -607,15 +611,15 @@ def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False)
     norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
 
     # Calculate and save norm stats for calc data
-    if data_type == 'calc':
+    if data_type == 'calc_cebe':
         mean, std = _compute_cebe_normalization_stats(mol_dir, mol_list)
         norm_stats = {'mean': mean, 'std': std}
         print("Normalization statistics:", norm_stats)
         torch.save(norm_stats, norm_stats_path)
 
     # Load norm stats  from calc data for exp eval and other predictions
-    if data_type in ['exp', 'pes']:
-        norm_stats = torch.load(norm_stats_path, weights_only=False)
+    if data_type in ['exp_cebe', 'calc_auger', 'eval_auger']:
+        norm_stats = torch.load(norm_stats_path)
         mean = norm_stats['mean']
         std = norm_stats['std']
 
@@ -632,24 +636,47 @@ def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False)
         cebe_path = f"{mol_dir}/{mol_name}_out.txt"
         cebe = np.loadtxt(cebe_path)
 
+        if data_type in ['calc_auger', 'eval_auger']:
+            spec_out, spec_len = spec_utils.extract_spectra(
+                                        data_type, mol_dir, mol_name, 
+                                        auger_spin, auger_max_ke, 
+                                        auger_max_spec_len) 
+
         #Use to differentiate between cebe, auger sing, auger trip
-        category_feature=np.array([1, 0, 0])
+        if data_type in ['calc_cebe', 'exp_cebe']: 
+            category_feature=np.array([1, 0, 0])
+        if data_type in ['calc_auger', 'eval_auger']:
+            if auger_spin == 'singlet': 
+                category_feature=np.array([0, 1, 0])
+            if auger_spin == 'triplet': 
+                category_feature=np.array([0, 0, 1])
+
         node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
             _build_node_and_edge_features(mol, all_encoders, category_feature, cebe)
 
-        # Build targets (same logic as v1)
-        out = []
-        for n, val in enumerate(cebe):
-            if val == -1:
-                out.append(-1)
-            else:
-                ref_e = atomic_be[n].item()
-                dum = ref_e - val
-                #Mean std normalized output, across the full calc dataset
-                out.append((dum - mean) / std)
+        if data_type in ['calc_cebe', 'exp_cebe']:
+            # Build targets (same logic as v1)
+            out = []
+            for n, val in enumerate(cebe):
+                if val == -1:
+                    out.append(-1)
+                else:
+                    ref_e = atomic_be[n].item()
+                    dum = ref_e - val
+                    #Mean std normalized output, across the full calc dataset
+                    out.append((dum - mean) / std)
 
-        y = torch.FloatTensor(out)
-        node_mask = [0. if n == -1 else 1. for n in out]
+            y = torch.FloatTensor(out)
+
+        if data_type in ['calc_auger', 'eval_auger']:
+            spec_out_array = np.array(spec_out)
+            y = torch.from_numpy(spec_out_array).float()
+            mask_rows = ~(y.abs().sum(dim=2) == 0)
+            mask_flat = mask_rows.repeat(1, 2).float()
+            y = y.transpose(1, 2).reshape(len(xyz_symbols), auger_max_spec_len * 2)
+
+
+        node_mask = [0. if n == -1 else 1. for n in cebe]
 
         # Store original CEBE values (eV) so evaluation can display them
         # without round-trip precision loss through normalize/denormalize.
@@ -658,18 +685,34 @@ def build_cebe_graphs(data_type, data_dir, mol_file="mol_list.txt", DEBUG=False)
             dtype=torch.float64,
         )
 
-        data = Data(
-            x=x, edge_index=edge_index, edge_attr=edge_attr,
-            node_mask=torch.FloatTensor(node_mask),
-            y=y.view(-1, 1), 
-            pos=torch.tensor(pos, dtype=torch.float), 
-            atomic_be=atomic_be,
-            atom_symbols=xyz_symbols, 
-            true_cebe=true_cebe,
-            smiles=smiles, 
-            mol_name=mol_name,
-            carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
-        )
+        if data_type in ['calc_cebe', 'exp_cebe']: 
+            data = Data(
+                x=x, edge_index=edge_index, edge_attr=edge_attr,
+                node_mask=torch.FloatTensor(node_mask),
+                y=y.view(-1, 1), 
+                pos=torch.tensor(pos, dtype=torch.float), 
+                atomic_be=atomic_be,
+                atom_symbols=xyz_symbols, 
+                true_cebe=true_cebe,
+                smiles=smiles, 
+                mol_name=mol_name,
+                carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+            )
+        if data_type in ['calc_auger', 'eval_auger']:
+            data = Data(
+                x=x, edge_index=edge_index, edge_attr=edge_attr,
+                node_mask=torch.FloatTensor(node_mask),
+                y=y.view(-1, 1),
+                mask_bin=mask_flat,
+                spec_len=spec_len,
+                pos=torch.tensor(pos, dtype=torch.float), 
+                atomic_be=atomic_be,
+                true_cebe=true_cebe,
+                atom_symbols=xyz_symbols, 
+                smiles=smiles, 
+                mol_name=mol_name,
+                carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+            )
 
         # Store all features as separate attributes
         for attr_name, tensor in node_features.items():

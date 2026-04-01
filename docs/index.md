@@ -1,13 +1,25 @@
 # AugerNet
 
-GNN predictions of carbon 1s core-electron binding energies (CEBEs) from molecular geometry.
+Machine-learning predictions of carbon 1s core-electron binding energies (CEBEs)
+and Auger-electron spectra from molecular geometry.
 
 ## Overview
 
-Given a set of `.xyz` files, AugerNet builds molecular graphs, encodes atomic environments
-using a configurable set of node features (SkipAtom embeddings, atomic binding energies,
-electronegativity scores, etc.), and predicts per-atom C 1s CEBEs using an equivariant or
-invariant message-passing neural network.
+AugerNet provides three model types:
+
+| Model        | Config name  | Task                                               |
+|--------------|--------------|-----------------------------------------------------|
+| **CEBE GNN** | `cebe-gnn`   | Per-atom C 1s CEBE regression from molecular graphs |
+| **Auger GNN**| `auger-gnn`  | Auger spectrum prediction (stick or fitted) from molecular graphs |
+| **Auger CNN**| `auger-cnn`  | Carbon-environment classification from broadened Auger spectra |
+
+Given a set of `.xyz` files, the GNN models build molecular graphs, encode atomic
+environments using a configurable set of node features (SkipAtom embeddings, atomic
+binding energies, electronegativity scores, etc.), and predict per-atom properties
+using equivariant or invariant message-passing neural networks.
+
+The CNN model classifies carbon environments from 1D Gaussian-broadened Auger spectra,
+optionally augmented with CEBE shift information.
 
 ## Quick Links
 
