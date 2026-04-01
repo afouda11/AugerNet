@@ -4,7 +4,7 @@ GNN predictions of carbon 1s core-electron binding energies (CEBEs) from molecul
 
 Given a set of `.xyz` files, AugerNet builds molecular graphs, encodes atomic environments using a configurable set of node features (SkipAtom embeddings, atomic binding energies, electronegativity scores, etc.), and predicts per-atom C 1s CEBEs using an equivariant or invariant message-passing neural network.
 
-A Future relwase of this code will include GNNs prediction of Auger-electron spectroscopy (AES) and CNN classifications of local bond envrionments for AES.
+A Future release of this code will include GNN predictions of Auger-electron spectroscopy (AES) and CNN classifications of local bond envrionments from AES spectra augmented with CEBEs.
 
 ## Installation
 
