@@ -31,7 +31,7 @@ class AugerNetConfig:
 
     # Model type and run mode
     model: str = 'cebe-gnn'          # cebe-gnn | auger-gnn | cnn
-    mode: str = 'train'              # cv | train | param | evaluate | predict
+    mode:  str = 'train'              # cv | train | param | evaluate | predict
 
     # Evaluation on exp.evaluation data
     run_evaluation: bool = True
@@ -91,9 +91,31 @@ class AugerNetConfig:
     pngs_dir: str = ''
 
     # ── computed (populated by resolve()) ───────────────────────────────
-    feature_tag: str = ''            # pure feature identity: e.g. '035'
     feature_keys_parsed: List[int] = field(default_factory=list)  # [0, 3, 5]
     model_id: str = ''               # unified filename stem: e.g. 'cebe_gnn_035_random_EQ3_h64'
+
+    # ── Spectrum ─────────────────────────────────────────────────────────────────
+    spectrum_type: str = 'stick'                # stick | fitted
+    max_spec_len: int = 300
+    max_ke: int = 273
+    min_ke: int = 200
+    n_points: int = 731
+    fwhm: float = 3.768
+    ke_shift_calc: float = -2.0
+
+    # ── CNN-specific (auger-cnn) ─────────────────────────────────────────
+    architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
+    train_data: str = ''             # path to CNN training pickle
+    eval_data: str = ''              # path to CNN eval pickle
+    use_augmented: bool = True       # normalised delta_be augmentation
+    augmented_scaled: bool = False   # scaled delta_be augmentation
+    delta_be_scale: float = 100.0    # scale factor for delta_be
+    use_cosine_schedule: bool = True # cosine-annealing LR schedule
+    broadening_fwhm: float = 1.6     # FWHM for Gaussian broadening (eV)
+    energy_min: float = 200.0        # energy grid minimum (eV)
+    energy_max: float = 273.0        # energy grid maximum (eV)
+    n_spectrum_points: int = 731     # number of spectrum grid points
+    merge_scheme: str = 'none'       # class merging scheme
 
     # ─────────────────────────────────────────────────────────────────────
     def to_dict(self) -> Dict[str, Any]:
@@ -104,11 +126,6 @@ class AugerNetConfig:
         """Fill in computed / derived fields after loading."""
         from augernet.feature_assembly import compute_feature_tag, parse_feature_keys
 
-        # ── Parse feature_keys string → list ────────────────────────────
-        # Accepts '035' (new) or [0, 3, 5] (legacy YAML list).
-        self.feature_keys_parsed = parse_feature_keys(self.feature_keys)
-        # Normalise the string form so it's always canonical
-        self.feature_keys = compute_feature_tag(self.feature_keys_parsed)
 
         # ── norm_stats_file (CEBE) ──────────────────────────────────────
         if self.model == 'cebe-gnn' and not self.norm_stats_file:
@@ -118,31 +135,32 @@ class AugerNetConfig:
 
         cwd = os.getcwd()
 
-        # ── feature_tag + model_id (GNN models) ─────────────────────────
-        # feature_tag  = pure feature identity, e.g. '035'
-        # model_id     = Filename stem:
-        #                cebe_gnn_{feature_tag}_{split}_{layer}{n_layers}_h{hidden}
-        #
-        # Example model_id: cebe_gnn_035_random_EQ3_h64
-        # All output files are then:
-        #   {model_id}_fold{fold}.pth      (model)
-        #   {model_id}_fold{fold}_loss.png (loss curves)
-        #   {model_id}_fold{fold}_scatter.png
-        #   {model_id}_cv_summary.json     (CV summary)
-        #   etc.
-
+        # ── results dir ──────────────────────────────────────────────
+        # By default the results and models are written to current working directory
+        # named by "<model>_<mode>_results"
         if self.model == 'cebe-gnn':
-
-            # ── results dir ──────────────────────────────────────────────
-            # By default the results and models are written to current working directory
-            # named by "<model>_<mode>_results"
             self.result_dir  = os.path.join(cwd, f'cebe_gnn_{self.mode}_results')
+        if self.model == 'auger-gnn':
+            self.result_dir  = os.path.join(cwd, f'auger_gnn_{self.mode}_results')
+        if self.model == 'auger-cnn':
+            self.result_dir  = os.path.join(cwd, f'auger_cnn_{self.mode}_results')
 
-            self.feature_tag = compute_feature_tag(self.feature_keys_parsed)
+        os.makedirs(self.result_dir, exist_ok=True)
 
-            # model_id — stem for output filenames.
-            # Format: cebe_gnn_{feature_tag}_{split}_{layer_type}{n_layers}_h{hidden}
-            # Example: cebe_gnn_035_random_EQ3_h64
+        if self.model in ('cebe-gnn', 'auger-gnn'):
+
+            # ── feature_keys + model_id (GNN models) ────────────────────────
+            # feature_keys = compact string tag, e.g. '035'
+            # model_id     = Filename stem:
+            #                cebe_gnn_{feature_keys}_{split}_{layer}{n_layers}_h{hidden}
+            #
+            # Example model_id: cebe_gnn_035_random_EQ3_h64
+            # All output files are then:
+            #   {model_id}_fold{fold}.pth      (model)
+            #   {model_id}_fold{fold}_loss.png (loss curves)
+            #   {model_id}_fold{fold}_scatter.png
+            #   {model_id}_cv_summary.json     (CV summary)
+            #   etc.
             #
             # For cv/train/param modes this is the default stem used for
             # summary filenames (e.g. *_cv_summary.json).  The backend's
@@ -151,25 +169,50 @@ class AugerNetConfig:
             #
             # For predict/evaluate modes the user supplies model_path in
             # the YAML and model_id is derived from that filename.
+
+            # ── Parse feature_keys string to list ────────────────────────────
+            self.feature_keys_parsed = parse_feature_keys(self.feature_keys)
+            # Normalise the string form so it's always canonical
+            self.feature_keys = compute_feature_tag(self.feature_keys_parsed)
+
             if self.mode in ('predict', 'evaluate') and self.model_path:
                 # User-supplied model file → derive model_id from filename
                 stem = os.path.splitext(os.path.basename(self.model_path))[0]
                 self.model_id = stem
             else:
                 # cv / train / param → build from config fields
-                self.model_id = (
-                    f"cebe_gnn_{self.feature_tag}_{self.split_method}"
-                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-                )
+                if self.model == 'cebe-gnn':
+                    self.model_id = (
+                        f"cebe_gnn_{self.feature_keys}_{self.split_method}"
+                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                    )
+                if self.model == 'auger-gnn':
+                    self.model_id = (
+                        f"auger_gnn_{self.feature_keys}_{self.split_method}"
+                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                    )
+        
+        elif self.model == 'auger-cnn':
+            # CNN model — model_id uses split method + CNN suffix
+            # The CNN doesn't use GNN feature_keys / layer_type.
+            _split = getattr(self, 'split_method', 'size')
+            _ms = getattr(self, 'merge_scheme', 'none')
+            _fwhm = getattr(self, 'broadening_fwhm', 1.6)
+            _fwhm_str = f"fwhm{str(_fwhm).replace('.', 'pt')}"
+            parts = ['auger_cnn', _split]
+            if _ms != 'none':
+                parts.append(_ms)
+            parts.append(_fwhm_str)
+            self.model_id = '_'.join(parts)
 
-        self.models_dir  = os.path.join(self.result_dir, 'models')
         self.outputs_dir = os.path.join(self.result_dir, 'outputs')
-        self.pngs_dir    = os.path.join(self.result_dir, 'pngs')
-
-        os.makedirs(self.result_dir, exist_ok=True)
         os.makedirs(self.outputs_dir, exist_ok=True)
+
+        self.pngs_dir    = os.path.join(self.result_dir, 'pngs')
         os.makedirs(self.pngs_dir, exist_ok=True)
+
         if self.mode in ('train', 'cv', 'param'):
+            self.models_dir  = os.path.join(self.result_dir, 'models')
             os.makedirs(self.models_dir, exist_ok=True)
 
         return self

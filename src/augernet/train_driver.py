@@ -3,10 +3,11 @@ AugerNet Training Driver
 =========================
 
 Contains run_kfold_cv, run_param_search, _build_param_configs,
-and the mode-dispatch logic for CEBE-GNN training.
+and the mode-dispatch logic for the GNN and CNN training.
 
 Model-specific behaviour is provided by the backend module:
-  - augernet.backend_cebe  (CEBE binding-energy GNN)
+  - augernet.backend_gnn  (CEBE and Auger prediction GNN)
+  - augernet.backend_cnn  (bond environment classification CNN)
 
 The backend exports hooks:
   load_data(cfg)                : data dict
@@ -16,13 +17,6 @@ The backend exports hooks:
   run_unit_tests(…)             : None
   run_predict(…)                : None
 
-Usage (from __main__.py)::
-
-    from augernet.train_driver import run
-    from augernet.config import load_config
-
-    cfg = load_config('configs/cebe_default.yml')
-    run(cfg)
 """
 
 from __future__ import annotations
@@ -40,17 +34,14 @@ from augernet.config import AugerNetConfig
 #  Backend registry
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_backend(model_name: str):
+def _get_backend(cfg):
     """Return the backend module for the given model type."""
-    if model_name == 'cebe-gnn':
-        from augernet import backend_cebe as backend
+    if cfg.model == 'auger-cnn':
+        from augernet import backend_cnn
+        return backend_cnn
     else:
-        raise ValueError(
-            f"Unknown model '{model_name}'. "
-            f"Only cebe-gnn currently available"
-        )
-    return backend
-
+        from augernet import backend_gnn
+        return backend_gnn
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cartesian-product param grid expansion
@@ -68,13 +59,15 @@ def _build_param_configs(param_grid: dict) -> List[dict]:
 #  k-fold cross-validation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
+def run_kfold_cv(data, cfg) -> Dict[str, Any]:
     """
     Run full k-fold cross-validation.
 
     Trains one model per fold via backend.train_single_run, saves each
     model, and writes a JSON summary identifying the best fold.
     """
+
+    be = _get_backend(cfg)
     n_folds  = cfg.n_folds
 
     fold_results = []
@@ -84,7 +77,7 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
     print(f"{'#' * 80}")
 
     for fold in range(1, n_folds + 1):
-        result = backend.train_single_run(
+        result = be.train_single_run(
             data, fold, n_folds,
             save_dir=cfg.models_dir,
             output_dir=cfg.outputs_dir,
@@ -95,7 +88,7 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
         # Save loss curve and run evaluation for this fold
         eval_metrics = None
         if cfg.run_evaluation:
-            eval_metrics = backend.run_evaluation(
+            eval_metrics = be.run_evaluation(
                 result, data, fold,
                 output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
@@ -138,7 +131,7 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
 #  Unified hyperparameter search
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_param_search(backend, data, cfg) -> Dict[str, Any]:
+def run_param_search(data, cfg) -> Dict[str, Any]:
     """
     Run hyperparameter search.
 
@@ -146,6 +139,8 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
     ``backend.train_single_run`` with overrides, records the best
     validation loss, and writes a sorted leaderboard JSON.
     """
+    be = _get_backend(cfg)
+
     param_grid = cfg.param_grid
     if not param_grid:
         raise ValueError(
@@ -160,7 +155,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
     n_configs = len(configs)
 
     # Build a unique search identifier for this grid
-    search_id = _param_search_id(cfg, param_grid)
+    search_id = _param_search_id(param_grid)
 
     # Cap epochs for search speed
     search_epochs  = min(cfg.num_epochs, 300)
@@ -195,7 +190,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
 
         t0 = time.time()
         try:
-            result = backend.train_single_run(
+            result = be.train_single_run(
                 data, fold, n_folds,
                 save_dir=cfg.models_dir,
                 output_dir=cfg.models_dir,
@@ -212,7 +207,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
             # Save loss curve and run evaluation for this fold
             eval_metrics = None
             if cfg.run_evaluation:
-                eval_metrics = backend.run_evaluation(
+                eval_metrics = be.run_evaluation(
                     result, data, fold,
                     output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
                     train_results=result.get('train_results'),
@@ -317,29 +312,29 @@ def run(cfg: AugerNetConfig):
         print(f"  Model ID: {cfg.model_id}")
     print(f"{'=' * 80}")
 
-    backend = _get_backend(model_name)
+    be = _get_backend(cfg)
 
     # ── Modes that do NOT need the full training dataset ─────────────────
     if mode == 'predict':
-        _run_predict(backend, cfg)
+        _run_predict(cfg)
         print("\n Predictions Complete.")
         return
 
     # ── Load data ────────────────────────────────────────────────────────
-    data = backend.load_data(cfg)
+    data = be.load_data(cfg)
 
     # ── Dispatch ─────────────────────────────────────────────────────────
     result = None  # may be set by train/cv for unit tests
 
     if mode == 'cv':
-        cv_summary = run_kfold_cv(backend, data, cfg)
+        cv_summary = run_kfold_cv(data, cfg)
         # Load the best-fold model for unit tests
         if getattr(cfg, 'run_unit_tests', False):
             best_fold = cv_summary['best_fold']
-            result = backend.load_saved_model(cfg.models_dir, best_fold, data, cfg)
+            result = be.load_saved_model(cfg.models_dir, best_fold, data, cfg)
 
     elif mode == 'train':
-        result = backend.train_single_run(
+        result = be.train_single_run(
             data, cfg.train_fold, cfg.n_folds,
             save_dir=cfg.models_dir,
             output_dir=cfg.outputs_dir,
@@ -348,7 +343,7 @@ def run(cfg: AugerNetConfig):
         )
 
         if cfg.run_evaluation:
-            backend.run_evaluation(
+            be.run_evaluation(
                 result, data, cfg.train_fold,
                 output_dir=cfg.outputs_dir,
                 png_dir=cfg.pngs_dir, cfg=cfg,
@@ -356,10 +351,10 @@ def run(cfg: AugerNetConfig):
             )
 
     elif mode == 'param':
-        run_param_search(backend, data, cfg)
+        run_param_search(data, cfg)
 
     elif mode == 'evaluate':
-        _run_evaluate(backend, data, cfg)
+        _run_evaluate(data, cfg)
 
     else:
         raise ValueError(
@@ -371,7 +366,7 @@ def run(cfg: AugerNetConfig):
     if getattr(cfg, 'run_unit_tests', False) and mode in ('train', 'cv'):
         if result is not None:
             try:
-                backend.run_unit_tests(result, data, cfg)
+                be.run_unit_tests(result, data, cfg)
             except Exception:
                 pass  # unit tests are optional
 
@@ -382,12 +377,15 @@ def run(cfg: AugerNetConfig):
 #  Evaluate mode (load existing model, run evaluation only)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _run_evaluate(backend, data, cfg):
+def _run_evaluate(data, cfg):
     """Load a saved model from ``model_path`` and evaluate on experimental data.
 
     The user specifies ``model_path`` (relative to cwd) in the YAML config.
     Results are written to ``evaluate_results/``.
     """
+
+    be = _get_backend(cfg)
+
     model_path = cfg.model_path
     if not model_path:
         raise ValueError(
@@ -400,18 +398,23 @@ def _run_evaluate(backend, data, cfg):
 
     print(f"\n  Loading model from: {model_path}")
 
-    calc_data = data['calc_data']
-    model, device = backend._load_model_from_path(
-        model_path, calc_data,
-        layer_type=cfg.layer_type,
-        hidden_channels=cfg.hidden_channels,
-        n_layers=cfg.n_layers,
-    )
+    if cfg.model == 'auger-cnn':
+        # CNN backend: _load_model_from_path takes (path, data, cfg)
+        model, device = be._load_model_from_path(model_path, data, cfg)
+    else:
+        # GNN backend: _load_model_from_path takes (path, calc_data, **kwargs)
+        calc_data = data['calc_data']
+        model, device = be._load_model_from_path(
+            model_path, calc_data,
+            layer_type=cfg.layer_type,
+            hidden_channels=cfg.hidden_channels,
+            n_layers=cfg.n_layers,
+        )
 
     # Try to infer fold from filename (e.g. …_fold3.pth → 3)
     fold = _infer_fold_from_path(model_path)
 
-    backend.run_evaluation(
+    be.run_evaluation(
         (model, device), data, fold,
         output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
     )
@@ -429,13 +432,16 @@ def _infer_fold_from_path(model_path: str):
 #  Predict mode (inference on arbitrary .xyz files)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _run_predict(backend, cfg):
+def _run_predict(cfg):
     """Run predictions on a directory of .xyz files using a saved model.
 
     Requires ``model_path`` and ``predict_dir`` in the YAML config.
     Builds molecular graphs on the fly from the .xyz files, runs inference,
     and writes ``_labels.txt`` and ``_results.txt`` output files.
     """
+
+    be = _get_backend(cfg)
+
     model_path = cfg.model_path
     predict_dir = cfg.predict_dir
 
@@ -460,7 +466,7 @@ def _run_predict(backend, cfg):
 
     fold = _infer_fold_from_path(model_path)
 
-    backend.run_predict(
+    be.run_predict(
         model_path=model_path,
         predict_dir=predict_dir,
         fold=fold,
@@ -484,7 +490,7 @@ def _build_summary(entries: List[dict], cfg) -> dict:
     summary: Dict[str, Any] = {
         'model': cfg.model,
         'model_id': cfg.model_id,
-        'feature_tag': cfg.feature_tag,
+        'feature_keys': cfg.feature_keys,
         'split_method': cfg.split_method,
         'mean_val_loss':   float(np.mean(val_losses)),
         'std_val_loss':    float(np.std(val_losses)),
@@ -616,7 +622,7 @@ def _rename_model_file(result: dict, config_id: str):
         result['model_path'] = new_path
 
 
-def _param_search_id(cfg, param_grid: dict) -> str:
+def _param_search_id(param_grid: dict) -> str:
     """Build a unique search identifier for param-search output filenames.
 
     The id encodes the searched dimensions only — each searched parameter

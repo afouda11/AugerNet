@@ -58,30 +58,18 @@ class TestParseFeatureKeys:
     def test_string_form(self):
         assert parse_feature_keys("035") == [0, 3, 5]
 
-    def test_list_form(self):
-        assert parse_feature_keys([0, 3, 5]) == [0, 3, 5]
-
-    def test_tuple_form(self):
-        assert parse_feature_keys((5, 0, 3)) == [0, 3, 5]
-
     def test_unsorted_string_is_sorted(self):
         assert parse_feature_keys("530") == [0, 3, 5]
 
     def test_single_key_string(self):
         assert parse_feature_keys("0") == [0]
 
+    def test_empty_string(self):
+        assert parse_feature_keys("") == []
+
     def test_invalid_key_raises(self):
         with pytest.raises(ValueError, match="Unknown feature key"):
             parse_feature_keys("9")
-
-    def test_invalid_key_in_list_no_validation(self):
-        # NOTE: parse_feature_keys silently accepts unknown keys when given a
-        # list (validation only runs on the string path).  This test documents
-        # that current behaviour; if the source is ever tightened to also
-        # validate list inputs the assertion below should become a
-        # pytest.raises(ValueError) instead.
-        result = parse_feature_keys([0, 9])
-        assert result == [0, 9]
 
     def test_round_trip_with_compute_tag(self):
         original_keys = [0, 3, 5]

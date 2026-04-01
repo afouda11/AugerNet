@@ -11,16 +11,21 @@ b) Auger-Electron spectroscopy (AES)
 
 Usage
 -----
-  # As a CLI:
+
   python -m augernet --config /path/to/config.yml
   
   # Results and models written to cwd
 
-  # Programmatically:
-  from augernet.config import load_config
-  from augernet.train_driver import run
-  cfg = load_config('configs/cebe_default.yml')
-  run(cfg)
+  # Structure:
+
+	  #	Load config 
+		from augernet.config import load_config
+		cfg = load_config('configs/cebe_default.yml')
+
+	  # Run code:
+	  	from augernet.train_driver import run
+	  	run(cfg)
+
 """
 
 from __future__ import annotations
