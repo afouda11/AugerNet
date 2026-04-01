@@ -38,9 +38,8 @@ Usage
 """
 
 import torch
-import numpy as np
 from copy import copy
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE CATALOG

@@ -2,7 +2,6 @@ import os
 import random
 import numpy as np
 from pathlib import Path
-import pickle as pkl
 import torch
 from torch_geometric.data import InMemoryDataset
 import torch.nn as nn
@@ -16,8 +15,6 @@ from torch.nn import Linear, ReLU, Tanh, Sequential as Seq
 from torch_geometric.utils import to_dense_adj, dense_to_sparse
 from scipy.stats import ortho_group
 
-
-#from gnn.train_utils import MPNN
 
 def seed(seed=0):
     os.environ["PYTHONHASHSEED"]      = str(seed)  # enforce hash-based ops order
