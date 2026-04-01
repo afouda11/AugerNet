@@ -10,14 +10,10 @@ Includes:
 2) CNN classifications of local bond environments (functional groups) from AES spectra augmented with CEBEs
 
 Currently the data for training is not available and will be released when the associated papers come online.
-
-A paper for GNN CEBE predictions will be released soon the full GNN CEBE pipeline will be availble.
-
-This will be soon followed by a manuscript on GNN Auger predictions and CNN bond env classification.
-
-Once the manuscripts are online the software will be fully operational.
-
-However present release contains the data preparation and the model training, evaluating and predicting routines.
+A paper for the GNN CEBE predictions will be released soon and the full GNN CEBE pipeline will become availble.
+This will soon be followed by a manuscript on GNN Auger predictions and CNN bond env classification.
+Once the manuscripts are online, the software will be fully operational.
+The present release contains the routines for data preparation, model training, evaluating and predicting.
 
 AugerNet currently provides **three model types**:
 
