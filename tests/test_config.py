@@ -89,13 +89,13 @@ class TestAugerNetConfigResolve:
     def test_model_id_custom(self):
         cfg = AugerNetConfig(
             feature_keys="035",
-            split_method="stratified",
+            split_method="butina",
             layer_type="IN",
             n_layers=4,
             hidden_channels=128,
         )
         cfg.resolve()
-        assert cfg.model_id == "cebe_gnn_035_stratified_IN4_h128"
+        assert cfg.model_id == "cebe_gnn_035_butina_IN4_h128"
 
     def test_feature_keys_normalised(self):
         """'530' (unsorted) should be normalised to '035'."""
@@ -116,9 +116,10 @@ class TestAugerNetConfigResolve:
     def test_output_dirs_are_strings(self):
         cfg = AugerNetConfig()
         cfg.resolve()
-        assert isinstance(cfg.cv_dir, str)
-        assert isinstance(cfg.train_dir, str)
-        assert isinstance(cfg.evaluate_dir, str)
+        assert isinstance(cfg.result_dir, str)
+        assert isinstance(cfg.models_dir, str)
+        assert isinstance(cfg.outputs_dir, str)
+        assert isinstance(cfg.pngs_dir, str)
 
     def test_norm_stats_file_set_for_cebe(self):
         cfg = AugerNetConfig(model="cebe-gnn")

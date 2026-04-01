@@ -10,9 +10,9 @@ directory for release.
 # Auto-select best fold from CV results (default):
 uv run python scripts/export_best_model.py
 
-# Point at any results directory — type is auto-detected:
-uv run python scripts/export_best_model.py --results-dir results/param
-uv run python scripts/export_best_model.py --results-dir results/train
+# Point at any results directory -- type is auto-detected:
+uv run python scripts/export_best_model.py --results-dir cebe_gnn_param_results
+uv run python scripts/export_best_model.py --results-dir cebe_gnn_train_results
 
 # Overwrite previously exported artifacts:
 uv run python scripts/export_best_model.py --overwrite
