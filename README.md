@@ -70,8 +70,6 @@ Example configs are provided in `examples/`.
 # CEBE GNN — cross-validation
 python -m augernet --config examples/gnn_cebe_configs/cv.yml
 
-# Auger CNN — train
-python -m augernet --config examples/auger_cnn_configs/train.yml
 ```
 
 ## Run Modes
@@ -231,13 +229,6 @@ architecture:
   dropout: 0.3
   dropout_conv: 0.1
 ```
-
-If `architecture` is omitted, the built-in `recommended` preset from
-`cnn_train_utils.py` is used.
-
-The CNN uses **random molecule-level splitting** for cross-validation.
-All carbon atoms from the same molecule are kept in the same fold to
-prevent data leakage.
 
 **model_id format:** `auger_cnn_{merge_scheme}`
 Example: `auger_cnn_none`
