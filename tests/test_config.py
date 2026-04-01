@@ -81,10 +81,10 @@ class TestAugerNetConfigResolve:
         pytest.importorskip("torch")
 
     def test_model_id_default(self):
-        """Default config → cebe_035_random_EQ3_h64"""
+        """Default config → cebe_gnn_035_random_EQ3_h64"""
         cfg = AugerNetConfig()
         cfg.resolve()
-        assert cfg.model_id == "cebe_035_random_EQ3_h64"
+        assert cfg.model_id == "cebe_gnn_035_random_EQ3_h64"
 
     def test_model_id_custom(self):
         cfg = AugerNetConfig(
@@ -95,7 +95,7 @@ class TestAugerNetConfigResolve:
             hidden_channels=128,
         )
         cfg.resolve()
-        assert cfg.model_id == "cebe_035_stratified_IN4_h128"
+        assert cfg.model_id == "cebe_gnn_035_stratified_IN4_h128"
 
     def test_feature_keys_normalised(self):
         """'530' (unsorted) should be normalised to '035'."""

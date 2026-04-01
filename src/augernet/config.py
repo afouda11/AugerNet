@@ -2,8 +2,8 @@
 AugerNet Configuration System
 =============================
 
-Loads training / evaluation configuration from YAML files and provides
-a single ``AugerNetConfig`` dataclass consumed by ``train_driver.py``.
+Loads configuration from YAML files and provides a single
+``AugerNetConfig`` dataclass consumed by ``train_driver.py``.
 
 Usage
 -----
@@ -30,12 +30,14 @@ class AugerNetConfig:
     """Complete configuration for a single AugerNet run."""
 
     # Model type and run mode
-    model: str = 'cebe-gnn'          # 'cebe-gnn' only atm
+    model: str = 'cebe-gnn'          # cebe-gnn | auger-gnn | cnn
     mode: str = 'train'              # cv | train | param | evaluate | predict
 
     # Evaluation on exp.evaluation data
     run_evaluation: bool = True
-    # experimental data split
+    # 113 mols in exp cebe data split into: 
+    #   validation (to assist fold and param search) 
+    #   final evaluation sets
     exp_split: str = 'both'           # all | val | eval | both
     # Sanity check permutation invariance & rotational invariance/equivariance
     run_unit_tests: bool = False
@@ -44,9 +46,6 @@ class AugerNetConfig:
     n_folds: int = 5
     train_fold: int = 3
     split_method: str = 'random'     # random | butina
-
-    # data paths
-    data_path: str = ''              # base data directory (resolved at runtime)
 
     # node features
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
@@ -80,26 +79,21 @@ class AugerNetConfig:
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
 
 
-    # evaluate / predict modes
+    # evaluate + predict modes
     model_path: str = ''             # relative path to a saved .pth model file
+    # predict mode
     predict_dir: str = ''            # directory of .xyz files for predict mode
 
     # directories (auto-computed)
-    script_dir: str = ''             # directory of the backend script
-    project_root: str = ''           # repository root
-    cv_dir: str = ''
-    train_dir: str = ''
-    param_dir: str = ''
-    evaluate_dir: str = ''
-    predict_output_dir: str = ''
-    split_dir: str = ''
-    split_file: str = ''
+    result_dir: str = ''
+    models_dir: str = ''
+    outputs_dir: str = ''
+    pngs_dir: str = ''
 
     # ── computed (populated by resolve()) ───────────────────────────────
     feature_tag: str = ''            # pure feature identity: e.g. '035'
     feature_keys_parsed: List[int] = field(default_factory=list)  # [0, 3, 5]
-    model_tag: str = ''              # full filename label: e.g. '035_random_EQ_3'
-    model_id: str = ''               # unified filename stem: e.g. 'cebe_035_random_EQ3_h64'
+    model_id: str = ''               # unified filename stem: e.g. 'cebe_gnn_035_random_EQ3_h64'
 
     # ─────────────────────────────────────────────────────────────────────
     def to_dict(self) -> Dict[str, Any]:
@@ -122,27 +116,14 @@ class AugerNetConfig:
                 DATA_PROCESSED_DIR, 'cebe_norm_stats.pt'
             )
 
-        # ── output dirs ─────────────────────────────────────────────────
-        # By default results are written relative to the working directory so that
-        # the user controls where outputs land by cd-ing into the right
-        # place before running the CLI.  Evaluation modes will then find
-        # the saved models in the same directory.
         cwd = os.getcwd()
-        results = os.path.join(cwd, 'results')
-        self.cv_dir             = os.path.join(results, 'cv')
-        self.train_dir          = os.path.join(results, 'train')
-        self.param_dir          = os.path.join(results, 'param')
-        self.evaluate_dir       = os.path.join(results, 'evaluate')
-        self.predict_output_dir = os.path.join(results, 'predict')
 
         # ── feature_tag + model_id (GNN models) ─────────────────────────
         # feature_tag  = pure feature identity, e.g. '035'
-        # model_tag    = legacy label (feature_tag + split_method), kept for
-        #                backward compatibility but not used in filenames.
-        # model_id     = THE single unified filename stem used everywhere:
-        #                cebe_{feature_tag}_{split}_{layer}{n_layers}_h{hidden}
+        # model_id     = Filename stem:
+        #                cebe_gnn_{feature_tag}_{split}_{layer}{n_layers}_h{hidden}
         #
-        # Example: cebe_035_random_EQ3_h64
+        # Example model_id: cebe_gnn_035_random_EQ3_h64
         # All output files are then:
         #   {model_id}_fold{fold}.pth      (model)
         #   {model_id}_fold{fold}_loss.png (loss curves)
@@ -151,34 +132,45 @@ class AugerNetConfig:
         #   etc.
 
         if self.model == 'cebe-gnn':
+
+            # ── results dir ──────────────────────────────────────────────
+            # By default the results and models are written to current working directory
+            # named by "<model>_<mode>_results"
+            self.result_dir  = os.path.join(cwd, f'cebe_gnn_{self.mode}_results')
+
             self.feature_tag = compute_feature_tag(self.feature_keys_parsed)
 
-            # Start building model_tag from pure feature_tag
-            parts = [self.feature_tag]
-
-            # Split method is part of the tag for CV-related modes
-            parts.append(self.split_method)
-
-            self.model_tag = '_'.join(parts)
-
-            # model_id — single unified stem for ALL output filenames.
-            # Format: cebe_{feature_tag}_{split}_{layer_type}{n_layers}_h{hidden}
-            # Example: cebe_035_random_EQ3_h64
-            self.model_id = (
-                f"cebe_{self.feature_tag}_{self.split_method}"
-                f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-            )
-
-            # In predict / evaluate mode, if model_path is given, infer
-            # model_id from the filename so output files match the loaded
-            # model rather than the (possibly default) split_method.
+            # model_id — stem for output filenames.
+            # Format: cebe_gnn_{feature_tag}_{split}_{layer_type}{n_layers}_h{hidden}
+            # Example: cebe_gnn_035_random_EQ3_h64
+            #
+            # For cv/train/param modes this is the default stem used for
+            # summary filenames (e.g. *_cv_summary.json).  The backend's
+            # train_single_run() builds its own per-config model_id that
+            # may differ when param search overrides hyperparameters.
+            #
+            # For predict/evaluate modes the user supplies model_path in
+            # the YAML and model_id is derived from that filename.
             if self.mode in ('predict', 'evaluate') and self.model_path:
-                import re as _re
+                # User-supplied model file → derive model_id from filename
                 stem = os.path.splitext(os.path.basename(self.model_path))[0]
-                # Strip trailing _foldN if present
-                stem = _re.sub(r'_fold\d+$', '', stem)
-                if stem.startswith('cebe_'):
-                    self.model_id = stem
+                self.model_id = stem
+            else:
+                # cv / train / param → build from config fields
+                self.model_id = (
+                    f"cebe_gnn_{self.feature_tag}_{self.split_method}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                )
+
+        self.models_dir  = os.path.join(self.result_dir, 'models')
+        self.outputs_dir = os.path.join(self.result_dir, 'outputs')
+        self.pngs_dir    = os.path.join(self.result_dir, 'pngs')
+
+        os.makedirs(self.result_dir, exist_ok=True)
+        os.makedirs(self.outputs_dir, exist_ok=True)
+        os.makedirs(self.pngs_dir, exist_ok=True)
+        if self.mode in ('train', 'cv', 'param'):
+            os.makedirs(self.models_dir, exist_ok=True)
 
         return self
 

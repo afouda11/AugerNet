@@ -1,14 +1,19 @@
 """
-AugerNet — GNN Predictions of Core-Electron Binding Energies
+AugerNet 
 =============================================================
 
-Provides GNN models for core-electron binding energy (CEBE) prediction
-from molecular graphs.
+1) Molecular graph generation and GNN prediction of: 
+  a) core-electron binding energy (CEBE) 
+  b) Auger-Electron spectroscopy (AES) 
+
+2) CNN classifications of local bond environments from AES+CEBE
 
 Usage
 -----
   # As a CLI:
   python -m augernet --config /path/to/config.yml
+  
+  # Results and models written to cwd
 
   # Programmatically:
   from augernet.config import load_config

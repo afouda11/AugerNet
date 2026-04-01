@@ -1,25 +1,41 @@
 """
-AugerNet CLI Entry Point
-========================
+AugerNet 
+=============================================================
 
-Usage:
+1) Molecular graph generation and GNN prediction of: 
+a) core-electron binding energy (CEBE) 
+and
+b) Auger-Electron spectroscopy (AES) 
+
+2) CNN local bond environment classification from AES+CEBE
+
+Usage
+-----
+  # As a CLI:
   python -m augernet --config /path/to/config.yml
+  
+  # Results and models written to cwd
 
-All options and parameters defined in user config.yml file, see README.md
-
+  # Programmatically:
+  from augernet.config import load_config
+  from augernet.train_driver import run
+  cfg = load_config('configs/cebe_default.yml')
+  run(cfg)
 """
 
 from __future__ import annotations
 
 import argparse
-import os
-import sys
-
 
 def main():
     parser = argparse.ArgumentParser(
         prog='augernet',
-        description='AugerNet — training, evaluation and predictions of GNNs for CEBEs.\n'
+        description='AugerNet — training, evaluation and predictions of:\n'
+                    '1) GNNs predictions of: \n'
+                    '  a) core-electron binding energy (CEBE) \n'
+                    '  b) Auger-Electron spectroscopy (AES) \n'
+                    '2) CNN local bond environment classification from AES+CEBE\n'
+                    '\n'
                     'Modes: cv | train | param | evaluate | predict',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,

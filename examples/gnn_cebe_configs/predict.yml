@@ -1,30 +1,32 @@
 # =============================================================================
-#  AugerNet — CEBE GNN Default Config.
+#  AugerNet — CEBE GNN Predict Config
 # =============================================================================
+#
+#  Run predictions on a directory of .xyz files using a saved model
+#  Builds molecular graphs on the fly
 #
 #  Run with:
 #    python -m augernet --config /path/to/this/file/
 #
-#  Results written to cwd/evaluate_results/
+#  Results written to cwd/predict_results/
+#
+#  Current AugerNet models only trained on Carbon 1s BEs and AES, predict will
+#  make predictions on all atoms in the mol, so non carbon values currently not
+#  meaningful.
 # =============================================================================
 
-# Model type and run mode 
-model: cebe-gnn          # cebe-gnn | auger-gnn | cnn
-mode: evaluate           # cv | train | param | evaluate | predict
-
-# Evaluate on exp data immediately after each training cycle
-run_evaluation: true
-# 113 mols in exp cebe data split into: 
-#   validation (to assist fold and param search) 
-#   final evaluation sets
-exp_split: 'both' # 'val' | 'eval' | 'both'
-
-# path to processed evaluation data set interally in AugerNet
+model: cebe-gnn
+mode: predict
 
 # ── Path to the saved model (.pth) ──────────────────────────────────────────
 # Relative to the working directory, or absolute.
-#model_path: /path/to/saved/model/
-model_path: /Users/foudaae/AugerNet/artifacts/model_weights/cebe_035_random_EQ3_h64_fold1.pth
+model_path: /path/to/saved/model/
+
+# ── Directory of .xyz files to predict on ────────────────────────────────────
+# Each file should be named <molecule_name>.xyz in standard XYZ format.
+# NOTE: The model is trained on carbon 1s CEBEs only. Predictions for
+#       non-carbon atoms (H, N, O, F) are not meaningful.
+predict_dir: /path/to/xyz/files/ 
 
 # ── Must match the architecture / features used during training ──────────────
 # Node Feature Specification
@@ -36,4 +38,3 @@ feature_keys: '035'                # skipatom_200 + atomic_be + e_score
 layer_type: EQ
 hidden_channels: 64
 n_layers: 3
-
