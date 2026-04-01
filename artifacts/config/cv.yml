@@ -5,22 +5,28 @@
 #  Run with:
 #    python -m augernet --config /path/to/this/file/
 #
+#  Results and models for each fold written to cwd/cv_results/
 # =============================================================================
 
 # Model type and run mode 
-model: cebe-gnn           # 'cebe-gnn' only atm
-mode: cv               # cv | train | param | evaluate | predict
+model: cebe-gnn       # cebe-gnn | auger-gnn | cnn
+mode: cv              # cv | train | param | evaluate | predict
 
 # Evaluate on exp data immediately after each training cycle
 run_evaluation: true
+# 113 mols in exp cebe data split into: 
+# validation (to assist fold and param) 
+# and 
+# final evaluation () sets
+exp_split: 'val' # 'val' | 'eval' | 'both'
 
 # Sanity check permutation invariance & rotational invariance/equivariance
 run_unit_tests: true 
 
 #  K-fold
-n_folds: 5
-train_fold: 1
-split_method: random
+n_folds: 10
+train_fold: 5
+split_method: butina # butina | random only available atm
 
 # Node Feature Specification
 #   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot, 
@@ -32,11 +38,12 @@ feature_keys: '035'                # skipatom_200 + atomic_be + e_score
 layer_type: EQ                     # EQ (equivariant) | IN (invariant)
 hidden_channels: 64
 n_layers: 3
-num_epochs: 500
+num_epochs: 300
 patience: 30
 batch_size: 24
 learning_rate: 0.001
 random_seed: 42
+dropout: 0.1
 
 # Optimizer
 optimizer_type: adamw
@@ -48,13 +55,4 @@ min_lr: 1.0e-7
 # scheduler
 scheduler_type: 'cosine'   # cosine | onecycle
 pct_start: 0.3           # OneCycleLR only
-
-# Hyperparameter search grid
-param_grid:
-  feature_keys: ['035', '03', '0356']
-  learning_rate: [0.0001, 0.0003, 0.001]
-  weight_decay:  [1.0e-4, 5.0e-4, 1.0e-3]
-  n_layers:      [4, 5, 6]
-  hidden_channels: [48, 64]
-  batch_size:    [24, 32, 48]
 

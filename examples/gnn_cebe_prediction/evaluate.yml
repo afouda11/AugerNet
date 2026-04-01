@@ -1,0 +1,39 @@
+# =============================================================================
+#  AugerNet — CEBE GNN Default Config.
+# =============================================================================
+#
+#  Run with:
+#    python -m augernet --config /path/to/this/file/
+#
+#  Results written to cwd/evaluate_results/
+# =============================================================================
+
+# Model type and run mode 
+model: cebe-gnn          # cebe-gnn | auger-gnn | cnn
+mode: evaluate           # cv | train | param | evaluate | predict
+
+# Evaluate on exp data immediately after each training cycle
+run_evaluation: true
+# 113 mols in exp cebe data split into: 
+#   validation (to assist fold and param search) 
+#   final evaluation sets
+exp_split: 'both' # 'val' | 'eval' | 'both'
+
+# path to processed evaluation data set interally in AugerNet
+
+# ── Path to the saved model (.pth) ──────────────────────────────────────────
+# Relative to the working directory, or absolute.
+#model_path: /path/to/saved/model/
+model_path: /Users/foudaae/AugerNet/artifacts/model_weights/cebe_035_random_EQ3_h64_fold1.pth
+
+# ── Must match the architecture / features used during training ──────────────
+# Node Feature Specification
+#   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot, 
+#   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE), 
+#               5=e_score,      6=env_onehot
+feature_keys: '035'                # skipatom_200 + atomic_be + e_score
+
+layer_type: EQ
+hidden_channels: 64
+n_layers: 3
+
