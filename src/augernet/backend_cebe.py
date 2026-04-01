@@ -75,10 +75,10 @@ def _split_exp_data(exp_data_all, cfg):
     missing_val  = val_names  - {d.mol_name for d in exp_val}
     missing_eval = eval_names - {d.mol_name for d in exp_eval}
     if missing_val:
-        print(f"  ⚠ Val split: {len(missing_val)} names not found in data: "
+        print(f"  Val split: {len(missing_val)} names not found in data: "
               f"{sorted(missing_val)[:5]}")
     if missing_eval:
-        print(f"  ⚠ Eval split: {len(missing_eval)} names not found in data: "
+        print(f"  Eval split: {len(missing_eval)} names not found in data: "
               f"{sorted(missing_eval)[:5]}")
 
     if split == 'val':
@@ -196,9 +196,9 @@ def train_single_run(
     else:
         fk_tag = cfg.feature_tag
 
-    # Compute a per-config model_id that reflects actual hyperparams
+    # Compute a local per-config model_id that reflects actual hyperparams
     model_id = (
-        f"cebe_{fk_tag}_{split_method}"
+        f"cebe_gnn_{fk_tag}_{split_method}"
         f"_{layer_type}{n_layers}_h{hidden_channels}"
     )
 
@@ -207,15 +207,12 @@ def train_single_run(
     gtu.seed(random_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    os.makedirs(save_dir,   exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
     in_channels = calc_data[0].x.size(1)
     edge_dim = calc_data[0].edge_attr.size(1)
 
     if verbose:
         print(f"\n{'=' * 70}")
-        print(f"CEBE MODEL TRAINING — Fold {fold}/{n_folds}")
+        print(f"CEBE GNN TRAINING: Fold {fold}/{n_folds}")
         print(f"{'=' * 70}")
         print(f"  Layer type:  {layer_type}")
         print(f"  Hidden:      {hidden_channels}")
@@ -236,7 +233,7 @@ def train_single_run(
         cluster_ids = get_butina_clusters(smiles_list, cutoff=0.65)
         n_clusters = len(set(cluster_ids))
         if verbose:
-            print(f"  Butina clustering → {n_clusters} clusters "
+            print(f"  Butina clustering: {n_clusters} clusters "
                   f"(cutoff=0.65)")
         gkf = GroupKFold(n_splits=n_folds)
         folds = list(gkf.split(np.arange(n_molecules),
@@ -254,7 +251,7 @@ def train_single_run(
     val_data   = [calc_data[i] for i in val_idx]
 
     if verbose:
-        print(f"  Split → {len(train_data)} train / {len(val_data)} val molecules")
+        print(f"  Split: {len(train_data)} train / {len(val_data)} val molecules")
 
     # ── build model ──────────────────────────────────────────────────────
     model = gtu.MPNN(
@@ -288,7 +285,7 @@ def train_single_run(
     model_path = os.path.join(save_dir, model_filename)
     torch.save(model.state_dict(), model_path)
     if verbose:
-        print(f"\n✓ Saved model  → {model_path}")
+        print(f"\n Saved model to: {model_path}")
 
     # ── results ──────────────────────────────────────────────────────────
     train_losses = [r[1] for r in train_results]
@@ -565,7 +562,7 @@ def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
     )
 
     # ── Inference ────────────────────────────────────────────────────────
-    output_dir = os.path.join(cfg.predict_output_dir, 'outputs')
+    output_dir = cfg.outputs_dir
     os.makedirs(output_dir, exist_ok=True)
 
     file_stem = f"{cfg.model_id}_fold{fold}" if fold is not None else cfg.model_id

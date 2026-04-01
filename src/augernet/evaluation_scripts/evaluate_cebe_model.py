@@ -105,7 +105,7 @@ def load_model(
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"✓ Loaded model  ← {model_path}  ({n_params:,} params)")
+    print(f"Loaded model from: {model_path}  ({n_params:,} params)")
     return model, device
 
 
@@ -159,7 +159,7 @@ def run_evaluation(
     train_results : list, optional
         List of ``[epoch, train_loss, val_loss]`` for loss-curve plotting.
     model_id : str
-        Unified filename stem (e.g. ``'cebe_035_random_EQ3_h64'``).
+        Unified filename stem (e.g. ``'cebe_gnn_035_random_EQ3_h64'``).
         All output files are named ``{model_id}_fold{fold}_<type>.<ext>``.
     config_id : str, optional
         Param-search config identifier (e.g. ``'cfg003'``).
@@ -394,7 +394,7 @@ def run_evaluation(
     print("\n" + "=" * 80)
     print("EVALUATION SUMMARY")
     print("=" * 80)
-    print(f"  R² Score:  {r2:.4f}")
+    print(f"  R2 Score:  {r2:.4f}")
     print(f"  MAE:       {mae:.4f} eV")
     print(f"  STD:       {std_res:.4f} eV")
     print("=" * 80)
@@ -455,7 +455,7 @@ def run_pes_evaluation(
     pes_raw_dir : str
         Path to ``data/raw/cebe_pes_eval/`` containing ``*_pes.txt`` files.
     model_id : str
-        Unified filename stem (e.g. ``'cebe_035_random_EQ3_h64'``).
+        Unified filename stem (e.g. ``'cebe_gnn_035_random_EQ3_h64'``).
     """
     os.makedirs(png_dir, exist_ok=True)
 
@@ -519,7 +519,7 @@ def run_pes_evaluation(
         }
 
     if n_skipped > 0:
-        print(f"  ⚠ Skipped {n_skipped} structures with isolated nodes "
+        print(f"  :wSkipped {n_skipped} structures with isolated nodes "
               f"(bond dissociation beyond RDKit cutoff)")
 
     # ── Plot each molecule ──────────────────────────────────────────────
@@ -534,7 +534,7 @@ def run_pes_evaluation(
         # Load geometric coordinate from *_pes.txt
         pes_file = os.path.join(pes_raw_dir, f'{mol_name}_pes.txt')
         if not os.path.exists(pes_file):
-            print(f"  ⚠ PES file not found: {pes_file}")
+            print(f"  PES file not found: {pes_file}")
             ax.set_title(f'{mol_name} (no PES file)')
             continue
 
@@ -549,7 +549,7 @@ def run_pes_evaluation(
         for i in range(n_struct):
             struct_name = f'{mol_name}_{i:02d}'
             if struct_name not in predictions:
-                print(f"  ⚠ Missing graph: {struct_name}")
+                print(f"  Missing graph: {struct_name}")
                 pred_cebe_list.append(np.nan)
                 true_cebe_list.append(np.nan)
                 continue
@@ -653,7 +653,7 @@ def run_pes_evaluation(
     overall_r2 = r2_score(all_true, all_pred)
 
     n_total = sum(m['n_structures'] for m in PES_MOLECULES.values())
-    print(f"\n  Overall PES:  R² = {overall_r2:.4f},  MAE = {overall_mae:.4f} eV  "
+    print(f"\n  Overall PES:  R$^{{2}}$ = {overall_r2:.4f},  MAE = {overall_mae:.4f} eV  "
           f"({n_total - n_skipped}/{n_total} structures evaluated)")
     print("=" * 80)
 
@@ -773,7 +773,7 @@ def main():
 
     # Build model_id for consistent filenames (same format as config.py)
     model_id = (
-        f"cebe_{feature_tag}_standalone"
+        f"cebe_gnn_{feature_tag}_standalone"
         f"_{args.layer_type}{args.n_layers}_h{args.hidden_channels}"
     )
 
@@ -843,7 +843,7 @@ def main():
             model_id=model_id,
         )
 
-    print("\n✓ Done.")
+    print("\n Evaluation Complete")
 
 
 if __name__ == "__main__":

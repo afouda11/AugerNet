@@ -2,21 +2,21 @@
 AugerNet Training Driver
 =========================
 
-Contains ``run_kfold_cv``, ``run_param_search``, ``_build_param_configs``,
+Contains run_kfold_cv, run_param_search, _build_param_configs,
 and the mode-dispatch logic for CEBE-GNN training.
 
 Model-specific behaviour is provided by the backend module:
-  - ``augernet.backend_cebe``  (CEBE binding-energy GNN)
+  - augernet.backend_cebe  (CEBE binding-energy GNN)
 
 The backend exports hooks:
-  load_data(cfg)                → data dict
-  train_single_run(data, …)    → result dict
-  load_saved_model(…)           → (model, device) or result dict
-  run_evaluation(…)             → eval metrics dict
-  run_unit_tests(…)             → None
-  run_predict(…)                → None
+  load_data(cfg)                : data dict
+  train_single_run(data, …)     : result dict
+  load_saved_model(…)           : (model, device) or result dict
+  run_evaluation(…)             : eval metrics dict
+  run_unit_tests(…)             : None
+  run_predict(…)                : None
 
-Usage (from ``__main__.py``)::
+Usage (from __main__.py)::
 
     from augernet.train_driver import run
     from augernet.config import load_config
@@ -72,22 +72,10 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
     """
     Run full k-fold cross-validation.
 
-    Trains one model per fold via ``backend.train_single_run``, saves each
+    Trains one model per fold via backend.train_single_run, saves each
     model, and writes a JSON summary identifying the best fold.
     """
-    cv_dir   = cfg.cv_dir
     n_folds  = cfg.n_folds
-
-    os.makedirs(cv_dir, exist_ok=True)
-
-    models_dir  = os.path.join(cv_dir, 'models')
-    os.makedirs(models_dir,  exist_ok=True)
-
-    outputs_dir = os.path.join(cv_dir, 'outputs')
-    os.makedirs(outputs_dir, exist_ok=True)
-
-    pngs_dir = os.path.join(cv_dir, 'pngs')
-    os.makedirs(pngs_dir, exist_ok=True)
 
     fold_results = []
 
@@ -98,8 +86,8 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
     for fold in range(1, n_folds + 1):
         result = backend.train_single_run(
             data, fold, n_folds,
-            save_dir=models_dir,
-            output_dir=outputs_dir,
+            save_dir=cfg.models_dir,
+            output_dir=cfg.outputs_dir,
             cfg=cfg,
             verbose=True,
         )
@@ -109,7 +97,7 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
         if cfg.run_evaluation:
             eval_metrics = backend.run_evaluation(
                 result, data, fold,
-                output_dir=outputs_dir, png_dir=pngs_dir, cfg=cfg,
+                output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
                 exp_split='val',  # CV uses validation subset only
             )
@@ -127,10 +115,10 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
     _print_cv_summary(fold_results, n_folds, best, has_eval=has_eval)
 
     combined = [r['best_val_loss'] for r in fold_results]
-    print(f"\n  Mean Val Loss: {np.mean(combined):.6f} ± {np.std(combined):.6f}")
+    print(f"\n  Mean Val Loss: {np.mean(combined):.6f} +/- {np.std(combined):.6f}")
     if has_eval:
         eval_maes = [r['eval_mae'] for r in fold_results if r.get('eval_mae') is not None]
-        print(f"  Mean Exp MAE:  {np.mean(eval_maes):.4f} ± {np.std(eval_maes):.4f} eV")
+        print(f"  Mean Exp MAE:  {np.mean(eval_maes):.4f} +/- {np.std(eval_maes):.4f} eV")
     print(f"  Best fold: Fold {best['fold']}  (loss={best['best_val_loss']:.6f})")
 
     # ── Save JSON summary ────────────────────────────────────────────────
@@ -138,10 +126,10 @@ def run_kfold_cv(backend, data, cfg) -> Dict[str, Any]:
     cv_summary['n_folds'] = n_folds
     cv_summary['best_fold'] = best['fold']
 
-    summary_path = os.path.join(cv_dir, f'{cfg.model_id}_cv_summary.json')
+    summary_path = os.path.join(cfg.result_dir, f'{cfg.model_id}_cv_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(cv_summary, f, indent=2, default=str)
-    print(f"\n✓ Saved CV summary → {summary_path}")
+    print(f"\nCV summary saved to: {summary_path}")
 
     return cv_summary
 
@@ -165,20 +153,8 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
             "Add a 'param_grid' section to your YAML file."
         )
 
-    param_dir = cfg.param_dir
     fold      = cfg.train_fold
     n_folds   = cfg.n_folds
-
-    os.makedirs(param_dir, exist_ok=True)
-
-    models_dir = os.path.join(param_dir, 'models')
-    os.makedirs(models_dir, exist_ok=True)
-
-    outputs_dir = os.path.join(param_dir, 'outputs')
-    os.makedirs(outputs_dir, exist_ok=True)
-
-    pngs_dir = os.path.join(param_dir, 'pngs')
-    os.makedirs(pngs_dir, exist_ok=True)
 
     configs = _build_param_configs(param_grid)
     n_configs = len(configs)
@@ -192,7 +168,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
 
     print(f"\n{'#' * 80}")
     print(f"#  HYPERPARAMETER SEARCH  ({n_configs} configurations)")
-    print(f"#  Fold {fold}/{n_folds}  •  max {search_epochs} epochs  •  patience {search_patience}")
+    print(f"#  Fold {fold}/{n_folds}  |  max {search_epochs} epochs  |  patience {search_patience}")
     print(f"{'#' * 80}")
 
     print(f"\nSearch grid:")
@@ -221,8 +197,8 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
         try:
             result = backend.train_single_run(
                 data, fold, n_folds,
-                save_dir=models_dir,
-                output_dir=models_dir,
+                save_dir=cfg.models_dir,
+                output_dir=cfg.models_dir,
                 cfg=cfg,
                 verbose=True,
                 param_file_prefix=search_id,
@@ -238,7 +214,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
             if cfg.run_evaluation:
                 eval_metrics = backend.run_evaluation(
                     result, data, fold,
-                    output_dir=outputs_dir, png_dir=pngs_dir, cfg=cfg,
+                    output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
                     train_results=result.get('train_results'),
                     config_id=config_id,
                     param_file_prefix=search_id,
@@ -271,7 +247,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
                 'elapsed_sec': round(elapsed, 1),
                 'status': f'error: {e}',
             }
-            print(f"  ✗ ERROR: {e}")
+            print(f"ERROR: {e}")
 
         results.append(entry)
 
@@ -288,7 +264,7 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
                              has_eval=has_eval)
 
     best = results[0]
-    print(f"\n  ★ Best config: {best['config_id']}")
+    print(f"\n  Best config: {best['config_id']}")
     for k in sorted(param_grid.keys()):
         print(f"      {k}: {best.get(k)}")
     print(f"      val_loss: {best['best_val_loss']:.6f}")
@@ -310,11 +286,11 @@ def run_param_search(backend, data, cfg) -> Dict[str, Any]:
     summary['best_params'] = {k: best.get(k)
                               for k in sorted(param_grid.keys())}
 
-    summary_path = os.path.join(param_dir,
+    summary_path = os.path.join(cfg.result_dir,
                                 f'{search_id}_{cfg.model_id}_param_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2, default=str)
-    print(f"\n✓ Saved param search summary → {summary_path}")
+    print(f"\nSaved param search summary to: {summary_path}")
 
     return summary
 
@@ -336,7 +312,7 @@ def run(cfg: AugerNetConfig):
     model_name = cfg.model
 
     print(f"\n{'=' * 80}")
-    print(f"  AugerNet — model={model_name}  mode={mode}")
+    print(f"  AugerNet: model={model_name}  mode={mode}")
     if cfg.model_id:
         print(f"  Model ID: {cfg.model_id}")
     print(f"{'=' * 80}")
@@ -346,7 +322,7 @@ def run(cfg: AugerNetConfig):
     # ── Modes that do NOT need the full training dataset ─────────────────
     if mode == 'predict':
         _run_predict(backend, cfg)
-        print("\n✓ Done.")
+        print("\n Predictions Complete.")
         return
 
     # ── Load data ────────────────────────────────────────────────────────
@@ -360,21 +336,13 @@ def run(cfg: AugerNetConfig):
         # Load the best-fold model for unit tests
         if getattr(cfg, 'run_unit_tests', False):
             best_fold = cv_summary['best_fold']
-            models_dir = os.path.join(cfg.cv_dir, 'models')
-            result = backend.load_saved_model(models_dir, best_fold, data, cfg)
+            result = backend.load_saved_model(cfg.models_dir, best_fold, data, cfg)
 
     elif mode == 'train':
-        train_models_dir  = os.path.join(cfg.train_dir, 'models')
-        train_outputs_dir = os.path.join(cfg.train_dir, 'outputs')
-        train_pngs_dir    = os.path.join(cfg.train_dir, 'pngs')
-        os.makedirs(train_models_dir,  exist_ok=True)
-        os.makedirs(train_outputs_dir, exist_ok=True)
-        os.makedirs(train_pngs_dir,    exist_ok=True)
-
         result = backend.train_single_run(
             data, cfg.train_fold, cfg.n_folds,
-            save_dir=train_models_dir,
-            output_dir=train_outputs_dir,
+            save_dir=cfg.models_dir,
+            output_dir=cfg.outputs_dir,
             cfg=cfg,
             verbose=True,
         )
@@ -382,8 +350,8 @@ def run(cfg: AugerNetConfig):
         if cfg.run_evaluation:
             backend.run_evaluation(
                 result, data, cfg.train_fold,
-                output_dir=train_outputs_dir,
-                png_dir=train_pngs_dir, cfg=cfg,
+                output_dir=cfg.outputs_dir,
+                png_dir=cfg.pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
             )
 
@@ -407,7 +375,7 @@ def run(cfg: AugerNetConfig):
             except Exception:
                 pass  # unit tests are optional
 
-    print("\n✓ Done.")
+    print("\n AugerNet run complete\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -424,17 +392,11 @@ def _run_evaluate(backend, data, cfg):
     if not model_path:
         raise ValueError(
             "evaluate mode requires 'model_path' in the config YAML.\n"
-            "  Example:  model_path: train_results/models/cebe_035_random_EQ3_h64_fold3.pth"
+            "  Example:  model_path: train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth"
         )
     model_path = os.path.abspath(model_path)
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
-
-    evaluate_dir = cfg.evaluate_dir
-    outputs_dir = os.path.join(evaluate_dir, 'outputs')
-    png_dir     = os.path.join(evaluate_dir, 'pngs')
-    os.makedirs(outputs_dir, exist_ok=True)
-    os.makedirs(png_dir,     exist_ok=True)
 
     print(f"\n  Loading model from: {model_path}")
 
@@ -451,7 +413,7 @@ def _run_evaluate(backend, data, cfg):
 
     backend.run_evaluation(
         (model, device), data, fold,
-        output_dir=outputs_dir, png_dir=png_dir, cfg=cfg,
+        output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
     )
 
 
@@ -480,7 +442,7 @@ def _run_predict(backend, cfg):
     if not model_path:
         raise ValueError(
             "predict mode requires 'model_path' in the config YAML.\n"
-            "  Example:  model_path: train_results/models/cebe_035_random_EQ3_h64_fold3.pth"
+            "  Example:  model_path: train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth"
         )
     if not predict_dir:
         raise ValueError(
@@ -570,20 +532,20 @@ def _run_entry(result: dict, eval_metrics: dict = None) -> dict:
 
 
 def _print_cv_summary(fold_results, n_folds, best, has_eval=False):
-    """Print a human-readable CV summary table."""
+    """Print CV summary table."""
     print(f"\n{'=' * 90}")
     print(f"  K-FOLD CROSS-VALIDATION SUMMARY  ({n_folds} folds)")
     print(f"{'=' * 90}")
 
     if has_eval:
-        print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}  {'Exp MAE (eV)':>12}  {'Exp R²':>8}")
+        print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}  {'Exp MAE (eV)':>12}  {'Exp R2':>8}")
         print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*8}")
     else:
         print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}")
         print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}")
 
     for r in fold_results:
-        m = ' ◀ best' if r['fold'] == best['fold'] else ''
+        m = ' best' if r['fold'] == best['fold'] else ''
         trn = f"{r['best_train_loss']:>12.6f}" if r.get('best_train_loss') is not None else f"{'—':>12}"
         line = (f"  {r['fold']:>4}  {r['n_epochs']:>6}  "
                 f"{trn}  {r['best_val_loss']:>12.6f}")
@@ -600,7 +562,7 @@ def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
                              has_eval=False):
     """Print the top results from a param search."""
     print(f"\n{'=' * 110}")
-    print(f"  HYPERPARAMETER SEARCH — LEADERBOARD  ({n_configs} configs)")
+    print(f"  HYPERPARAMETER SEARCH LEADERBOARD  ({n_configs} configs)")
     print(f"  Total time: {total_elapsed/60:.1f} minutes")
     print(f"{'=' * 110}")
 
@@ -610,7 +572,7 @@ def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
         header += f"  {k:>10}"
     header += f"  {'TrnLoss':>10}  {'ValLoss':>10}  {'Epochs':>6}  {'Time':>6}"
     if has_eval:
-        header += f"  {'ExpMAE':>10}  {'ExpR²':>8}"
+        header += f"  {'Exp MAE (eV)':>10}  {f'Exp R2':>8}"
     print(header)
     sep = (f"  {'─'*4}  {'─'*6}" +
            ''.join(f"  {'─'*10}" for _ in grid_keys) +

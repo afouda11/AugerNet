@@ -996,11 +996,11 @@ def run_unit_tests(model, data_list, layer_type='IN', batch_size=1):
         loader_copy = DataLoader(copy.deepcopy(data_list[:1]), batch_size=batch_size, shuffle=False)
         passed = permutation_equivariance_unit_test_model(model, loader_copy)
         results['permutation_equivariance_model'] = passed
-        status = '✓ PASS' if passed else '✗ FAIL'
+        status = 'PASS' if passed else 'FAIL'
         print(f"  {status}  Permutation equivariance  (model)")
     except Exception as e:
         results['permutation_equivariance_model'] = False
-        print(f"  ✗ ERROR  Permutation equivariance  (model): {e}")
+        print(f"  ERROR  Permutation equivariance  (model): {e}")
 
     # ── 2. Layer-level permutation equivariance ─────────────────────────
     first_layer = model.convs[0]
@@ -1008,22 +1008,22 @@ def run_unit_tests(model, data_list, layer_type='IN', batch_size=1):
         loader_copy = DataLoader(copy.deepcopy(data_list[:1]), batch_size=batch_size, shuffle=False)
         passed = permutation_equivariance_unit_test_layer(first_layer, loader_copy, lin_in=lin_in)
         results['permutation_equivariance_layer'] = passed
-        status = '✓ PASS' if passed else '✗ FAIL'
+        status = 'PASS' if passed else 'FAIL'
         print(f"  {status}  Permutation equivariance (layer)")
     except Exception as e:
         results['permutation_equivariance_layer'] = False
-        print(f"  ✗ ERROR  Permutation equivariance (layer): {e}")
+        print(f"  ERROR  Permutation equivariance (layer): {e}")
 
     # ── 3. Rotation+translation invariance (model) ──────────────────────
     try:
         loader_copy = DataLoader(copy.deepcopy(data_list[:1]), batch_size=batch_size, shuffle=False)
         passed = rot_trans_invariance_unit_test(model, loader_copy)
         results['rot_trans_invariance_model'] = passed
-        status = '✓ PASS' if passed else '✗ FAIL'
+        status = 'PASS' if passed else 'FAIL'
         print(f"  {status}  Rotation+translation invariance  (model)")
     except Exception as e:
         results['rot_trans_invariance_model'] = False
-        print(f"  ✗ ERROR  Rotation+translation invariance  (model): {e}")
+        print(f"  ERROR  Rotation+translation invariance  (model): {e}")
 
     # ── 4. Rotation+translation invariance (IN layer) or equivariance (EQ layer)
     if layer_type == 'IN':
@@ -1031,21 +1031,21 @@ def run_unit_tests(model, data_list, layer_type='IN', batch_size=1):
             loader_copy = DataLoader(copy.deepcopy(data_list[:1]), batch_size=batch_size, shuffle=False)
             passed = rot_trans_invariance_unit_test(first_layer, loader_copy, lin_in=lin_in)
             results['rot_trans_invariance_layer'] = passed
-            status = '✓ PASS' if passed else '✗ FAIL'
+            status = 'PASS' if passed else 'FAIL'
             print(f"  {status}  Rotation+translation invariance  (IN layer)")
         except Exception as e:
             results['rot_trans_invariance_layer'] = False
-            print(f"  ✗ ERROR  Rotation+translation invariance  (IN layer): {e}")
+            print(f"  ERROR  Rotation+translation invariance  (IN layer): {e}")
     elif layer_type == 'EQ':
         try:
             loader_copy = DataLoader(copy.deepcopy(data_list[:1]), batch_size=batch_size, shuffle=False)
             passed = rot_trans_equivariance_unit_test(first_layer, loader_copy, lin_in=lin_in)
             results['rot_trans_equivariance_layer'] = passed
-            status = '✓ PASS' if passed else '✗ FAIL'
+            status = 'PASS' if passed else 'FAIL'
             print(f"  {status}  Rotation+translation equivariance (EQ layer)")
         except Exception as e:
             results['rot_trans_equivariance_layer'] = False
-            print(f"  ✗ ERROR  Rotation+translation equivariance (EQ layer): {e}")
+            print(f"  ERROR  Rotation+translation equivariance (EQ layer): {e}")
 
     # ── Summary ─────────────────────────────────────────────────────────
     n_pass = sum(v for v in results.values())

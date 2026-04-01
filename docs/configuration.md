@@ -110,10 +110,10 @@ param_grid:
 All output files share a unified `model_id` stem derived from the config:
 
 ```
-cebe_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}
+cebe_gnn_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}
 ```
 
-Example: `cebe_035_random_EQ3_h64`
+Example: `cebe_gnn_035_random_EQ3_h64`
 
 ### Train / CV files (per fold)
 

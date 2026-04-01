@@ -146,7 +146,7 @@ Requires `model_path` in the config.
 
 ```yaml
 mode: evaluate
-model_path: train_results/models/cebe_035_random_EQ3_h64_fold3.pth
+model_path: train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
 ```
 
 The fold number is inferred automatically from the filename.
@@ -160,7 +160,7 @@ No pre-processing is needed — molecular graphs are built on the fly.
 
 ```yaml
 mode: predict
-model_path: train_results/models/cebe_035_random_EQ3_h64_fold3.pth
+model_path: train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
 predict_dir: my_molecules/
 ```
 
@@ -247,10 +247,10 @@ feature_keys: '035'        # SkipAtom-200 + atomic_be + e_score
 All output files use a unified `model_id` stem derived from the config:
 
 ```
-cebe_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}
+cebe_gnn_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}
 ```
 
-For example: `cebe_035_random_EQ3_h64`
+For example: `cebe_gnn_035_random_EQ3_h64`
 
 ### Train / CV mode
 
@@ -343,38 +343,36 @@ shasum -a 256 data/processed/*.pt data/raw/*.tar.gz
 ```
 AugerNet/
 ├── src/
-│   └── augernet/                # Python package (src layout)
-│       ├── __init__.py
-│       ├── __main__.py              # CLI entry point
-│       ├── config.py                # YAML → AugerNetConfig dataclass
-│       ├── train_driver.py          # Mode dispatch, CV, param search
-│       ├── backend_cebe.py          # CEBE model hooks (data, train, eval, predict)
-│       ├── feature_assembly.py      # Runtime feature selection & scaling
-│       ├── gnn_train_utils.py       # MPNN model, train loop, unit tests
-│       ├── build_molecular_graphs.py  # XYZ → PyG graphs
-│       ├── eneg_diff.py             # Electronegativity scoring
+│   └── augernet/                       # Python package (src layout)
+│       ├── __init__.py                 # Sets proc and raw data paths
+│       ├── __main__.py                 # CLI entry point
+│       ├── config.py                   # YAML → AugerNetConfig dataclass
+│       ├── train_driver.py             # Mode dispatch, CV, param search
+│       ├── backend_cebe.py             # CEBE model hooks (data, train, eval, predict)
+│       ├── feature_assembly.py         # Runtime feature selection & scaling
+│       ├── gnn_train_utils.py          # MPNN model, train loop, unit tests
+│       ├── build_molecular_graphs.py   # XYZ → PyG graphs
+│       ├── eneg_diff.py                # Electronegativity scoring
 │       └── evaluation_scripts/
 │           └── evaluate_cebe_model.py  # Evaluation plots & metrics
 ├── scripts/
-│   ├── prepare_data.py          # Regenerate processed datasets from raw
-│   └── export_best_model.py     # Export best CV fold to artifacts/
-├── config_examples/             # Example YAML configs
+│   ├── prepare_data.py                 # Regenerate processed datasets from raw
+│   └── export_best_model.py            # Export best CV fold to artifacts/
+├── examples/gnn_cebe_prediction        # Example cebe-gnn configs for the 5 run modes
 │   ├── train.yml
 │   ├── cv.yml
 │   ├── param.yml
 │   ├── evaluate.yml
 │   └── predict.yml
 ├── data/
-│   ├── raw/                     # Raw XYZ + CEBE files
-│   └── processed/               # Pre-built PyG datasets
-├── artifacts/                   # Release artifacts (tracked in git)
-│   ├── data_manifest.yml        # Zenodo DOI + SHA-256 checksums for data files
-│   ├── config/                  # Training config used for release model
-│   ├── model_weights/           # Best-fold model weights (.pth)
-│   └── plots/                   # Diagnostic plots (loss curves, scatter)
-├── cebe_pred/                   # Publication analysis scripts
-├── results/                     # Runtime outputs (gitignored)
-├── environment.yml              # Conda environment specification
+│   ├── raw/                            # Raw XYZ + CEBE files
+│   └── processed/                      # Pre-built PyG datasets
+├── artifacts/                          # Release artifacts (tracked in git)
+│   ├── data_manifest.yml               # Zenodo DOI + SHA-256 checksums for data files
+│   ├── config/                         # Training config used for release model
+│   ├── model_weights/                  # Best-fold model weights (.pth)
+│   └── plots/                          # Diagnostic plots (loss curves, scatter)
+├── environment.yml                     # Conda environment specification
 ├── pyproject.toml
 └── README.md
 ```

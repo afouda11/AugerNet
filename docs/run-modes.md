@@ -95,7 +95,7 @@ automatically from the filename.
 
 ```yaml
 mode: evaluate
-model_path: results/train/models/cebe_035_random_EQ3_h64_fold3.pth
+model_path: results/train/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
 feature_keys: '035'
 layer_type: EQ
 hidden_channels: 64
@@ -113,7 +113,7 @@ No pre-processing is needed — molecular graphs are built on the fly.
 
 ```yaml
 mode: predict
-model_path: results/train/models/cebe_035_random_EQ3_h64_fold3.pth
+model_path: results/train/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
 predict_dir: my_molecules/
 ```
 
