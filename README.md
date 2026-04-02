@@ -1,6 +1,6 @@
 # AugerNet
 
-Machine-learning for Auger-electron spectroscopy (AES) and x-ray photonelectron spectroscopy 
+Machine-learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)
 
 Includes:
 1) Equivariant GNN predictions of: 
