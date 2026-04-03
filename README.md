@@ -384,15 +384,7 @@ AugerNet/
     config/
     model_weights/
     plots/
-  tests/
-    conftest.py 
-    test_config.py
-    test_feature_assembly.py
-    test_carbon_environment.py
-    test_config.py
-    test_eneg_diff.py
-    test_gnn_utils.py
-  environment.ym
+  environment.yml
   pyproject.toml
   README.md
 ```
