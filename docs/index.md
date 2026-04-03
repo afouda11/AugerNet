@@ -1,25 +1,29 @@
 # AugerNet
 
-Machine-learning predictions of carbon 1s core-electron binding energies (CEBEs)
-and Auger-electron spectra from molecular geometry.
+This doc site is currently acting as template and undergoing updates
 
-## Overview
+Machine-learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)
 
-AugerNet provides three model types:
+Includes:
+1) Equivariant GNN predictions of: 
+  a) core-electron binding energies (CEBE) 
+  b) Auger-Electron spectra (AES) 
+
+2) CNN classifications of local bond environments (functional groups) from AES spectra augmented with CEBEs
+
+Currently the data for training is not available and will be released when the associated papers come online.
+A paper for the GNN CEBE predictions will be released soon and the full GNN CEBE pipeline will become availble.
+This will soon be followed by a manuscript on GNN Auger predictions and CNN bond env classification.
+Once the manuscripts are online, the software will be fully operational.
+The present release contains the routines for data preparation, model training, evaluating and predicting.
+
+AugerNet currently provides **three model types**:
 
 | Model        | Config name  | Task                                               |
 |--------------|--------------|-----------------------------------------------------|
-| **CEBE GNN** | `cebe-gnn`   | Per-atom C 1s CEBE regression from molecular graphs |
+| **CEBE GNN** | `cebe-gnn`   | C 1s CEBE prediction from molecular graphs |
 | **Auger GNN**| `auger-gnn`  | Auger spectrum prediction (stick or fitted) from molecular graphs |
 | **Auger CNN**| `auger-cnn`  | Carbon-environment classification from broadened Auger spectra |
-
-Given a set of `.xyz` files, the GNN models build molecular graphs, encode atomic
-environments using a configurable set of node features (SkipAtom embeddings, atomic
-binding energies, electronegativity scores, etc.), and predict per-atom properties
-using equivariant or invariant message-passing neural networks.
-
-The CNN model classifies carbon environments from 1D Gaussian-broadened Auger spectra,
-optionally augmented with CEBE shift information.
 
 ## Quick Links
 

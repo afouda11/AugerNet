@@ -1,14 +1,14 @@
 site_name: AugerNet
 site_url: https://afouda11.github.io/AugerNet
-site_description: GNN predictions of carbon 1s core-electron binding energies from molecular geometry.
+site_description: Machine-learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)
 repo_url: https://github.com/afouda11/AugerNet
 repo_name: afouda11/AugerNet
 
 theme:
   name: material
   palette:
-    primary: deep purple
-    accent: teal
+    primary: teal
+    accent: amber
   features:
     - navigation.expand
     - navigation.instant

@@ -19,10 +19,11 @@ AugerNet currently provides **three model types**:
 
 | Model        | Config name  | Task                                               |
 |--------------|--------------|-----------------------------------------------------|
-| **CEBE GNN** | `cebe-gnn`   | Per-atom C 1s CEBE regression from molecular graphs |
+| **CEBE GNN** | `cebe-gnn`   | C 1s CEBE prediction from molecular graphs |
 | **Auger GNN**| `auger-gnn`  | Auger spectrum prediction (stick or fitted) from molecular graphs |
 | **Auger CNN**| `auger-cnn`  | Carbon-environment classification from broadened Auger spectra |
 
+Doc site template undergoing updates can be found at https://afouda11.github.io/AugerNet/
 ## Installation
 
 Requires Python >= 3.10 and [conda](https://docs.conda.io/en/latest/miniconda.html).
