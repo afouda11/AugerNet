@@ -1,54 +1,38 @@
 """
-Unified Data Preparation for ALL Model Pipelines
+Data Preparation for All Model Pipelines
 =================================================
 
-Replaces the 3 separate preparation scripts:
-  - cebe_pred/prepare_cebe_data.py         → CEBE GNN
-  - auger_pred/prepare_auger_data.py       → Auger GNN (singlet + triplet)
-  - auger_cnn/prepare_auger_data_cnn.py    → Auger CNN
-
 All outputs are written to  data/processed/  under the project root.
-Carbon environments are assigned ONCE per molecule and used consistently
-across all pipelines.
 
 Feature Store Approach
 ------------------------------------
 ALL possible node features are computed and stored as separate ``data.feat_*``
 attributes during preparation.  ``data.x`` contains only the category_feature.
-Feature selection and scaling are deferred to training time via
+Feature selection is implemented at training time via
 ``feature_assembly.assemble_node_features()``.
 
 File naming:
-  gnn_calc_cebe_data.pt           (CEBE calculated training)
-  gnn_exp_cebe_data.pt            (CEBE experimental evaluation)
-  gnn_sing_calc_auger_data.pt     (Auger singlet calculated)
-  gnn_trip_calc_auger_data.pt     (Auger triplet calculated)
-  gnn_sing_eval_auger_data.pt     (Auger singlet evaluation)
-  gnn_trip_eval_auger_data.pt     (Auger triplet evaluation)
+    Molecular graphs for GNN
+        gnn_calc_cebe_data.pt           (CEBE calculated training)
+        gnn_exp_cebe_data.pt            (CEBE experimental evaluation)
+        gnn_sing_calc_auger_data.pt     (Auger singlet calculated)
+        gnn_trip_calc_auger_data.pt     (Auger triplet calculated)
+        gnn_sing_eval_auger_data.pt     (Auger singlet evaluation)
+        gnn_trip_eval_auger_data.pt     (Auger triplet evaluation)
+
+    Carbon atom Pandas dataframe for CNN
+        cnn_auger_calc.pkl              (Calculated training)
+        cnn_auger_eval.pkl              (Calc. + Exp. evaluation)
 
 CLI Reference
 -------------
   python prepare_data.py [OPTIONS]
 
-Pipeline selection:
-  --skip-cebe          Skip CEBE GNN data preparation
-  --skip-auger-gnn     Skip Auger GNN data preparation
-  --skip-auger-cnn     Skip Auger CNN data preparation
+    --debug              Only generate first 5 in mol_list.txt for testing
+    --verbose, -v        Print detailed per-molecule environment tables
+    --max_ke             Max KE to normalize auger spec energies by, default 273
+    --max_spec_len       Max number of final states in auger spec, default 300
 
-General:
-  --debug              Use small data subset for testing
-  --verbose, -v        Print detailed per-molecule environment tables
-
-Examples
---------
-    # Prepare everything with feature-store approach (default)
-    python prepare_data.py
-
-    # Debug mode (small subset)
-    python prepare_data.py --debug
-
-Run from:
-    /Users/foudaae/AUGER-NET/prepare_data/
 """
 
 import os
@@ -319,7 +303,7 @@ def prepare_auger_cnn(args):
     Prepare Auger CNN data by extracting per-carbon DataFrames
     from the already-processed Auger GNN .pt files.
 
-    Saves one pickle per split (calc singlet, calc triplet, eval singlet, eval triplet).
+    Saves one pickle for calc (singlet + triplet) and eval (singlet + triplet).
     """
     print("\n" + "=" * 80)
     print("Preparing Auger CNN DataFrames from Auger GNN graphs")
@@ -362,12 +346,12 @@ def prepare_auger_cnn(args):
 def main():
 
     parser = argparse.ArgumentParser(
-        description="Unified data preparation for CEBE GNN, Auger GNN, and Auger CNN",
+        description="Data preparation for CEBE GNN, Auger GNN, and Auger CNN",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
     parser.add_argument('--debug', action='store_true',
-                        help='Use small data subset for testing')
+                        help='Only generate first 5 in mol_list.txt for testing')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Print detailed per-molecule environment tables')
     parser.add_argument('--max_ke', default=273, type=int,

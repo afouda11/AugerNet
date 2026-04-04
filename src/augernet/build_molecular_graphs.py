@@ -1,5 +1,5 @@
 """
-Unified Molecular Graph Building Module
+Molecular Graph Building
 =======================================
 
 Builds PyTorch Geometric graphs for molecular property prediction.
@@ -740,7 +740,7 @@ def _taylor_butina_clustering(fp_list, cutoff=0.65):
     fp_list : list of DataStructs.ExplicitBitVect
         Molecular fingerprints.
     cutoff : float
-        Distance cutoff (1 − Tanimoto similarity).  Molecules within
+        Distance cutoff (1 - Tanimoto similarity).  Molecules within
         this distance are placed in the same cluster.
 
     Returns
