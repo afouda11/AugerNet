@@ -464,12 +464,9 @@ def _run_predict(cfg):
     if not os.path.isdir(predict_dir):
         raise FileNotFoundError(f"Predict directory not found: {predict_dir}")
 
-    fold = _infer_fold_from_path(model_path)
-
     be.run_predict(
         model_path=model_path,
         predict_dir=predict_dir,
-        fold=fold,
         cfg=cfg,
     )
 

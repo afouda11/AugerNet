@@ -1,4 +1,4 @@
-"""
+    """
 Unified GNN Backend — model-specific hooks for train_driver.py
 ===============================================================
 
@@ -77,7 +77,7 @@ def _get_fold_split(calc_data, fold, n_folds, split_method, random_seed,
         smiles_list = [d.smiles for d in calc_data]
         cluster_ids = get_butina_clusters(smiles_list, cutoff=0.65)
         if verbose:
-            print(f"  Butina clustering → {len(set(cluster_ids))} clusters "
+            print(f"  Butina clustering: {len(set(cluster_ids))} clusters "
                   f"(cutoff=0.65)")
         gkf = GroupKFold(n_splits=n_folds)
         folds = list(gkf.split(np.arange(n_molecules), groups=cluster_ids))
@@ -182,7 +182,7 @@ def _save_model(model, model_id, fold, save_dir, param_file_prefix=None,
         filename = f"{param_file_prefix}_{filename}"
     path = os.path.join(save_dir, filename)
     torch.save(model.state_dict(), path)
-    print(f"  ✓ Saved model  → {path}")
+    print(f" Saved model from {path}")
     return path
 
 
@@ -446,8 +446,8 @@ def train_single_run(
         print(f"  LR:          {hp['learning_rate']}")
         print(f"  Dropout:     {hp['dropout']}")
         print(f"  Batch:       {hp['batch_size']}")
-        print(f"  Split:       {hp['split_method']}")
-        print(f"  Split → {len(train_idx)} train / {len(val_idx)} val molecules")
+        print(f"  Split method:       {hp['split_method']}")
+        print(f"  Split:       {len(train_idx)} train / {len(val_idx)} val molecules")
         print(f"{'=' * 70}")
 
     in_channels = calc_data[0].x.size(1)
@@ -638,7 +638,7 @@ def _load_model_from_path(
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  ✓ Loaded model  ← {model_path}  ({n_params:,} params)")
+    print(f" Loaded model from {model_path}  ({n_params:,} params)")
     return model, device
 
 
@@ -870,7 +870,8 @@ def run_unit_tests(model, data, cfg):
 #  Predict (inference on arbitrary .xyz files) — CEBE only
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
+def run_predict(*, model_path: str, predict_dir: str, cfg):
+
     """Build graphs from .xyz files, run CEBE inference, and write output.
 
     Currently only supports CEBE-GNN.  Auger predict requires a different
@@ -958,7 +959,8 @@ def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
     # ── Inference ────────────────────────────────────────────────────────
     output_dir = cfg.outputs_dir
 
-    file_stem = f"{cfg.model_id}_fold{fold}" if fold is not None else cfg.model_id
+    #file_stem = f"{cfg.model_id}_fold{fold}" if fold is not None else cfg.model_id
+    file_stem = cfg.model_id
 
     print(f"\n{'=' * 80}")
     print(f"  PREDICT: Running inference on {len(data_list)} molecules")
@@ -989,7 +991,7 @@ def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
             molecule_results[mol_name_raw] = mol_rows
             all_pred.extend([float('nan')] * n_nodes)
             all_atoms.extend(atom_syms)
-            print(f"    ⚠  Skipping {mol_name_raw}: disconnected graph "
+            print(f"  Skipping {mol_name_raw}: disconnected graph "
                   f"({len(nodes_in_edges)}/{n_nodes} nodes in edges)")
             continue
 
@@ -1025,7 +1027,7 @@ def run_predict(*, model_path: str, predict_dir: str, fold, cfg):
     with open(label_path, 'w') as f:
         f.write(f"# CEBE Predictions\n")
         f.write(f"# Model: {cfg.model_id}\n")
-        f.write(f"# NOTE: Only carbon (C) predictions are meaningful.\n")
+        f.write(f"# Note: Only carbon (C) predictions are meaningful.\n")
         f.write(f"#       Non-carbon rows are marked with * and should be ignored.\n")
         f.write(f"# Columns: atom_symbol  pred_BE(eV)\n#\n")
         for mol_name, rows in molecule_results.items():

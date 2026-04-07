@@ -208,8 +208,10 @@ class AugerNetConfig:
         self.outputs_dir = os.path.join(self.result_dir, 'outputs')
         os.makedirs(self.outputs_dir, exist_ok=True)
 
-        self.pngs_dir    = os.path.join(self.result_dir, 'pngs')
-        os.makedirs(self.pngs_dir, exist_ok=True)
+        #no scatter or training loss pngs for predict, just raw values to output
+        if self.mode != 'predict':
+            self.pngs_dir    = os.path.join(self.result_dir, 'pngs')
+            os.makedirs(self.pngs_dir, exist_ok=True)
 
         if self.mode in ('train', 'cv', 'param'):
             self.models_dir  = os.path.join(self.result_dir, 'models')

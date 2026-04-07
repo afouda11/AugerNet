@@ -37,7 +37,7 @@ feature_keys: '035'                # skipatom_200 + atomic_be + e_score
 layer_type: EQ                     # EQ (equivariant) | IN (invariant)
 hidden_channels: 64
 n_layers: 3
-num_epochs: 300
+num_epochs: 3
 patience: 30
 batch_size: 24
 learning_rate: 0.001

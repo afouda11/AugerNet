@@ -49,3 +49,10 @@ docs = [
 
 [project.scripts]
 augernet = "augernet.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "essential: fast tests suitable for CI (GitHub Actions)",
+    "full: longer tests (data prep, real molecule graphs, etc.)",
+]

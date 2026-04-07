@@ -1,0 +1,32 @@
+name: tests
+
+# Run on every push to main and on every pull request.
+# The uv artifact cache (enable-cache: true) means that torch, torch-scatter,
+# torch-sparse, and rdkit wheels are persisted between runs keyed on uv.lock.
+# A cache HIT skips all compilation and reduces install time to seconds;
+# a cache MISS (first run or lock-file change) does a full install.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  essential-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run essential tests
+        run: uv run pytest tests/ -m essential -v --tb=short

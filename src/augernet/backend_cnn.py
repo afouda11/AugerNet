@@ -309,7 +309,7 @@ def train_single_run(
     model_path = os.path.join(save_dir, model_filename)
     torch.save(model.state_dict(), model_path)
     if verbose:
-        print(f"\n✓ Saved model  → {model_path}")
+        print(f"\n Saved model from {model_path}")
 
     hist_df = pd.DataFrame(history)
     hist_path = os.path.join(output_dir,
@@ -386,7 +386,7 @@ def _load_model_from_path(model_path, data, cfg, *, architecture=None,
     model = model.to(device)
     model.eval()
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"✓ Loaded model  ← {model_path}  ({n_params:,} params)")
+    print(f"Loaded model from {model_path}  ({n_params:,} params)")
     return model, device
 
 

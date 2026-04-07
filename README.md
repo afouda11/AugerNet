@@ -330,6 +330,42 @@ them from the raw files in `data/raw/`:
 python scripts/prepare_data.py
 ```
 
+## Tests
+
+Tests are split into two tiers using pytest markers:
+
+| Tier | Marker | Count | Description |
+|------|--------|-------|-------------|
+| **Essential** | `@pytest.mark.essential` | ~40 | Fast tests (config, features, parsing). Run in CI. |
+| **Full** | `@pytest.mark.full` | ~40 | Slower tests (real molecule graphs, model symmetry). Run locally. |
+
+### Running tests
+
+```bash
+# Essential tests only (used in CI / GitHub Actions)
+uv run pytest tests/ -m essential -v --tb=short
+
+# Full suite (all tests)
+uv run pytest tests/ -v --tb=short
+
+# Single file
+uv run pytest tests/test_cebe_gnn_model.py -v
+```
+
+### Test files
+
+| File | What it tests |
+|------|---------------|
+| `test_cebe_gnn_config.py` | Dataclass defaults, `resolve()` derived fields, YAML loading and validation |
+| `test_cebe_gnn_features.py` | Feature key parsing, z-score scaling, node feature assembly, dataset assembly |
+| `test_cebe_gnn_graph.py` | XYZ-to-graph pipeline, bond detection, edge attributes, electronegativity scores, carbon environments |
+| `test_cebe_gnn_model.py` | MPNN forward pass shapes, translation/rotation invariance, permutation equivariance for both EQ and IN layers |
+
+Graph and model tests use a real molecule (`dsgdb9nsd_133427`) from `tests/test_mol/`
+rather than synthetic data. Model symmetry tests verify that CEBE predictions
+are invariant to rotation and translation and equivariant to atom reordering
+properties required by the physics of the problem.
+
 ## Artifact Generation
 
 After running cross-validation, use `scripts/export_best_model.py` to
@@ -357,7 +393,7 @@ AugerNet/
     augernet/                           # Python package (src layout)
       __init__.py                       # Sets data paths
       __main__.py                       # CLI entry point
-      config.py                         # YAML -> AugerNetConfig dataclass
+      config.py                         # YAML to AugerNetConfig dataclass
       train_driver.py                   # Mode dispatch, CV, param search
       backend_gnn.py                    # Unified GNN backend (cebe-gnn + auger-gnn)
       backend_cnn.py                    # CNN backend (auger-cnn)
@@ -368,7 +404,7 @@ AugerNet/
       carbon_environment.py             # Carbon environment patterns and labels
       class_merging.py                  # Carbon-class merging schemes
       spec_utils.py                     # Spectrum broadening and processing
-      build_molecular_graphs.py         # XYZ -> PyG graphs
+      build_molecular_graphs.py         # XYZ to PyG graphs
       eneg_diff.py                      # Electronegativity scoring
       evaluation_scripts/
         evaluate_cebe_model.py          # CEBE evaluation plots and metrics
@@ -377,6 +413,13 @@ AugerNet/
     export_best_model.py                # Export best CV fold to artifacts/
   examples/
     gnn_cebe_configs/                   # Example YAML configs for CEBE GNN
+  tests/
+    conftest.py                         # Shared fixtures and markers
+    test_mol/                           # Real molecule XYZ data for tests
+    test_cebe_gnn_config.py             # Config defaults, resolution, YAML loading
+    test_cebe_gnn_features.py           # Feature tags, parsing, scaling, assembly
+    test_cebe_gnn_graph.py              # XYZ parsing, graph building, node/edge features
+    test_cebe_gnn_model.py              # MPNN construction, forward pass, symmetry tests
   data/
     raw/                                # Raw XYZ + CEBE files
     processed/                          # Pre-built PyG datasets + CNN pickles
