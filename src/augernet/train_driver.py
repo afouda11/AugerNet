@@ -11,8 +11,8 @@ Model-specific behaviour is provided by the backend module:
 
 The backend exports hooks:
   load_data(cfg)                : data dict
-  train_single_run(data, …)     : result dict
-  load_saved_model(…)           : (model, device) or result dict
+  train_single_run(data, …)     : result dict  (receives save_paths from driver)
+  load_saved_model(save_paths, …): (model, device) or result dict
   run_evaluation(…)             : eval metrics dict
   run_unit_tests(…)             : None
   run_predict(…)                : None
@@ -42,6 +42,61 @@ def _get_backend(cfg):
     else:
         from augernet import backend_gnn
         return backend_gnn
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Filename construction (single source of truth for .pth paths)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_save_paths(
+    cfg,
+    fold: int,
+    save_dir: str,
+    *,
+    prefix: str | None = None,
+    config_id: str | None = None,
+) -> Dict[str, str]:
+    """Build the complete dict of ``.pth`` save paths for one training run.
+
+    Parameters
+    ----------
+    cfg : AugerNetConfig
+        Must have ``model_id`` already resolved.
+    fold : int
+        Current fold number (1-indexed).
+    save_dir : str
+        Directory where ``.pth`` files are written.
+    prefix : str, optional
+        Param-search identifier (e.g. ``"search_layer_type2_n_layers3"``).
+    config_id : str, optional
+        Per-configuration label (e.g. ``"cfg003"``).
+
+    Returns
+    -------
+    dict
+        Mapping of logical name to absolute path, e.g.::
+
+            {'model': '/path/to/cebe_gnn_…_fold1.pth'}          # cebe / fitted
+            {'singlet': '…', 'triplet': '…'}                    # auger stick
+
+    Naming convention
+    -----------------
+    Normal:       ``{model_id}[_{tag}]_fold{fold}.pth``
+    Param search: ``{prefix}_{model_id}[_{tag}]_fold{fold}_{config_id}.pth``
+    """
+    model_id = cfg.model_id
+
+    def _fname(tag: str | None = None) -> str:
+        stem = f"{model_id}_{tag}_fold{fold}" if tag else f"{model_id}_fold{fold}"
+        if config_id:
+            stem = f"{stem}_{config_id}"
+        if prefix:
+            stem = f"{prefix}_{stem}"
+        return os.path.join(save_dir, f"{stem}.pth")
+
+    if cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', None) == 'stick':
+        return {'singlet': _fname('singlet'), 'triplet': _fname('triplet')}
+    return {'model': _fname()}
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cartesian-product param grid expansion
@@ -77,9 +132,10 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
     print(f"{'#' * 80}")
 
     for fold in range(1, n_folds + 1):
+        save_paths = _build_save_paths(cfg, fold, cfg.models_dir)
         result = be.train_single_run(
             data, fold, n_folds,
-            save_dir=cfg.models_dir,
+            save_paths=save_paths,
             output_dir=cfg.outputs_dir,
             cfg=cfg,
             verbose=True,
@@ -190,19 +246,19 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
 
         t0 = time.time()
         try:
+            save_paths = _build_save_paths(
+                cfg, fold, cfg.models_dir,
+                prefix=search_id, config_id=config_id,
+            )
             result = be.train_single_run(
                 data, fold, n_folds,
-                save_dir=cfg.models_dir,
+                save_paths=save_paths,
                 output_dir=cfg.models_dir,
                 cfg=cfg,
                 verbose=True,
-                param_file_prefix=search_id,
                 **overrides,
             )
             elapsed = time.time() - t0
-
-            # Rename model file to include config_id (avoid overwrites)
-            _rename_model_file(result, config_id)
 
             # Save loss curve and run evaluation for this fold
             eval_metrics = None
@@ -331,12 +387,14 @@ def run(cfg: AugerNetConfig):
         # Load the best-fold model for unit tests
         if getattr(cfg, 'run_unit_tests', False):
             best_fold = cv_summary['best_fold']
-            result = be.load_saved_model(cfg.models_dir, best_fold, data, cfg)
+            save_paths = _build_save_paths(cfg, best_fold, cfg.models_dir)
+            result = be.load_saved_model(save_paths, data, cfg)
 
     elif mode == 'train':
+        save_paths = _build_save_paths(cfg, cfg.train_fold, cfg.models_dir)
         result = be.train_single_run(
             data, cfg.train_fold, cfg.n_folds,
-            save_dir=cfg.models_dir,
+            save_paths=save_paths,
             output_dir=cfg.outputs_dir,
             cfg=cfg,
             verbose=True,
@@ -409,6 +467,8 @@ def _run_evaluate(data, cfg):
             layer_type=cfg.layer_type,
             hidden_channels=cfg.hidden_channels,
             n_layers=cfg.n_layers,
+            dropout=cfg.dropout,
+            **be._model_load_kwargs(cfg),
         )
 
     # Try to infer fold from filename (e.g. …_fold3.pth → 3)
@@ -605,18 +665,6 @@ def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
         print(line)
 
     print(f"{'=' * 110}")
-
-
-def _rename_model_file(result: dict, config_id: str):
-    """Rename model file to include config_id, preventing overwrites."""
-    path = result.get('model_path')
-    if not path or not os.path.exists(path):
-        return
-    base, ext = os.path.splitext(path)
-    new_path = f"{base}_{config_id}{ext}"
-    if path != new_path:
-        os.rename(path, new_path)
-        result['model_path'] = new_path
 
 
 def _param_search_id(param_grid: dict) -> str:

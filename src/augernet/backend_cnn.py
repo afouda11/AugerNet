@@ -6,7 +6,7 @@ Carbon environment classification using 1D CNN on Auger spectra.
 
 Provides the same routine signatures as ``backend_gnn.py``:
   load_data, train_single_run, load_saved_model,
-  load_param_model, run_evaluation, run_unit_tests, run_predict
+  run_evaluation, run_unit_tests, run_predict
 
 Dependencies:
   augernet.cnn_train_utils   — AugerCNN1D, CNNTrainer, etc.
@@ -93,17 +93,6 @@ def _mol_kfold_split(carbon_df, *, n_folds, fold, random_state=42,
     return train_rows, val_rows
 
 
-def _build_model_id(cfg, overrides=None):
-    """Build a self-documenting model_id for CNN checkpoint filenames.
-
-    Format: ``auger_cnn_{merge}``
-
-    Examples: ``auger_cnn_none``, ``auger_cnn_heteroatom``
-    """
-    overrides = overrides or {}
-    merge = overrides.get('merge_scheme', getattr(cfg, 'merge_scheme', 'none'))
-    return f"auger_cnn_{merge}"
-
 def _get_input_length(df, cfg, *, use_augmented=None, augmented_scaled=None):
     """Determine CNN input_length from config (spectra are always broadened).
 
@@ -187,13 +176,20 @@ def train_single_run(
     fold: int,
     n_folds: int,
     *,
-    save_dir: str,
+    save_paths: Dict[str, str],
     output_dir: str,
     cfg,
     verbose: bool = True,
     **overrides,
 ) -> Dict[str, Any]:
-    """Train CNN on a single fold."""
+    """Train CNN on a single fold.
+
+    Parameters
+    ----------
+    save_paths : dict
+        Pre-built mapping ``{'model': '/abs/path/to/file.pth'}``.
+        Built by ``train_driver._build_save_paths``.
+    """
     from torch.utils.data import DataLoader, Subset
 
     # ── Resolve hyper-parameters from cfg + overrides ─────────────────────
@@ -230,7 +226,9 @@ def train_single_run(
     ctu.seed(random_seed)
     device = ctu.get_device(device_str, verbose=verbose)
 
-    os.makedirs(save_dir,   exist_ok=True)
+    # Ensure all target directories exist
+    for p in save_paths.values():
+        os.makedirs(os.path.dirname(p), exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
     num_classes = _resolve_num_classes(cfg, merge_scheme_override=merge_scheme)
@@ -304,12 +302,10 @@ def train_single_run(
                           num_epochs=num_epochs, verbose=verbose)
 
     # ── Save model + history ──────────────────────────────────────────────
-    model_id = _build_model_id(cfg, overrides)
-    model_filename = f"{model_id}_fold{fold}.pth"
-    model_path = os.path.join(save_dir, model_filename)
+    model_path = save_paths['model']
     torch.save(model.state_dict(), model_path)
     if verbose:
-        print(f"\n Saved model from {model_path}")
+        print(f"\n Saved model to {model_path}")
 
     hist_df = pd.DataFrame(history)
     hist_path = os.path.join(output_dir,
@@ -390,30 +386,23 @@ def _load_model_from_path(model_path, data, cfg, *, architecture=None,
     return model, device
 
 
-def load_saved_model(save_dir, fold, data, cfg):
-    """Load a saved CNN model by fold number."""
-    model_id = _build_model_id(cfg)
-    model_filename = f"{model_id}_fold{fold}.pth"
-    model_path = os.path.join(save_dir, model_filename)
+def load_saved_model(save_paths, data, cfg):
+    """Load a saved CNN model from pre-built paths.
+
+    Parameters
+    ----------
+    save_paths : dict
+        Mapping ``{'model': '/abs/path/to/file.pth'}``, as produced
+        by ``train_driver._build_save_paths``.
+    """
+    model_path = save_paths['model']
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(
-            f"No saved model '{model_filename}' found in:\n  {save_dir}"
+            f"No saved model found:\n  {model_path}"
         )
 
     return _load_model_from_path(model_path, data, cfg)
-
-
-def load_param_model(model_path, data, cfg, best_params):
-    """Load a CNN model from a param-search result."""
-    arch = _resolve_architecture(cfg, best_params)
-    ms = best_params.get('merge_scheme', getattr(cfg, 'merge_scheme', 'none'))
-    use_aug = best_params.get('use_augmented')
-    aug_scaled = best_params.get('augmented_scaled')
-    return _load_model_from_path(model_path, data, cfg,
-                                 architecture=arch, merge_scheme=ms,
-                                 use_augmented=use_aug,
-                                 augmented_scaled=aug_scaled)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

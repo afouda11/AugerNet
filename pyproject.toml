@@ -4,7 +4,6 @@ version = "0.1.16"
 description = "GNN predictions of carbon 1s core-electron binding energies (CEBEs) from molecular geometry."
 readme = "README.md"
 license = "BSD-3-Clause"
-license-files = ["LICENSE"]
 authors = [
     { name = "Adam Fouda" }
 ]

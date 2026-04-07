@@ -49,7 +49,7 @@ warnings.filterwarnings('ignore', message='.*MorganGenerator.*')
 import torch
 from torch_geometric.data import InMemoryDataset
 
-from augernet import build_molecular_graphs_auger as bmg
+from augernet import build_molecular_graphs as bmg
 from augernet import carbon_environment as ce
 from augernet import PROJECT_ROOT, DATA_RAW_DIR, DATA_PROCESSED_DIR
 
@@ -71,7 +71,7 @@ def _print_graph_stats(data_list, label):
     n_nodes = [g.x.shape[0] for g in data_list]
     print(f"    {label}: {len(data_list)} mols, "
           f"node_dim={node_dims}, edge_dim={edge_dims}, "
-          f"nodes/mol={np.mean(n_nodes):.1f}±{np.std(n_nodes):.1f} "
+          f"nodes/mol={np.mean(n_nodes):.1f}+/-{np.std(n_nodes):.1f} "
           f"({min(n_nodes)}-{max(n_nodes)})")
     
     # Show stored feature attributes (feature-store)

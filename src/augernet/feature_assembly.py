@@ -36,9 +36,13 @@ Usage
 ...     assemble_node_features(data, feature_keys_parsed)
 """
 
-import torch
+from __future__ import annotations
+
 from copy import copy
-from typing import List, Sequence
+from typing import List, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE CATALOG
@@ -151,6 +155,7 @@ def _scale_tensor(t: torch.Tensor) -> torch.Tensor:
     -------
     torch.Tensor  — same shape, scaled.
     """
+    import torch  # noqa: F811 — lazy import to keep module importable without torch
 
     if t.dim() == 1:
         t = t.unsqueeze(1)
@@ -188,6 +193,8 @@ def assemble_node_features(
     """
     if not inplace:
         data = copy(data)
+
+    import torch  # noqa: F811 — lazy import to keep module importable without torch
 
     # On first call, stash the original category_feature so that
     # subsequent calls (e.g. param search with different feature_keys)

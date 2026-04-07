@@ -75,10 +75,9 @@ class AugerNetConfig:
     scheduler_type: str = 'cosine'   # cosine | onecycle
     pct_start: float = 0.3           # OneCycleLR only
 
+    norm_stats_file: str = 'cebe_norm_stats.pt'
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
-
-
     # evaluate + predict modes
     model_path: str = ''             # relative path to a saved .pth model file
     # predict mode
@@ -126,11 +125,10 @@ class AugerNetConfig:
         """Fill in computed / derived fields after loading."""
         from augernet.feature_assembly import compute_feature_tag, parse_feature_keys
 
-
-        # ── norm_stats_file (CEBE) ──────────────────────────────────────
-        if self.model == 'cebe-gnn' and not self.norm_stats_file:
-            self.norm_stats_file = os.path.join(
-                DATA_PROCESSED_DIR, 'cebe_norm_stats.pt'
+        # ── norm_stats_file  ──────────────────────────────────────
+        # assign filename into processed dir
+        self.norm_stats_file = os.path.join(
+                DATA_PROCESSED_DIR, self.norm_stats_file
             )
 
         cwd = os.getcwd()
@@ -147,64 +145,67 @@ class AugerNetConfig:
 
         os.makedirs(self.result_dir, exist_ok=True)
 
+        # ── Parse and canonicalize feature_keys for GNN ────────────────────────────
         if self.model in ('cebe-gnn', 'auger-gnn'):
-
-            # ── feature_keys + model_id (GNN models) ────────────────────────
-            # feature_keys = compact string tag, e.g. '035'
-            # model_id     = Filename stem:
-            #                cebe_gnn_{feature_keys}_{split}_{layer}{n_layers}_h{hidden}
-            #
-            # Example model_id: cebe_gnn_035_random_EQ3_h64
-            # All output files are then:
-            #   {model_id}_fold{fold}.pth      (model)
-            #   {model_id}_fold{fold}_loss.png (loss curves)
-            #   {model_id}_fold{fold}_scatter.png
-            #   {model_id}_cv_summary.json     (CV summary)
-            #   etc.
-            #
-            # For cv/train/param modes this is the default stem used for
-            # summary filenames (e.g. *_cv_summary.json).  The backend's
-            # train_single_run() builds its own per-config model_id that
-            # may differ when param search overrides hyperparameters.
-            #
-            # For predict/evaluate modes the user supplies model_path in
-            # the YAML and model_id is derived from that filename.
-
-            # ── Parse feature_keys string to list ────────────────────────────
             self.feature_keys_parsed = parse_feature_keys(self.feature_keys)
-            # Normalise the string form so it's always canonical
             self.feature_keys = compute_feature_tag(self.feature_keys_parsed)
 
-            if self.mode in ('predict', 'evaluate') and self.model_path:
-                # User-supplied model file → derive model_id from filename
-                stem = os.path.splitext(os.path.basename(self.model_path))[0]
-                self.model_id = stem
-            else:
-                # cv / train / param → build from config fields
-                if self.model == 'cebe-gnn':
-                    self.model_id = (
-                        f"cebe_gnn_{self.feature_keys}_{self.split_method}"
-                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-                    )
-                if self.model == 'auger-gnn':
-                    self.model_id = (
-                        f"auger_gnn_{self.feature_keys}_{self.split_method}"
-                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-                    )
-        
-        elif self.model == 'auger-cnn':
-            # CNN model — model_id uses split method + CNN suffix
-            # The CNN doesn't use GNN feature_keys / layer_type.
-            _split = getattr(self, 'split_method', 'size')
-            _ms = getattr(self, 'merge_scheme', 'none')
-            _fwhm = getattr(self, 'broadening_fwhm', 1.6)
-            _fwhm_str = f"fwhm{str(_fwhm).replace('.', 'pt')}"
-            parts = ['auger_cnn', _split]
-            if _ms != 'none':
-                parts.append(_ms)
-            parts.append(_fwhm_str)
-            self.model_id = '_'.join(parts)
+        # ── model_id's for output file names  ────────────────────────
 
+        # cebe-gnn: 
+        # model_id = cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
+
+        # auger-gnn spectrum_type: fitted
+        # model_id = auger_gnn_{spectrum_type}{fwhm}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
+
+        # auger-gnn spectrum_type: stick (no fwhm in model_id)
+        # model_id = auger_gnn_{spectrum_type}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
+
+        # auger-cnn
+        # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}_BE{use_augmented}_f{filters}_k{kernels}_p{pool}_h{hidden}
+        
+        # For all run mode and model types, the specific train_fold is appeneded to model_id at runtime
+        # For parameter search (param) mode
+        # In train_driver.py: 
+        #   Parameter types in param_grid prefixed to model_id (file names get very long for many params!)
+        #   Config id of the parameter grid appended to model_id
+
+        # For predict/evaluate modes the user supplies model_path in
+        # the YAML and model_id is derived from that filename.
+        if self.mode in ('predict', 'evaluate') and self.model_path:
+            stem = os.path.splitext(os.path.basename(self.model_path))[0]
+            self.model_id = stem
+        else:
+            if self.model == 'cebe-gnn':
+                self.model_id = (
+                    f"cebe_gnn_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                )
+            if self.model == 'auger-gnn':
+                if self.spectrum_type == 'fitted':
+                    fwhm_str = str(self.fwhm).replace('.', 'pt')
+                    self.model_id = (
+                        f"auger_gnn_{self.spectrum_type}{fwhm_str}_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                    )
+                if self.spectrum_type == 'stick':
+                    self.model_id = (
+                        f"auger_gnn_{self.spectrum_type}_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                    )
+            if self.model == 'auger-cnn':
+                broadening_fwhm_str = str(self.broadening_fwhm).replace('.', 'pt')
+                # Build filter and kernel strings from architecture
+                filters_str = 'f' + '_'.join(str(f) for f in self.architecture.get('conv_filters', []))
+                kernels_str = 'k' + '_'.join(str(k) for k in self.architecture.get('conv_kernels', []))
+                p_str =  f"p{self.architecture.get('pool_size', [])}"
+                h_str =  f"h{self.architecture.get('fc_hidden', [])}"
+                self.model_id = (
+                    f"auger_cnn_{broadening_fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
+                    f"BE{self.use_augmented}_{filters_str}_{kernels_str}_{p_str}_{h_str}"
+                )
+
+        # results sub dirs: outputs files, train loss and eval pngs, and models 
         self.outputs_dir = os.path.join(self.result_dir, 'outputs')
         os.makedirs(self.outputs_dir, exist_ok=True)
 

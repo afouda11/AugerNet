@@ -1,5 +1,5 @@
-    """
-Unified GNN Backend — model-specific hooks for train_driver.py
+"""
+GNN Backend — model-specific routines for train_driver.py
 ===============================================================
 
 Supports both model types from a single module:
@@ -8,9 +8,9 @@ Supports both model types from a single module:
       - ``stick``   : separate singlet + triplet stick spectra (2 models/fold)
       - ``fitted``  : combined broadened spectrum (1 model/fold)
 
-Provides the hooks that train_driver needs:
+Provides the routines for train_driver:
   load_data, train_single_run, load_saved_model,
-  load_param_model, run_evaluation, run_unit_tests, run_predict
+  run_evaluation, run_unit_tests, run_predict
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import numpy as np
 import torch
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from sklearn.model_selection import KFold, GroupKFold
 
 from augernet import gnn_train_utils as gtu
@@ -38,8 +38,7 @@ from augernet import PROJECT_ROOT, DATA_DIR, DATA_PROCESSED_DIR
 def _extract_overrides(cfg, overrides: dict) -> dict:
     """Resolve hyperparameters from cfg + per-config overrides.
 
-    Returns a flat dict of all HP values and pops ``param_file_prefix``
-    from *overrides* so it does not leak into downstream calls.
+    Returns a flat dict of all HP values needed by the training loop.
     """
     hp = {
         'layer_type':       overrides.get('layer_type',       cfg.layer_type),
@@ -58,7 +57,6 @@ def _extract_overrides(cfg, overrides: dict) -> dict:
         'min_lr':           overrides.get('min_lr',           cfg.min_lr),
         'dropout':          overrides.get('dropout',          cfg.dropout),
     }
-    hp['param_file_prefix'] = overrides.pop('param_file_prefix', None)
     return hp
 
 
@@ -113,9 +111,12 @@ def _extract_results(train_results):
 
 
 def _handle_feature_override(data, cfg, overrides):
-    """Re-assemble features if param search overrides feature_keys.
+    """Re-assemble node features in-place if param search overrides feature_keys.
 
-    Returns the resolved feature keys string.
+    Compares the requested feature_keys against what is currently assembled
+    on the data objects.  If they differ, calls ``assemble_dataset`` to
+    rebuild ``x`` on every graph in-place.  This is a side-effect-only
+    helper — it modifies *data* and returns nothing.
     """
     override_fk = overrides.get('feature_keys')
     if override_fk is not None:
@@ -127,17 +128,6 @@ def _handle_feature_override(data, cfg, overrides):
             if data.get('exp_data'):
                 assemble_dataset(data['exp_data'], fk_parsed)
             data['assembled_feature_keys'] = fk_tag
-        return fk_tag
-    return cfg.feature_keys
-
-
-def _build_model_id(cfg, hp, fk_tag):
-    """Build the per-config model_id string."""
-    prefix = 'cebe_gnn' if cfg.model == 'cebe-gnn' else 'auger_gnn'
-    return (
-        f"{prefix}_{fk_tag}_{hp['split_method']}"
-        f"_{hp['layer_type']}{hp['n_layers']}_h{hp['hidden_channels']}"
-    )
 
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
@@ -170,20 +160,6 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     model.eval()
     return model, train_results
 
-
-def _save_model(model, model_id, fold, save_dir, param_file_prefix=None,
-                tag=None):
-    """Save model state dict and return the path."""
-    if tag:
-        filename = f"{tag}_{model_id}_fold{fold}.pth"
-    else:
-        filename = f"{model_id}_fold{fold}.pth"
-    if param_file_prefix:
-        filename = f"{param_file_prefix}_{filename}"
-    path = os.path.join(save_dir, filename)
-    torch.save(model.state_dict(), path)
-    print(f" Saved model from {path}")
-    return path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,10 +211,10 @@ def _split_exp_data(exp_data_all, cfg):
     missing_val  = val_names  - {d.mol_name for d in exp_val}
     missing_eval = eval_names - {d.mol_name for d in exp_eval}
     if missing_val:
-        print(f"  ⚠ Val split: {len(missing_val)} names not found in data: "
+        print(f"  Val split: {len(missing_val)} names not found in data: "
               f"{sorted(missing_val)[:5]}")
     if missing_eval:
-        print(f"  ⚠ Eval split: {len(missing_eval)} names not found in data: "
+        print(f"  Eval split: {len(missing_eval)} names not found in data: "
               f"{sorted(missing_eval)[:5]}")
 
     if split == 'val':
@@ -290,7 +266,7 @@ def _attach_y_fitted(sing_data, trip_data, cfg):
                 n_points=cfg.n_points,
             )
         s_data.y_fitted = torch.tensor(fitted, dtype=torch.float32)
-    print(f"  ✓ Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
+    print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
           f"fwhm={cfg.fwhm})")
 
 
@@ -406,7 +382,7 @@ def train_single_run(
     fold: int,
     n_folds: int,
     *,
-    save_dir: str,
+    save_paths: Dict[str, str],
     output_dir: str,
     cfg,
     verbose: bool = True,
@@ -416,14 +392,33 @@ def train_single_run(
 
     Works for CEBE-GNN, Auger-GNN stick, and Auger-GNN fitted.
     Returns a result dict compatible with train_driver expectations.
+
+    Parameters
+    ----------
+    save_paths : dict
+        Pre-built mapping of logical name to absolute ``.pth`` path.
+        Built by ``train_driver._build_save_paths``
+
+        Examples::
+
+            {'model': '/…/cebe_gnn_…_fold1.pth'}           # cebe / fitted
+            {'singlet': '/…/…_singlet_fold1.pth',           # auger stick
+             'triplet': '/…/…_triplet_fold1.pth'}
     """
     hp = _extract_overrides(cfg, overrides)
-    fk_tag = _handle_feature_override(data, cfg, overrides)
-    model_id = _build_model_id(cfg, hp, fk_tag)
+
+    # If param search overrides feature_keys, re-assemble node features
+    # in-place on the shared data dict before training starts.
+    _handle_feature_override(data, cfg, overrides)
+
+    model_id = cfg.model_id
 
     gtu.seed(hp['random_seed'])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(save_dir,   exist_ok=True)
+
+    # Ensure all target directories exist
+    for p in save_paths.values():
+        os.makedirs(os.path.dirname(p), exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Splitting (shared) ───────────────────────────────────────────────
@@ -440,42 +435,67 @@ def train_single_run(
             label += f" ({cfg.spectrum_type})"
         print(f"{label} TRAINING — Fold {fold}/{n_folds}")
         print(f"{'=' * 70}")
+        print(f"  Model ID:    {model_id}")
         print(f"  Layer type:  {hp['layer_type']}")
         print(f"  Hidden:      {hp['hidden_channels']}")
         print(f"  Layers:      {hp['n_layers']}")
         print(f"  LR:          {hp['learning_rate']}")
         print(f"  Dropout:     {hp['dropout']}")
         print(f"  Batch:       {hp['batch_size']}")
-        print(f"  Split method:       {hp['split_method']}")
-        print(f"  Split:       {len(train_idx)} train / {len(val_idx)} val molecules")
+        print(f"  Split:       {hp['split_method']}, "
+              f"{len(train_idx)} train / {len(val_idx)} val molecules")
+        print(f"  Save path(s):")
+        for _label, _path in save_paths.items():
+            print(f"    {_label}: {_path}")
         print(f"{'=' * 70}")
 
     in_channels = calc_data[0].x.size(1)
     edge_dim = calc_data[0].edge_attr.size(1)
 
     # ── Dispatch to model-specific training ──────────────────────────────
+    # Each _train_* helper returns a result dict with trained model(s) and
+    # metrics but does NOT save anything to disk — saving is done below.
     if cfg.model == 'cebe-gnn':
-        return _train_cebe(
+        result = _train_cebe(
             data, train_idx, val_idx, in_channels, edge_dim,
-            device, hp, model_id, fold, save_dir, verbose,
+            device, hp, fold, verbose,
         )
     elif cfg.spectrum_type == 'stick':
-        return _train_auger_stick(
+        result = _train_auger_stick(
             data, train_idx, val_idx, in_channels, edge_dim,
-            device, hp, model_id, fold, save_dir, verbose, cfg,
+            device, hp, fold, verbose, cfg,
         )
     else:
-        return _train_auger_fitted(
+        result = _train_auger_fitted(
             data, train_idx, val_idx, in_channels, edge_dim,
-            device, hp, model_id, fold, save_dir, verbose, cfg,
+            device, hp, fold, verbose, cfg,
         )
+
+    # ── Save model(s) to disk ────────────────────────────────────────────
+    # All file I/O happens here regardless of model type, so the naming
+    # convention is enforced in exactly one place.
+    if cfg.model == 'auger-gnn' and cfg.spectrum_type == 'stick':
+        torch.save(result['sing_model'].state_dict(), save_paths['singlet'])
+        torch.save(result['trip_model'].state_dict(), save_paths['triplet'])
+        print(f"  Saved singlet to {save_paths['singlet']}")
+        print(f"  Saved triplet to {save_paths['triplet']}")
+        result['model_path'] = save_paths['singlet']
+        result['sing_model_path'] = save_paths['singlet']
+        result['trip_model_path'] = save_paths['triplet']
+    else:
+        torch.save(result['model'].state_dict(), save_paths['model'])
+        print(f"  Saved model to {save_paths['model']}")
+        result['model_path'] = save_paths['model']
+
+    result['model_id'] = model_id
+    return result
 
 
 # ── CEBE training ────────────────────────────────────────────────────────────
 
 def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
-                device, hp, model_id, fold, save_dir, verbose):
-    """Train a single CEBE GNN."""
+                device, hp, fold, verbose):
+    """Train a single CEBE GNN and return metrics (no file I/O)."""
     calc_data = data['calc_data']
     train_data = [calc_data[i] for i in train_idx]
     val_data   = [calc_data[i] for i in val_idx]
@@ -484,9 +504,6 @@ def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
         train_data, val_data, in_channels, edge_dim, device, hp,
         pred_type='CEBE',
     )
-
-    model_path = _save_model(model, model_id, fold, save_dir,
-                             hp['param_file_prefix'])
 
     bvl, btl, bve, ftl, fvl, n_ep = _extract_results(train_results)
 
@@ -499,16 +516,16 @@ def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
         'best_val_loss': bvl, 'best_train_loss': btl,
         'best_val_epoch': bve,
         'final_train_loss': ftl, 'final_val_loss': fvl,
-        'n_epochs': n_ep, 'model_path': model_path,
-        'train_results': train_results, 'model_id': model_id,
+        'n_epochs': n_ep,
+        'train_results': train_results,
     }
 
 
 # ── Auger stick training (singlet + triplet) ─────────────────────────────────
 
 def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
-                       device, hp, model_id, fold, save_dir, verbose, cfg):
-    """Train singlet + triplet GNN models on one fold (stick spectra)."""
+                       device, hp, fold, verbose, cfg):
+    """Train singlet + triplet GNN models on one fold (no file I/O)."""
     sing_calc = data['sing_calc_data']
     trip_calc = data['trip_calc_data']
 
@@ -524,8 +541,6 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
         pred_type='AUGER', spectrum_type='stick',
         spectrum_dim=cfg.max_spec_len,
     )
-    sing_path = _save_model(sing_model, model_id, fold, save_dir,
-                            hp['param_file_prefix'], tag='singlet')
 
     # ── Triplet ──────────────────────────────────────────────────────────
     print(f"\n{'─' * 70}\n  TRIPLET MODEL\n{'─' * 70}")
@@ -534,8 +549,6 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
         pred_type='AUGER', spectrum_type='stick',
         spectrum_dim=cfg.max_spec_len,
     )
-    trip_path = _save_model(trip_model, model_id, fold, save_dir,
-                            hp['param_file_prefix'], tag='triplet')
 
     # ── Combine results ──────────────────────────────────────────────────
     s_bvl, s_btl, s_bve, s_ftl, s_fvl, s_nep = _extract_results(sing_results)
@@ -558,19 +571,15 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
         'final_train_loss': (s_ftl + t_ftl) / 2,
         'final_val_loss': (s_fvl + t_fvl) / 2,
         'n_epochs': max(s_nep, t_nep),
-        'model_path': sing_path,
-        'sing_model_path': sing_path,
-        'trip_model_path': trip_path,
         'train_results': sing_results,  # driver uses for loss curves
-        'model_id': model_id,
     }
 
 
 # ── Auger fitted training (single combined model) ────────────────────────────
 
 def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
-                        device, hp, model_id, fold, save_dir, verbose, cfg):
-    """Train a single fitted-spectrum GNN on one fold."""
+                        device, hp, fold, verbose, cfg):
+    """Train a single fitted-spectrum GNN on one fold (no file I/O)."""
     calc_data = data['calc_data']
     train_data = [calc_data[i] for i in train_idx]
     val_data   = [calc_data[i] for i in val_idx]
@@ -580,9 +589,6 @@ def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
         pred_type='AUGER', spectrum_type='fitted',
         spectrum_dim=cfg.n_points,
     )
-
-    model_path = _save_model(model, model_id, fold, save_dir,
-                             hp['param_file_prefix'], tag='fitted')
 
     bvl, btl, bve, ftl, fvl, n_ep = _extract_results(train_results)
 
@@ -595,8 +601,8 @@ def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
         'best_val_loss': bvl, 'best_train_loss': btl,
         'best_val_epoch': bve,
         'final_train_loss': ftl, 'final_val_loss': fvl,
-        'n_epochs': n_ep, 'model_path': model_path,
-        'train_results': train_results, 'model_id': model_id,
+        'n_epochs': n_ep,
+        'train_results': train_results,
     }
 
 
@@ -643,7 +649,11 @@ def _load_model_from_path(
 
 
 def _model_load_kwargs(cfg):
-    """Return the extra kwargs for _load_model_from_path based on model type."""
+    """Return the extra kwargs for _load_model_from_path based on model type.
+
+    Maps the high-level config (model name, spectrum_type) to the MPNN
+    constructor arguments needed to reconstruct the architecture.
+    """
     if cfg.model == 'cebe-gnn':
         return dict(pred_type='CEBE')
     elif cfg.model == 'auger-gnn':
@@ -656,13 +666,18 @@ def _model_load_kwargs(cfg):
     return {}
 
 
-def load_saved_model(save_dir, fold, data, cfg):
-    """Load saved model(s) by fold number.
+def load_saved_model(save_paths, data, cfg):
+    """Load saved model(s) from pre-built paths.
 
-    For auger-gnn stick mode two tagged models (singlet_ / triplet_) are
-    loaded and returned as a dict matching ``train_single_run`` output.
-    For auger-gnn fitted a single fitted_ model is loaded.
-    For cebe-gnn the bare model_id filename is used.
+    Parameters
+    ----------
+    save_paths : dict
+        Mapping of logical name to absolute ``.pth`` path, as produced
+        by ``train_driver._build_save_paths``.  Same dict that was
+        passed to ``train_single_run`` at save time.
+
+    Returns a result dict matching ``train_single_run`` output so
+    downstream code (evaluation, unit tests) can consume either.
     """
     calc_data = data['calc_data']
     load_kw = dict(
@@ -673,9 +688,12 @@ def load_saved_model(save_dir, fold, data, cfg):
         **_model_load_kwargs(cfg),
     )
 
+    model_id = cfg.model_id
+
+    # ── Auger stick: load singlet + triplet pair ─────────────────────────
     if cfg.model == 'auger-gnn' and cfg.spectrum_type == 'stick':
-        sing_path = os.path.join(save_dir, f"singlet_{cfg.model_id}_fold{fold}.pth")
-        trip_path = os.path.join(save_dir, f"triplet_{cfg.model_id}_fold{fold}.pth")
+        sing_path = save_paths['singlet']
+        trip_path = save_paths['triplet']
         if not os.path.exists(sing_path):
             raise FileNotFoundError(
                 f"No saved singlet model found:\n  {sing_path}"
@@ -687,57 +705,20 @@ def load_saved_model(save_dir, fold, data, cfg):
         return {
             'model': sing_model, 'device': device,
             'sing_model': sing_model, 'trip_model': trip_model,
-            'model_id': cfg.model_id, 'fold': fold,
+            'model_id': model_id,
         }
 
-    elif cfg.model == 'auger-gnn' and cfg.spectrum_type == 'fitted':
-        fitted_path = os.path.join(save_dir, f"fitted_{cfg.model_id}_fold{fold}.pth")
-        if not os.path.exists(fitted_path):
-            raise FileNotFoundError(
-                f"No saved fitted model found:\n  {fitted_path}"
-            )
-        model, device = _load_model_from_path(fitted_path, calc_data, **load_kw)
-        return {
-            'model': model, 'device': device,
-            'model_id': cfg.model_id, 'fold': fold,
-        }
-
-    else:  # cebe-gnn — bare filename, no tag
-        model_filename = f"{cfg.model_id}_fold{fold}.pth"
-        model_path = os.path.join(save_dir, model_filename)
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"No saved model '{model_filename}' found in:\n  {save_dir}"
-            )
-        return _load_model_from_path(
-            model_path, calc_data, **load_kw,
+    # ── All other model types: single file ───────────────────────────────
+    model_path = save_paths['model']
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"No saved model found:\n  {model_path}"
         )
-
-
-def load_param_model(model_path, data, cfg, best_params):
-    """Load a model from a param-search result path."""
-    calc_data = data['calc_data']
-
-    # If best_params overrode feature_keys, ensure data is assembled correctly
-    fk_override = best_params.get('feature_keys')
-    if fk_override is not None:
-        fk_parsed = parse_feature_keys(fk_override)
-        fk_tag = compute_feature_tag(fk_parsed)
-        if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
-            assemble_dataset(calc_data, fk_parsed)
-            if data.get('exp_data'):
-                assemble_dataset(data['exp_data'], fk_parsed)
-            data['assembled_feature_keys'] = fk_tag
-
-    return _load_model_from_path(
-        model_path, calc_data,
-        layer_type=best_params.get('layer_type', cfg.layer_type),
-        hidden_channels=best_params.get('hidden_channels', cfg.hidden_channels),
-        n_layers=best_params.get('n_layers', cfg.n_layers),
-        dropout=best_params.get('dropout', cfg.dropout),
-        **_model_load_kwargs(cfg),
-    )
-
+    model, device = _load_model_from_path(model_path, calc_data, **load_kw)
+    return {
+        'model': model, 'device': device,
+        'model_id': model_id,
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Evaluation

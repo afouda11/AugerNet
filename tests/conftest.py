@@ -12,6 +12,8 @@ Markers
 """
 
 import os
+import shutil
+import tempfile
 import types
 import pytest
 import numpy as np
@@ -28,6 +30,24 @@ CEBE_PATH = os.path.join(TEST_MOL_DIR, f"{MOL_NAME}_out.txt")
 def pytest_configure(config):
     config.addinivalue_line("markers", "essential: fast CI tests")
     config.addinivalue_line("markers", "full: longer tests (data prep, training)")
+
+
+# -- sandbox cwd (avoid polluting repo root with *_results dirs) --------------
+
+@pytest.fixture(autouse=True, scope="session")
+def _sandbox_cwd():
+    """chdir into a temp directory under tests/ for the entire test session.
+
+    config.resolve() calls os.makedirs(result_dir) using os.getcwd(),
+    so without this creates temp dir created inside tests/ and removed 
+    automatically when the session finishes.
+    """
+    orig = os.getcwd()
+    tmpdir = tempfile.mkdtemp(prefix="augernet_tests_", dir=TEST_DIR)
+    os.chdir(tmpdir)
+    yield tmpdir
+    os.chdir(orig)
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # -- mock Data (no torch_geometric) ------------------------------------------

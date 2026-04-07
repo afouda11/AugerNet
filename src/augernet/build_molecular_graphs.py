@@ -607,19 +607,23 @@ def build_graphs(data_type, mol_file="mol_list.txt",
 
     all_encoders = _initialize_all_atom_encoders(skipatom_dir)
 
-    # Compute or load stats before loop over mol_list
-    norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
+    # Compute or load stats before loop over mol_list:
 
     # Calculate and save norm stats for calc data
-    if data_type == 'calc_cebe':
+    if data_type in ['calc_cebe', 'exp_cebe']:
+        norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
+    elif data_type in ['calc_auger', 'eval_auger']:
+        norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'auger_cebe_norm_stats.pt')
+
+    if data_type in ['calc_cebe', 'calc_auger']:
         mean, std = _compute_cebe_normalization_stats(mol_dir, mol_list)
-        norm_stats = {'mean': mean, 'std': std}
+        norm_stats = {'mean': float(mean), 'std': float(std)}
         print("Normalization statistics:", norm_stats)
         torch.save(norm_stats, norm_stats_path)
 
     # Load norm stats  from calc data for exp eval and other predictions
-    if data_type in ['exp_cebe', 'calc_auger', 'eval_auger']:
-        norm_stats = torch.load(norm_stats_path)
+    if data_type in ['exp_cebe', 'eval_auger']:
+        norm_stats = torch.load(norm_stats_path, weights_only=False)
         mean = norm_stats['mean']
         std = norm_stats['std']
 

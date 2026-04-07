@@ -1,6 +1,6 @@
 # AugerNet
 
-Machine-learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)
+Machine learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)
 
 Includes:
 1) Equivariant GNN predictions of: 
@@ -175,8 +175,8 @@ hidden_channels: 64
 n_layers: 3
 ```
 
-**model_id format:** `cebe_gnn_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}`
-Example: `cebe_gnn_035_random_EQ3_h64`
+**model_id format:** `cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`
+Example: `cebe_gnn_035_random5_EQ3_h64`
 
 ### Auger GNN (`auger-gnn`)
 
@@ -197,8 +197,9 @@ hidden_channels: 64
 n_layers: 3
 ```
 
-**model_id format:** `auger_gnn_{feature_keys}_{split_method}_{layer_type}{n_layers}_h{hidden_channels}`
-Example: `auger_gnn_035_random_EQ3_h64`
+**`stick` model_id format:** `auger_gnn_{spectrum_type}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`
+**`fitted` model_id format:** `auger_gnn_{spectrum_type}{fwhm}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`
+Example: `auger_gnn_stick_035_butina10_EQ4_h32` or `auger_gnn_fitted1pt5_035_butina10_EQ4_h32`
 
 ### Auger CNN (`auger-cnn`)
 
@@ -231,8 +232,8 @@ architecture:
   dropout_conv: 0.1
 ```
 
-**model_id format:** `auger_cnn_{merge_scheme}`
-Example: `auger_cnn_none`
+**model_id format:** `auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}_BE{use_augmented}_f{filters}_k{kernels}_p{pool}_h{hidden}`
+Example: `auger_cnn_1pt5_butina5_chemical_BEtrue_f16_32_64_k21_11_7_p3_h128`
 
 ## Configuration Reference
 
