@@ -336,13 +336,15 @@ Tests are split into two tiers using pytest markers:
 
 | Tier | Marker | Count | Description |
 |------|--------|-------|-------------|
-| **Essential** | `@pytest.mark.essential` | ~40 | Fast tests (config, features, parsing). Run in CI. |
-| **Full** | `@pytest.mark.full` | ~40 | Slower tests (real molecule graphs, model symmetry). Run locally. |
+| **Essential** | `@pytest.mark.essential` | ~40 | Fast tests (config, features, parsing)|
+| **Full** | `@pytest.mark.full` | ~40 | Slower tests (real molecule graphs, model symmetry) |
+
+Currently only `test_cebe_gnn_config.py` is ran in the CI workflow to reduce run-time
 
 ### Running tests
 
 ```bash
-# Essential tests only (used in CI / GitHub Actions)
+# Essential tests only 
 uv run pytest tests/ -m essential -v --tb=short
 
 # Full suite (all tests)
@@ -365,6 +367,7 @@ Graph and model tests use a real molecule (`dsgdb9nsd_133427`) from `tests/test_
 rather than synthetic data. Model symmetry tests verify that CEBE predictions
 are invariant to rotation and translation and equivariant to atom reordering
 properties required by the physics of the problem.
+
 
 ## Artifact Generation
 
