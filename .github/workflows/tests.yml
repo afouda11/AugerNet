@@ -1,13 +1,13 @@
 name: tests
 
-# Run on every push to main and on every pull request.
-# Uses uv with caching.  CPU-only PyTorch keeps the install small and fast.
-
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+env:
+  UV_TORCH_BACKEND: cpu
 
 jobs:
   essential-tests:
@@ -22,12 +22,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies (CPU-only PyTorch)
-        run: uv sync --extra-index-url https://download.pytorch.org/whl/cpu
-        env:
-          # Tell uv/pip to prefer the CPU-only torch index so it does not
-          # download the ~2 GB CUDA wheels.
-          UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      - name: Install dependencies
+        run: uv sync
 
       - name: Run essential tests
         run: uv run pytest tests/ -m essential -v --tb=short
