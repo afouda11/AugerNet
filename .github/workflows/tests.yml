@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install minimal dependencies
-        run: pip install pytest pyyaml
+        run: pip install pytest pyyaml numpy
 
       - name: Install package (no deps)
         run: pip install --no-deps -e .
