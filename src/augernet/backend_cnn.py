@@ -93,16 +93,15 @@ def _mol_kfold_split(carbon_df, *, n_folds, fold, random_state=42,
     return train_rows, val_rows
 
 
-def _get_input_length(df, cfg, *, use_augmented=None, augmented_scaled=None):
+def _get_input_length(df, cfg, *, use_augmented=None):
     """Determine CNN input_length from config (spectra are always broadened).
 
-    Optional keyword args override ``cfg`` values — needed when called from
+    Optional keyword arg overrides ``cfg`` value — needed when called from
     param search where each config may toggle ``use_augmented``.
     """
-    n_spec = getattr(cfg, 'n_spectrum_points', 731)
+    n_spec = getattr(cfg, 'n_points', 731)
     use_aug = use_augmented if use_augmented is not None else getattr(cfg, 'use_augmented', False)
-    aug_scaled = augmented_scaled if augmented_scaled is not None else getattr(cfg, 'augmented_scaled', False)
-    return n_spec + (1 if (use_aug or aug_scaled) else 0)
+    return n_spec + (1 if use_aug else 0)
 
 
 def _resolve_architecture(cfg, overrides=None):
@@ -139,14 +138,8 @@ def load_data(cfg) -> Dict[str, Any]:
     ``'train_df'`` entry has the base ``cfg.merge_scheme`` already applied
     (used by cv / train modes that don't change the scheme).
     """
-    train_data = getattr(cfg, 'train_data', None)
-    if not train_data:
-        train_data = os.path.join(DATA_PROCESSED_DIR,
-                                  'cnn_auger_calc.pkl')
-    eval_data = getattr(cfg, 'eval_data', None)
-    if not eval_data:
-        eval_data = os.path.join(DATA_PROCESSED_DIR,
-                                 'cnn_auger_eval.pkl')
+    train_data = os.path.join(DATA_PROCESSED_DIR, 'cnn_auger_calc.pkl')
+    eval_data  = os.path.join(DATA_PROCESSED_DIR, 'cnn_auger_eval.pkl')
 
     print(f"\nLoading training data: {train_data}")
     train_df = cdf.load_carbon_dataframe(train_data)
@@ -202,15 +195,13 @@ def train_single_run(
     learning_rate    = _g('learning_rate', 3e-4)
     weight_decay     = _g('weight_decay', 1e-4)
     use_augmented    = _g('use_augmented', False)
-    augmented_scaled = _g('augmented_scaled', False)
-    delta_be_scale   = _g('delta_be_scale', 100.0)
     device_str       = _g('device', 'auto')
     random_seed      = _g('random_seed', 42)
-    use_cosine       = _g('use_cosine_schedule', True)
-    broadening_fwhm  = _g('broadening_fwhm', 1.6)
-    energy_min       = _g('energy_min', 200.0)
-    energy_max       = _g('energy_max', 273.0)
-    n_spectrum_points = _g('n_spectrum_points', 731)
+    scheduler_type   = _g('scheduler_type', 'cosine')
+    broadening_fwhm  = _g('fwhm', 1.6)
+    energy_min       = _g('min_ke', 200.0)
+    energy_max       = _g('max_ke', 273.0)
+    n_spectrum_points = _g('n_points', 731)
     merge_scheme     = _g('merge_scheme', 'none')
 
     # ── Resolve training DataFrame (re-merge if scheme differs) ──────────
@@ -246,13 +237,9 @@ def train_single_run(
         print(f"{'=' * 70}")
 
     # ── Dataset ───────────────────────────────────────────────────────────
-    augmentation_type = ('normalized' if use_augmented
-                         else ('scaled' if augmented_scaled else 'normalized'))
     base_dataset = cdf.CarbonDataset(
         train_df,
-        include_augmentation=use_augmented or augmented_scaled,
-        augmentation_type=augmentation_type,
-        delta_be_scale=delta_be_scale, normalize_delta_be=True,
+        include_augmentation=use_augmented,
         broadening_fwhm=broadening_fwhm,
         energy_min=energy_min, energy_max=energy_max,
         n_points=n_spectrum_points,
@@ -274,8 +261,7 @@ def train_single_run(
 
     # ── Model ─────────────────────────────────────────────────────────────
     input_length = _get_input_length(train_df, cfg,
-                                     use_augmented=use_augmented,
-                                     augmented_scaled=augmented_scaled)
+                                     use_augmented=use_augmented)
     model = AugerCNN1D(input_length, num_classes, architecture)
 
     if verbose:
@@ -291,7 +277,7 @@ def train_single_run(
         model=model, device=device,
         learning_rate=learning_rate, weight_decay=weight_decay,
         patience=patience,
-        use_cosine_schedule=use_cosine,
+        scheduler_type=scheduler_type,
         cosine_T_max=num_epochs,
         class_weights=class_weights,
     )
@@ -355,8 +341,7 @@ def train_single_run(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_model_from_path(model_path, data, cfg, *, architecture=None,
-                          merge_scheme=None, use_augmented=None,
-                          augmented_scaled=None):
+                          merge_scheme=None, use_augmented=None):
     """Load a CNN model from a ``.pth`` file.
 
     Reconstructs the model architecture from config, loads state dict,
@@ -364,8 +349,7 @@ def _load_model_from_path(model_path, data, cfg, *, architecture=None,
     """
     train_df = data.get('train_df_raw', data['train_df'])
     input_length = _get_input_length(train_df, cfg,
-                                     use_augmented=use_augmented,
-                                     augmented_scaled=augmented_scaled)
+                                     use_augmented=use_augmented)
     ms = merge_scheme or getattr(cfg, 'merge_scheme', 'none')
     arch = architecture or _resolve_architecture(cfg)
     device_str = getattr(cfg, 'device', 'auto')

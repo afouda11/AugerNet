@@ -180,6 +180,77 @@ class TestCebeGnnLoadConfig:
         assert cfg.mode == "predict"
         assert cfg.predict_dir == "my_xyz/"
 
+    def test_param_grid_valid_keys_accepted(self, tmp_path):
+        path = self._write_yaml(tmp_path, """
+            model: cebe-gnn
+            mode: param
+            param_grid:
+              learning_rate: [0.001, 0.0001]
+              n_layers: [2, 3, 4]
+        """)
+        cfg = load_config(path)
+        assert cfg.param_grid == {
+            'learning_rate': [0.001, 0.0001],
+            'n_layers': [2, 3, 4],
+        }
+
+    def test_param_grid_invalid_key_raises(self, tmp_path):
+        path = self._write_yaml(tmp_path, """
+            model: cebe-gnn
+            mode: param
+            param_grid:
+              learning_rate: [0.001]
+              nonexistent_param: [1, 2]
+        """)
+        with pytest.raises(ValueError, match="non-overridable"):
+            load_config(path)
+
+    def test_param_grid_all_overridable_fields(self, tmp_path):
+        """Every key in OVERRIDABLE_FIELDS should be accepted."""
+        from augernet.config import OVERRIDABLE_FIELDS
+
+        # Build a grid with every overridable key (single-value lists)
+        grid_lines = []
+        for key in sorted(OVERRIDABLE_FIELDS):
+            cfg_default = AugerNetConfig()
+            val = getattr(cfg_default, key, None)
+            if val is None or isinstance(val, dict):
+                continue  # skip dict fields for simplicity
+            grid_lines.append(f"  {key}: [{val!r}]")
+        yaml_str = (
+            "model: cebe-gnn\n"
+            "mode: param\n"
+            "param_grid:\n"
+            + "\n".join(grid_lines)
+        )
+        path = tmp_path / "cfg.yml"
+        path.write_text(yaml_str)
+        cfg = load_config(str(path))
+        assert cfg.param_grid
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  OVERRIDABLE_FIELDS consistency
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOverridableFields:
+    """Ensure OVERRIDABLE_FIELDS is consistent with the dataclass."""
+
+    def test_all_overridable_are_dataclass_fields(self):
+        from augernet.config import OVERRIDABLE_FIELDS
+        dc_fields = {f.name for f in AugerNetConfig.__dataclass_fields__.values()}
+        bad = OVERRIDABLE_FIELDS - dc_fields
+        assert bad == set(), f"OVERRIDABLE_FIELDS contains non-dataclass names: {bad}"
+
+    def test_non_overridable_excluded(self):
+        """Fields that should never be in param_grid."""
+        from augernet.config import OVERRIDABLE_FIELDS
+        forbidden = {'model', 'mode', 'result_dir', 'models_dir',
+                     'outputs_dir', 'pngs_dir', 'model_id',
+                     'feature_keys_parsed', 'model_path', 'predict_dir'}
+        overlap = OVERRIDABLE_FIELDS & forbidden
+        assert overlap == set(), f"Should not be overridable: {overlap}"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Filename construction — _build_save_paths

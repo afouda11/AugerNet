@@ -123,16 +123,8 @@ Architecture dict keys:
 
 | Field               | Default  | Description                               |
 |---------------------|----------|-------------------------------------------|
-| `train_data`        | `''`     | Path to training pickle (auto-detected)   |
-| `eval_data`         | `''`     | Path to eval pickle (auto-detected)       |
 | `merge_scheme`      | `none`   | Carbon-class merging scheme               |
-| `broadening_fwhm`   | `1.6`    | Gaussian broadening FWHM (eV)            |
-| `energy_min`        | `200.0`  | Energy grid minimum (eV)                  |
-| `energy_max`        | `273.0`  | Energy grid maximum (eV)                  |
-| `n_spectrum_points` | `731`    | Number of spectrum grid points            |
-| `use_augmented`     | `true`   | Include normalised delta_be augmentation  |
-| `augmented_scaled`  | `false`  | Use scaled delta_be instead               |
-| `delta_be_scale`    | `100.0`  | Scale factor for delta_be                 |
+| `use_augmented`     | `true`   | Prepend z-score normalised delta_be       |
 
 ### Training
 
@@ -143,7 +135,6 @@ Architecture dict keys:
 | `batch_size`          | `64`     | Mini-batch size                          |
 | `learning_rate`       | `3e-4`   | Peak learning rate                       |
 | `weight_decay`        | `1e-4`   | L2 regularisation                        |
-| `use_cosine_schedule` | `true`   | Use cosine-annealing LR schedule         |
 | `random_seed`         | `42`     | Random seed for reproducibility          |
 
 ### Splitting

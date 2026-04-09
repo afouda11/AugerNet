@@ -22,6 +22,32 @@ from typing import Any, Dict, List, Union
 from augernet import PROJECT_ROOT, DATA_PROCESSED_DIR
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Overridable fields  –  the canonical set that param_grid may override
+# ─────────────────────────────────────────────────────────────────────────────
+
+OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
+    # node features
+    'feature_keys',
+    # GNN hyper-parameters
+    'layer_type', 'hidden_channels', 'n_layers',
+    'num_epochs', 'patience', 'batch_size', 'learning_rate', 'random_seed',
+    # regularisation
+    'dropout',
+    # optimizer
+    'optimizer_type', 'weight_decay', 'gradient_clip_norm',
+    'warmup_epochs', 'min_lr',
+    # scheduler
+    'scheduler_type', 'pct_start',
+    # spectrum
+    'spectrum_type', 'max_spec_len', 'max_ke', 'min_ke',
+    'n_points', 'fwhm', 'ke_shift_calc',
+    # CNN-specific
+    'architecture', 'use_augmented', 'merge_scheme',
+    # splitting
+    'n_folds', 'split_method',
+})
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Dataclass
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -49,7 +75,6 @@ class AugerNetConfig:
 
     # node features
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
-    norm_stats_file: str = ''
 
     # GNN hyper-parameters
     layer_type: str = 'EQ'           # EQ (equivariant) | IN (invariant)
@@ -76,6 +101,21 @@ class AugerNetConfig:
     pct_start: float = 0.3           # OneCycleLR only
 
     norm_stats_file: str = 'cebe_norm_stats.pt'
+
+    # ── Spectrum ─────────────────────────────────────────────────────────────────
+    spectrum_type: str = 'stick'                # stick | fitted
+    max_spec_len: int = 300
+    max_ke: int = 273
+    min_ke: int = 200
+    n_points: int = 731
+    fwhm: float = 3.768
+    ke_shift_calc: float = -2.0
+
+    # ── CNN-specific (auger-cnn) ─────────────────────────────────────────
+    architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
+    use_augmented: bool = True       # prepend z-score normalised delta_be to spectrum
+    merge_scheme: str = 'none'       # class merging scheme
+
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
     # evaluate + predict modes
@@ -93,28 +133,6 @@ class AugerNetConfig:
     feature_keys_parsed: List[int] = field(default_factory=list)  # [0, 3, 5]
     model_id: str = ''               # unified filename stem: e.g. 'cebe_gnn_035_random_EQ3_h64'
 
-    # ── Spectrum ─────────────────────────────────────────────────────────────────
-    spectrum_type: str = 'stick'                # stick | fitted
-    max_spec_len: int = 300
-    max_ke: int = 273
-    min_ke: int = 200
-    n_points: int = 731
-    fwhm: float = 3.768
-    ke_shift_calc: float = -2.0
-
-    # ── CNN-specific (auger-cnn) ─────────────────────────────────────────
-    architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
-    train_data: str = ''             # path to CNN training pickle
-    eval_data: str = ''              # path to CNN eval pickle
-    use_augmented: bool = True       # normalised delta_be augmentation
-    augmented_scaled: bool = False   # scaled delta_be augmentation
-    delta_be_scale: float = 100.0    # scale factor for delta_be
-    use_cosine_schedule: bool = True # cosine-annealing LR schedule
-    broadening_fwhm: float = 1.6     # FWHM for Gaussian broadening (eV)
-    energy_min: float = 200.0        # energy grid minimum (eV)
-    energy_max: float = 273.0        # energy grid maximum (eV)
-    n_spectrum_points: int = 731     # number of spectrum grid points
-    merge_scheme: str = 'none'       # class merging scheme
 
     # ─────────────────────────────────────────────────────────────────────
     def to_dict(self) -> Dict[str, Any]:
@@ -194,14 +212,14 @@ class AugerNetConfig:
                         f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                     )
             if self.model == 'auger-cnn':
-                broadening_fwhm_str = str(self.broadening_fwhm).replace('.', 'pt')
+                fwhm_str = str(self.fwhm).replace('.', 'pt')
                 # Build filter and kernel strings from architecture
                 filters_str = 'f' + '_'.join(str(f) for f in self.architecture.get('conv_filters', []))
                 kernels_str = 'k' + '_'.join(str(k) for k in self.architecture.get('conv_kernels', []))
                 p_str =  f"p{self.architecture.get('pool_size', [])}"
                 h_str =  f"h{self.architecture.get('fc_hidden', [])}"
                 self.model_id = (
-                    f"auger_cnn_{broadening_fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
+                    f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
                     f"BE{self.use_augmented}_{filters_str}_{kernels_str}_{p_str}_{h_str}"
                 )
 
@@ -257,6 +275,17 @@ def load_config(config_path: str) -> AugerNetConfig:
         )
 
     cfg = AugerNetConfig(**raw)
+
+    # Validate param_grid keys against the canonical overridable set
+    if cfg.param_grid:
+        bad_keys = set(cfg.param_grid.keys()) - OVERRIDABLE_FIELDS
+        if bad_keys:
+            raise ValueError(
+                f"param_grid contains non-overridable keys:\n"
+                f"  {', '.join(sorted(bad_keys))}\n"
+                f"Allowed param_grid keys:\n"
+                f"  {', '.join(sorted(OVERRIDABLE_FIELDS))}"
+            )
 
     # Resolve project root from the config file's location
     # Walk up until we find setup.py or augernet/

@@ -77,13 +77,7 @@ class CarbonDataset(Dataset):
     df : pd.DataFrame
         Carbon-centric DataFrame (``cnn_auger_calc.pkl`` or similar).
     include_augmentation : bool
-        Prepend ``delta_be`` as an extra input channel.
-    augmentation_type : str
-        ``'normalized'`` (z-score) or ``'scaled'`` (raw / scale_factor).
-    delta_be_scale : float
-        Divisor when ``augmentation_type='scaled'``.
-    normalize_delta_be : bool
-        Z-score normalise delta_be across the dataset.
+        Prepend z-score normalised ``delta_be`` as an extra input channel.
     normalize_spectrum : bool
         Normalise broadened spectrum to [0, 1] per atom.
     broadening_fwhm : float
@@ -98,9 +92,6 @@ class CarbonDataset(Dataset):
         self,
         df: pd.DataFrame,
         include_augmentation: bool = False,
-        augmentation_type: str = 'normalized',
-        delta_be_scale: float = 100.0,
-        normalize_delta_be: bool = True,
         normalize_spectrum: bool = True,
         broadening_fwhm: float = 1.6,
         energy_min: float = 200.0,
@@ -109,8 +100,6 @@ class CarbonDataset(Dataset):
     ):
         self.df = df.reset_index(drop=True)
         self.include_augmentation = include_augmentation
-        self.augmentation_type = augmentation_type
-        self.delta_be_scale = delta_be_scale
         self.normalize_spectrum = normalize_spectrum
         self.broadening_fwhm = broadening_fwhm
 
@@ -158,8 +147,8 @@ class CarbonDataset(Dataset):
         print(f"  Pre-broadened {n_atoms} spectra "
               f"(FWHM={broadening_fwhm} eV) in {elapsed:.1f}s")
 
-        # ── delta_be normalisation ───────────────────────────────────────
-        if normalize_delta_be and 'delta_be' in df.columns:
+        # ── delta_be z-score normalisation ─────────────────────────────────
+        if 'delta_be' in df.columns:
             mu = df['delta_be'].mean()
             std = df['delta_be'].std() + 1e-8
             self._delta_be_norm = ((df['delta_be'] - mu) / std).values
@@ -167,7 +156,7 @@ class CarbonDataset(Dataset):
             self._delta_be_norm = np.zeros(n_atoms, dtype=np.float32)
 
         print(f"✓ CarbonDataset: {n_atoms} atoms, "
-              f"augment={include_augmentation} ({augmentation_type})")
+              f"augment={include_augmentation}")
 
     # ─────────────────────────────────────────────────────────────────────
     def __len__(self) -> int:
@@ -189,10 +178,7 @@ class CarbonDataset(Dataset):
 
         # Optional delta_be augmentation (prepend to spectrum)
         if self.include_augmentation:
-            if self.augmentation_type == 'normalized':
-                dbe = float(self._delta_be_norm[idx])
-            else:  # scaled
-                dbe = float(row['delta_be'] / self.delta_be_scale)
+            dbe = float(self._delta_be_norm[idx])
             spectrum = torch.cat([torch.tensor([dbe]), spectrum])
 
         label = torch.tensor(row['carbon_env_label'], dtype=torch.long)

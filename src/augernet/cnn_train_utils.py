@@ -222,7 +222,7 @@ class CNNTrainer:
 
     def __init__(self, model: nn.Module, device: torch.device,
                  learning_rate: float = 5e-4, weight_decay: float = 1e-4,
-                 patience: int = 20, use_cosine_schedule: bool = False,
+                 patience: int = 20, scheduler_type: str = 'cosine',
                  cosine_T_max: int = None,
                  class_weights: torch.Tensor = None):
         self.model = model.to(device)
@@ -232,10 +232,17 @@ class CNNTrainer:
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
 
-        # ---- optional cosine-annealing LR schedule ---------------------------
-        self.use_cosine_schedule = use_cosine_schedule
+        # ---- LR schedule -----------------------------------------------------
         self.scheduler = None
-        if use_cosine_schedule:
+        self.scheduler_per_batch = False
+        if scheduler_type == 'onecycle':
+            # OneCycleLR requires train_loader length — deferred to fit()
+            self._onecycle_max_lr = learning_rate
+            self._onecycle_cosine_T_max = cosine_T_max  # used as num_epochs
+            self.scheduler_per_batch = True
+            print(f"  Scheduler: OneCycleLR  (will be initialised at fit())")
+        else:
+            # CosineAnnealingLR — per-epoch
             T_max = cosine_T_max if cosine_T_max is not None else 500
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer, T_max=T_max, eta_min=1e-6
@@ -279,6 +286,11 @@ class CNNTrainer:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
+
+            # Per-batch LR step (OneCycleLR)
+            if self.scheduler_per_batch and self.scheduler is not None:
+                self.scheduler.step()
+
             total_loss += loss.item()
             total += labels.size(0)
         return total_loss / len(train_loader), 100.0 * correct / total
@@ -307,6 +319,20 @@ class CNNTrainer:
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader,
             num_epochs: int = 100, verbose: bool = True) -> Dict[str, List[float]]:
+        # Deferred OneCycleLR init (needs train_loader length)
+        if self.scheduler_per_batch and self.scheduler is None:
+            from torch.optim.lr_scheduler import OneCycleLR
+            epochs = getattr(self, '_onecycle_cosine_T_max', None) or num_epochs
+            self.scheduler = OneCycleLR(
+                self.optimizer,
+                max_lr=self._onecycle_max_lr,
+                steps_per_epoch=len(train_loader),
+                epochs=epochs,
+            )
+            total_steps = len(train_loader) * epochs
+            if verbose:
+                print(f"  Scheduler: OneCycleLR  (per-batch, {total_steps} total steps)")
+
         best_val_loss = float('inf')
         patience_counter = 0
 
@@ -314,8 +340,8 @@ class CNNTrainer:
             train_loss, train_acc = self.train_epoch(train_loader)
             val_loss, val_acc = self.validate(val_loader)
 
-            # Step the LR scheduler (if active)
-            if self.scheduler is not None:
+            # Per-epoch LR step (CosineAnnealingLR)
+            if not self.scheduler_per_batch and self.scheduler is not None:
                 self.scheduler.step()
 
             self.history['train_loss'].append(train_loss)

@@ -39,24 +39,17 @@ def _extract_overrides(cfg, overrides: dict) -> dict:
     """Resolve hyperparameters from cfg + per-config overrides.
 
     Returns a flat dict of all HP values needed by the training loop.
+    Any key listed in ``OVERRIDABLE_FIELDS`` can be overridden; values
+    fall back to the base config.
     """
-    hp = {
-        'layer_type':       overrides.get('layer_type',       cfg.layer_type),
-        'hidden_channels':  overrides.get('hidden_channels',  cfg.hidden_channels),
-        'n_layers':         overrides.get('n_layers',         cfg.n_layers),
-        'num_epochs':       overrides.get('num_epochs',       cfg.num_epochs),
-        'patience':         overrides.get('patience',         cfg.patience),
-        'batch_size':       overrides.get('batch_size',       cfg.batch_size),
-        'learning_rate':    overrides.get('learning_rate',    cfg.learning_rate),
-        'random_seed':      overrides.get('random_seed',      cfg.random_seed),
-        'split_method':     overrides.get('split_method',     cfg.split_method),
-        'optimizer_type':   overrides.get('optimizer_type',   cfg.optimizer_type),
-        'weight_decay':     overrides.get('weight_decay',     cfg.weight_decay),
-        'gradient_clip_norm': overrides.get('gradient_clip_norm', cfg.gradient_clip_norm),
-        'warmup_epochs':    overrides.get('warmup_epochs',    cfg.warmup_epochs),
-        'min_lr':           overrides.get('min_lr',           cfg.min_lr),
-        'dropout':          overrides.get('dropout',          cfg.dropout),
-    }
+    from augernet.config import OVERRIDABLE_FIELDS
+
+    hp = {}
+    for key in OVERRIDABLE_FIELDS:
+        if key in overrides:
+            hp[key] = overrides[key]
+        elif hasattr(cfg, key):
+            hp[key] = getattr(cfg, key)
     return hp
 
 
@@ -152,6 +145,8 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         optimizer_type=hp['optimizer_type'], weight_decay=hp['weight_decay'],
         gradient_clip_norm=hp['gradient_clip_norm'],
         warmup_epochs=hp['warmup_epochs'], min_lr=hp['min_lr'],
+        scheduler_type=hp.get('scheduler_type', 'cosine'),
+        pct_start=hp.get('pct_start', 0.3),
     )
     if pred_type == 'AUGER':
         loop_kwargs['spectrum_type'] = spectrum_type

@@ -284,10 +284,7 @@ or see the summary tables below.
 |---------------------|---------|-------------------------------------------|
 | `architecture`      | `{}`    | CNN architecture dict (see above)         |
 | `merge_scheme`      | `none`  | Carbon-class merging scheme               |
-| `broadening_fwhm`   | `1.6`   | Gaussian broadening FWHM (eV)            |
-| `use_augmented`     | `true`  | Include normalised delta_be augmentation  |
-| `augmented_scaled`  | `false` | Use scaled delta_be instead               |
-| `delta_be_scale`    | `100.0` | Scale factor for delta_be                 |
+| `use_augmented`     | `true`  | Prepend z-score normalised delta_be       |
 
 ## Output File Naming
 
