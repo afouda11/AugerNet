@@ -94,13 +94,13 @@ class TestBuildNodeEdgeFeatures:
         assert real_mol_graph.pos.shape == (N_ATOMS, 3)
 
     def test_skipatom_200_shape(self, real_mol_graph):
-        assert real_mol_graph.feat_skipatom_200.shape == (N_ATOMS, 200)
+        assert real_mol_graph.skipatom_200.shape == (N_ATOMS, 200)
 
     def test_atomic_be_shape(self, real_mol_graph):
-        assert real_mol_graph.feat_atomic_be.shape == (N_ATOMS,)
+        assert real_mol_graph.atomic_be.shape == (N_ATOMS,)
 
     def test_e_score_shape(self, real_mol_graph):
-        assert real_mol_graph.feat_e_score.shape == (N_ATOMS,)
+        assert real_mol_graph.e_score.shape == (N_ATOMS,)
 
     def test_node_mask_has_4_carbons(self, real_mol_graph):
         assert real_mol_graph.node_mask.sum().item() == N_CARBONS

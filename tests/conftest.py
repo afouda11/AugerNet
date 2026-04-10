@@ -53,18 +53,18 @@ def _sandbox_cwd():
 # -- mock Data (no torch_geometric) ------------------------------------------
 
 def make_mock_data(n_atoms=4, n_carbon_categories=8):
-    """SimpleNamespace mimicking a PyG Data with all feat_* attributes."""
+    """SimpleNamespace mimicking a PyG Data with all feature attributes."""
     torch = pytest.importorskip("torch")
     data = types.SimpleNamespace()
     data.x = torch.zeros(n_atoms, 3)
-    data.feat_skipatom_200 = torch.randn(n_atoms, 200)
-    data.feat_skipatom_30 = torch.randn(n_atoms, 30)
-    data.feat_onehot = torch.randn(n_atoms, 5)
-    data.feat_atomic_be = torch.randn(n_atoms, 1)
-    data.feat_mol_be = torch.randn(n_atoms, 1)
-    data.feat_e_score = torch.randn(n_atoms, 1)
-    data.feat_env_onehot = torch.randn(n_atoms, n_carbon_categories)
-    data.feat_morgan_fp = torch.randn(n_atoms, 256)
+    data.skipatom_200 = torch.randn(n_atoms, 200)
+    data.skipatom_30 = torch.randn(n_atoms, 30)
+    data.onehot = torch.randn(n_atoms, 5)
+    data.atomic_be = torch.randn(n_atoms, 1)
+    data.mol_be = torch.randn(n_atoms, 1)
+    data.e_score = torch.randn(n_atoms, 1)
+    data.env_onehot = torch.randn(n_atoms, n_carbon_categories)
+    data.morgan_fp = torch.randn(n_atoms, 256)
     return data
 
 

@@ -356,8 +356,7 @@ def run(cfg: AugerNetConfig):
 
     Parameters
     ----------
-    cfg : AugerNetConfig
-        Fully resolved configuration.
+    cfg : AugerNetConfig: resolved configuration from yml.
     """
     mode = cfg.mode
     model_name = cfg.model

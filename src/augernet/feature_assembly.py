@@ -7,7 +7,7 @@ Provides runtime feature selection and assembly for GNN training.
 During data preparation, ALL possible node features are computed and stored
 as separate attributes on each PyG Data object.  At training time, the user
 selects which features to include via a list of integer keys, and this module
-concatenates + optionally scales them into ``data.x``.
+concatenates and scales them into ``data.x``.
 
 Feature Catalog
 ---------------
@@ -19,11 +19,11 @@ Key  Name            Dim   Description
  3   atomic_be         1   Isolated-atom 1s BE (Hartree, raw)
  4   mol_be            1   Molecular CEBE for C, atomic for others (Hartree, raw)
  5   e_score           1   Electronegativity-difference score (raw)
- 6   env_onehot       ~8   Carbon environment one-hot (NUM_CARBON_CATEGORIES)
+ 6   env_onehot       36   Carbon environment one-hot (NUM_CARBON_CATEGORIES)
  7   morgan_fp       256   Per-atom Morgan fingerprint (ECFP2, radius=1)
 
 Only the ``category_feature`` ([1,0,0], [0,1,0], [0,0,1]) is placed in
-``data.x`` at preparation time.  Everything else lives in ``data.feat_*``
+``data.x`` at preparation time.  Everything else lives in ``data.<name>``
 attributes and is assembled here at training time.
 
 Usage
@@ -39,35 +39,24 @@ Usage
 from __future__ import annotations
 
 from copy import copy
-from typing import List, Sequence, TYPE_CHECKING
+from typing import Dict, List, Optional, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE CATALOG
+# FEATURE NAMES
 # ─────────────────────────────────────────────────────────────────────────────
-# Maps integer key → attribute name on the Data object (set during preparation)
-FEATURE_CATALOG = {
-    0: 'feat_skipatom_200',   # (N, 200)
-    1: 'feat_skipatom_30',    # (N, 30)
-    2: 'feat_onehot',         # (N, 5) — H, C, N, O, F
-    3: 'feat_atomic_be',      # (N, 1)
-    4: 'feat_mol_be',         # (N, 1)
-    5: 'feat_e_score',        # (N, 1)
-    6: 'feat_env_onehot',     # (N, NUM_CARBON_CATEGORIES)
-    7: 'feat_morgan_fp',      # (N, MORGAN_N_BITS) — per-atom Morgan FP (ECFP2)
-}
-
+# Maps integer key attribute name on the Data object (set during preparation)
 FEATURE_NAMES = {
-    0: 'skipatom_200',
-    1: 'skipatom_30',
-    2: 'onehot',
-    3: 'atomic_be',
-    4: 'mol_be',
-    5: 'e_score',
-    6: 'env_onehot',
-    7: 'morgan_fp',
+    0: 'skipatom_200',    # (N, 200)
+    1: 'skipatom_30',     # (N, 30)
+    2: 'onehot',          # (N, 5) — H, C, N, O, F
+    3: 'atomic_be',       # (N, 1)
+    4: 'mol_be',          # (N, 1)
+    5: 'e_score',         # (N, 1)
+    6: 'env_onehot',      # (N, NUM_CARBON_CATEGORIES)
+    7: 'morgan_fp',       # (N, MORGAN_N_BITS) — per-atom Morgan FP (ECFP2)
 }
 
 
@@ -96,11 +85,11 @@ def parse_feature_keys(tag: str) -> List[int]:
     if not tag:
         return []
     keys = sorted(int(ch) for ch in tag)
-    unknown = [k for k in keys if k not in FEATURE_CATALOG]
+    unknown = [k for k in keys if k not in FEATURE_NAMES]
     if unknown:
         raise ValueError(
             f"Unknown feature key(s) {unknown} in '{tag}'. "
-            f"Valid keys: {sorted(FEATURE_CATALOG.keys())}"
+            f"Valid keys: {sorted(FEATURE_NAMES.keys())}"
         )
     return keys
 
@@ -128,12 +117,12 @@ def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
     cat_dim = base.size(1) if base is not None else 0
     feat_dim = 0
     for key in feature_keys:
-        attr_name = FEATURE_CATALOG[key]
+        attr_name = FEATURE_NAMES[key]
         tensor = getattr(data, attr_name, None)
         if tensor is None:
             raise ValueError(
                 f"Feature key {key} ({FEATURE_NAMES[key]}) not found on Data object. "
-                f"Available attributes: {[a for a in dir(data) if a.startswith('feat_')]}"
+                f"Available attributes: {list(FEATURE_NAMES.values())}"
             )
         if tensor.dim() == 1:
             feat_dim += 1
@@ -165,12 +154,11 @@ def _scale_tensor(t: torch.Tensor) -> torch.Tensor:
     sigma = sigma.clamp(min=1e-8)  # avoid division by zero for single-atom molecules
     return (t - mu) / sigma
 
-
-
 def assemble_node_features(
     data,
     feature_keys: Sequence[int],
     inplace: bool = True,
+    norm_stats: Optional[Dict[str, float]] = None,
 ):
     """
     Concatenate selected node features into ``data.x``.
@@ -181,11 +169,16 @@ def assemble_node_features(
     Parameters
     ----------
     data : torch_geometric.data.Data
-        A single graph.  Must have ``feat_*`` attributes set during preparation.
+        A single graph.  Must have feature attributes set during preparation.
     feature_keys : sequence of int
-        Which features to include (see FEATURE_CATALOG).
+        Which features to include (see FEATURE_NAMES).
     inplace : bool
         If True, modifies ``data.x`` directly.  If False, returns a copy.
+    norm_stats : dict, optional
+        ``{'mean': float, 'std': float}`` — dataset-wide CEBE normalisation
+        statistics (eV).  When provided and key 4 (``mol_be``) is in
+        *feature_keys*, the ``mol_be`` feature is scaled using these
+        dataset-wide stats instead of per-graph z-scoring.
 
     Returns
     -------
@@ -208,7 +201,7 @@ def assemble_node_features(
     no_scale_keys = {0, 1, 2, 6, 7}
 
     for key in sorted(feature_keys):
-        attr_name = FEATURE_CATALOG[key]
+        attr_name = FEATURE_NAMES[key]
         tensor = getattr(data, attr_name, None)
         if tensor is None:
             raise ValueError(
@@ -232,14 +225,26 @@ def assemble_node_features(
 def assemble_dataset(
     data_list: list,
     feature_keys: Sequence[int],
+    norm_stats: Optional[Dict[str, float]] = None,
 ) -> list:
     """
     Apply ``assemble_node_features`` to every graph in a list (in-place).
 
+    Parameters
+    ----------
+    data_list : list
+        List of PyG Data objects.
+    feature_keys : sequence of int
+        Which features to include.
+    norm_stats : dict, optional
+        Dataset-wide CEBE normalisation stats forwarded to
+        ``assemble_node_features`` for ``mol_be`` scaling.
+
     Returns the same list for convenience.
     """
     for data in data_list:
-        assemble_node_features(data, feature_keys, inplace=True)
+        assemble_node_features(data, feature_keys, inplace=True,
+                               norm_stats=norm_stats)
     return data_list
 
 

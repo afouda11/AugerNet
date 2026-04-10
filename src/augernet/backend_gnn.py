@@ -117,9 +117,10 @@ def _handle_feature_override(data, cfg, overrides):
         fk_tag = compute_feature_tag(fk_parsed)
         if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
             print(f"  Re-assembling features for key override: {fk_tag}")
-            assemble_dataset(data['calc_data'], fk_parsed)
+            ns = data.get('norm_stats')
+            assemble_dataset(data['calc_data'], fk_parsed, norm_stats=ns)
             if data.get('exp_data'):
-                assemble_dataset(data['exp_data'], fk_parsed)
+                assemble_dataset(data['exp_data'], fk_parsed, norm_stats=ns)
             data['assembled_feature_keys'] = fk_tag
 
 
@@ -285,6 +286,9 @@ def load_data(cfg) -> Dict[str, Any]:
 
     feature_keys = cfg.feature_keys_parsed
 
+    # Load dataset-wide CEBE norm stats for mol_be scaling (key 4)
+    norm_stats = torch.load(cfg.norm_stats_file, weights_only=False)
+
     # ── CEBE-GNN ─────────────────────────────────────────────────────────
     if cfg.model == 'cebe-gnn':
         ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_cebe_data.pt')
@@ -304,8 +308,8 @@ def load_data(cfg) -> Dict[str, Any]:
                   f"(val={len(exp_val)}, eval={len(exp_eval)})")
 
         print(f"  Assembling features {cfg.feature_keys}")
-        assemble_dataset(calc_data, feature_keys)
-        assemble_dataset(exp_data_all, feature_keys)
+        assemble_dataset(calc_data, feature_keys, norm_stats=norm_stats)
+        assemble_dataset(exp_data_all, feature_keys, norm_stats=norm_stats)
         print(f"  Calculated data: {len(calc_data)} molecules, "
               f"x.shape[1]={calc_data[0].x.size(1)}")
 
@@ -315,6 +319,7 @@ def load_data(cfg) -> Dict[str, Any]:
             'exp_val_data': exp_val,
             'exp_eval_data': exp_eval,
             'assembled_feature_keys': cfg.feature_keys,
+            'norm_stats': norm_stats,
         }
 
     # ── Auger-GNN ────────────────────────────────────────────────────────
@@ -327,7 +332,7 @@ def load_data(cfg) -> Dict[str, Any]:
         trip_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_auger_trip_data.pt')
         trip_calc_data = [trip_ds[i] for i in range(len(trip_ds))]
 
-        # Reshape y from (n_atoms*600, 1) → (n_atoms, 600) so that PyG
+        # Reshape y from (n_atoms*600, 1) to (n_atoms, 600) so that PyG
         # DataLoader batching concatenates correctly along the atom axis.
         for dlist in (sing_calc_data, trip_calc_data):
             for d in dlist:
@@ -339,8 +344,8 @@ def load_data(cfg) -> Dict[str, Any]:
 
         if spec_type == 'stick':
             print(f"  Assembling features {cfg.feature_keys}")
-            assemble_dataset(sing_calc_data, feature_keys)
-            assemble_dataset(trip_calc_data, feature_keys)
+            assemble_dataset(sing_calc_data, feature_keys, norm_stats=norm_stats)
+            assemble_dataset(trip_calc_data, feature_keys, norm_stats=norm_stats)
             print(f"  x.shape[1]={sing_calc_data[0].x.size(1)}")
 
             return {
@@ -348,17 +353,19 @@ def load_data(cfg) -> Dict[str, Any]:
                 'sing_calc_data': sing_calc_data,
                 'trip_calc_data': trip_calc_data,
                 'assembled_feature_keys': cfg.feature_keys,
+                'norm_stats': norm_stats,
             }
         else:  # fitted — build y_fitted on-the-fly from stick data
             _attach_y_fitted(sing_calc_data, trip_calc_data, cfg)
             print(f"  Assembling features {cfg.feature_keys}")
-            assemble_dataset(sing_calc_data, feature_keys)
+            assemble_dataset(sing_calc_data, feature_keys, norm_stats=norm_stats)
             print(f"  x.shape[1]={sing_calc_data[0].x.size(1)}, "
                   f"y_fitted.shape={sing_calc_data[0].y_fitted.shape}")
-
+            # Note sing_calc_data is both singlet and triplet
             return {
                 'calc_data': sing_calc_data,
                 'assembled_feature_keys': cfg.feature_keys,
+                'norm_stats': norm_stats,
             }
 
     else:
@@ -520,7 +527,7 @@ def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
 
 def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
                        device, hp, fold, verbose, cfg):
-    """Train singlet + triplet GNN models on one fold (no file I/O)."""
+    """Train singlet + triplet GNN models on one fold."""
     sing_calc = data['sing_calc_data']
     trip_calc = data['trip_calc_data']
 
@@ -574,7 +581,7 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
 
 def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
                         device, hp, fold, verbose, cfg):
-    """Train a single fitted-spectrum GNN on one fold (no file I/O)."""
+    """Train a single fitted-spectrum GNN on one fold."""
     calc_data = data['calc_data']
     train_data = [calc_data[i] for i in train_idx]
     val_data   = [calc_data[i] for i in val_idx]
@@ -921,7 +928,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
     print(f"  Assembled {len(data_list)} graphs")
 
     print(f"  Assembling features {cfg.feature_keys}")
-    assemble_dataset(data_list, feature_keys)
+    assemble_dataset(data_list, feature_keys, norm_stats=norm_stats)
 
     # ── Load model ───────────────────────────────────────────────────────
     model, device = _load_model_from_path(

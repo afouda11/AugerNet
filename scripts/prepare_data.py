@@ -6,8 +6,8 @@ All outputs are written to  data/processed/  under the project root.
 
 Feature Store Approach
 ------------------------------------
-ALL possible node features are computed and stored as separate ``data.feat_*``
-attributes during preparation.  ``data.x`` contains only the category_feature.
+ALL possible node features are computed and stored as separate attributes
+during preparation.  ``data.x`` contains only the category_feature.
 Feature selection is implemented at training time via
 ``feature_assembly.assemble_node_features()``.
 
@@ -57,6 +57,14 @@ from augernet import PROJECT_ROOT, DATA_RAW_DIR, DATA_PROCESSED_DIR
 # HELPERS
 # =============================================================================
 
+def _debug_suffix(filename, debug):
+    """Add _debug suffix before extension if debug mode is active."""
+    if not debug:
+        return filename
+    base, ext = os.path.splitext(filename)
+    return f"{base}_debug{ext}"
+
+
 def _save_collated(data_list, output_path):
     """Collate and save a list of PyG Data objects."""
     collated, slices = InMemoryDataset.collate(data_list)
@@ -76,7 +84,9 @@ def _print_graph_stats(data_list, label):
     
     # Show stored feature attributes (feature-store)
     g0 = data_list[0]
-    feat_attrs = [a for a in sorted(dir(g0)) if a.startswith('feat_')]
+    from augernet.feature_assembly import FEATURE_NAMES
+    known_attrs = set(FEATURE_NAMES.values())
+    feat_attrs = [a for a in sorted(dir(g0)) if a in known_attrs]
     if feat_attrs:
         feat_dims = {a: getattr(g0, a).shape for a in feat_attrs}
         print(f"    Feature store: {', '.join(f'{k}={v}' for k, v in feat_dims.items())}")
@@ -92,7 +102,6 @@ def prepare_cebe_gnn(args):
     print("Preparing CEBE GNN data (calc + exp)")
     print("=" * 80)
 
-    # --- Calculated training data ---
     print("\n Calculated CEBE training data ...")
     calc_data = bmg.build_graphs('calc_cebe', DEBUG=args.debug)
 
@@ -100,9 +109,9 @@ def prepare_cebe_gnn(args):
 
     ce.analyze_carbon_environments(calc_data, verbose=args.verbose)
 
-    _save_collated(calc_data, os.path.join(DATA_PROCESSED_DIR, "gnn_calc_cebe_data.pt"))
+    calc_path = _debug_suffix("gnn_calc_cebe_data.pt", args.debug)
+    _save_collated(calc_data, os.path.join(DATA_PROCESSED_DIR, calc_path))
 
-    # --- Experimental evaluation data ---
     print("\n Experimental CEBE evaluation data ...")
     exp_data = bmg.build_graphs('exp_cebe', DEBUG=args.debug)
 
@@ -110,7 +119,8 @@ def prepare_cebe_gnn(args):
 
     ce.analyze_carbon_environments(exp_data, verbose=args.verbose)
 
-    _save_collated(exp_data, os.path.join(DATA_PROCESSED_DIR, "gnn_exp_cebe_data.pt"))
+    exp_path = _debug_suffix("gnn_exp_cebe_data.pt", args.debug)
+    _save_collated(exp_data, os.path.join(DATA_PROCESSED_DIR, exp_path))
 
 # =============================================================================
 # AUGER GNN
@@ -122,7 +132,6 @@ def prepare_auger_gnn(args):
     print("Preparing  Singlet and Triplet Auger GNN data (calc, eval, exp)")
     print("=" * 80)
 
-    # --- Calculated training data ---
     print("\n Calculated Auger singlet training data...")
     sing_calc_data = bmg.build_graphs('calc_auger', 
                                       auger_spin='singlet', 
@@ -134,8 +143,8 @@ def prepare_auger_gnn(args):
 
     ce.analyze_carbon_environments(sing_calc_data, verbose=args.verbose)
 
-    _save_collated(sing_calc_data, os.path.join(DATA_PROCESSED_DIR, 
-                                                "gnn_calc_auger_sing_data.pt"))
+    sing_calc_path = _debug_suffix("gnn_calc_auger_sing_data.pt", args.debug)
+    _save_collated(sing_calc_data, os.path.join(DATA_PROCESSED_DIR, sing_calc_path))
 
     print("\n Calculated Auger triplet training data...")
     trip_calc_data = bmg.build_graphs('calc_auger', 
@@ -148,9 +157,9 @@ def prepare_auger_gnn(args):
 
     ce.analyze_carbon_environments(trip_calc_data, verbose=args.verbose)
 
-    _save_collated(trip_calc_data, os.path.join(DATA_PROCESSED_DIR, 
-                                                "gnn_calc_auger_trip_data.pt"))
-    # --- Calc. evaluation data ---
+    trip_calc_path = _debug_suffix("gnn_calc_auger_trip_data.pt", args.debug)
+    _save_collated(trip_calc_data, os.path.join(DATA_PROCESSED_DIR, trip_calc_path))
+
     print("\n Calc evaluation Auger singlet training data...")
     sing_eval_data = bmg.build_graphs('eval_auger', 
                                       auger_spin='singlet', 
@@ -162,8 +171,8 @@ def prepare_auger_gnn(args):
 
     ce.analyze_carbon_environments(sing_calc_data, verbose=args.verbose)
 
-    _save_collated(sing_eval_data, os.path.join(DATA_PROCESSED_DIR, 
-                                                "gnn_eval_auger_sing_data.pt"))
+    sing_eval_path = _debug_suffix("gnn_eval_auger_sing_data.pt", args.debug)
+    _save_collated(sing_eval_data, os.path.join(DATA_PROCESSED_DIR, sing_eval_path))
 
     print("\n Calc evaluation Auger triplet training data...")
     trip_eval_data = bmg.build_graphs('eval_auger', 
@@ -176,8 +185,8 @@ def prepare_auger_gnn(args):
 
     ce.analyze_carbon_environments(trip_eval_data, verbose=args.verbose)
 
-    _save_collated(trip_eval_data, os.path.join(DATA_PROCESSED_DIR, 
-                                                "gnn_eval_auger_trip_data.pt"))
+    trip_eval_path = _debug_suffix("gnn_eval_auger_trip_data.pt", args.debug)
+    _save_collated(trip_eval_data, os.path.join(DATA_PROCESSED_DIR, trip_eval_path))
 
 # =============================================================================
 # AUGER CNN
@@ -310,10 +319,10 @@ def prepare_auger_cnn(args):
     print("=" * 80)
 
     gnn_files = {
-        'calc_sing': 'gnn_calc_auger_sing_data.pt',
-        'calc_trip': 'gnn_calc_auger_trip_data.pt',
-        'eval_sing': 'gnn_eval_auger_sing_data.pt',
-        'eval_trip': 'gnn_eval_auger_trip_data.pt',
+        'calc_sing': _debug_suffix("gnn_calc_auger_sing_data.pt", args.debug),
+        'calc_trip': _debug_suffix("gnn_calc_auger_trip_data.pt", args.debug),
+        'eval_sing': _debug_suffix("gnn_eval_auger_sing_data.pt", args.debug),
+        'eval_trip': _debug_suffix("gnn_eval_auger_trip_data.pt", args.debug),
     }
 
     sing_calc_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['calc_sing'])
@@ -332,12 +341,12 @@ def prepare_auger_cnn(args):
             auger_max_ke=args.max_ke,
         )
 
-    calc_out_path = os.path.join(DATA_PROCESSED_DIR, f"cnn_auger_calc.pkl")
-    eval_out_path = os.path.join(DATA_PROCESSED_DIR, f"cnn_auger_eval.pkl")
-    calc_df.to_pickle(calc_out_path)
-    eval_df.to_pickle(eval_out_path)
-    print(f"    Saved: {calc_out_path}")
-    print(f"    Saved: {eval_out_path}")
+    calc_out_path = _debug_suffix("cnn_auger_calc.pkl", args.debug)
+    eval_out_path = _debug_suffix("cnn_auger_eval.pkl", args.debug)
+    calc_df.to_pickle(os.path.join(DATA_PROCESSED_DIR, calc_out_path))
+    eval_df.to_pickle(os.path.join(DATA_PROCESSED_DIR, eval_out_path))
+    print(f"    Saved: {os.path.join(DATA_PROCESSED_DIR, calc_out_path)}")
+    print(f"    Saved: {os.path.join(DATA_PROCESSED_DIR, eval_out_path)}")
 
 # =============================================================================
 # MAIN

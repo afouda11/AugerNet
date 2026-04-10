@@ -291,10 +291,10 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
     Returns
     -------
     node_features : dict[str, torch.Tensor]
-        Separate feature tensors, keyed by FEATURE_CATALOG attribute names:
-        ``feat_skipatom_200``, ``feat_skipatom_30``, ``feat_onehot``,
-        ``feat_atomic_be``, ``feat_mol_be``, ``feat_e_score``, ``feat_env_onehot``,
-        ``feat_morgan_fp``
+        Separate feature tensors, keyed by FEATURE_NAMES values:
+        ``skipatom_200``, ``skipatom_30``, ``onehot``,
+        ``atomic_be``, ``mol_be``, ``e_score``, ``env_onehot``,
+        ``morgan_fp``
     x : torch.Tensor
         Category feature only, shape (N, 3), or empty (N, 0) if no category.
     edge_index : torch.Tensor
@@ -327,7 +327,6 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
     for iatom, atom in enumerate(mol.GetAtoms()):
         symbol = atom.GetSymbol()
         atom_symbols.append(symbol)
-
         # SkipAtom-200
         if 'skipatom_200' in all_encoders:
             enc, _ = all_encoders['skipatom_200']
@@ -349,9 +348,9 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
 
         # Atomic BE feature (Hartree, raw)
         atomic_be_feat_list.append(atom_be_eV / au2eV)
-
+        
         # Molecular BE feature: CEBE for carbons, atomic for others (Hartree, raw)
-        if cebe_values is not None and symbol == 'C' and cebe_values[iatom] != -1.:
+        if symbol == 'C' and cebe_values[iatom] != -1.:
             mol_be_feat_list.append(cebe_values[iatom] / au2eV)
         else:
             mol_be_feat_list.append(atom_be_eV / au2eV)
@@ -370,27 +369,27 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
     node_features = {}
 
     if skipatom_200_list:
-        node_features['feat_skipatom_200'] = torch.tensor(
+        node_features['skipatom_200'] = torch.tensor(
             np.array(skipatom_200_list), dtype=torch.float)
 
     if skipatom_30_list:
-        node_features['feat_skipatom_30'] = torch.tensor(
+        node_features['skipatom_30'] = torch.tensor(
             np.array(skipatom_30_list), dtype=torch.float)
 
     if onehot_list:
-        node_features['feat_onehot'] = torch.tensor(
+        node_features['onehot'] = torch.tensor(
             np.array(onehot_list), dtype=torch.float)
 
-    node_features['feat_atomic_be'] = torch.tensor(
+    node_features['atomic_be'] = torch.tensor(
         atomic_be_feat_list, dtype=torch.float)          # (N,)
 
-    node_features['feat_mol_be'] = torch.tensor(
+    node_features['mol_be'] = torch.tensor(
         mol_be_feat_list, dtype=torch.float)              # (N,)
 
-    node_features['feat_e_score'] = torch.tensor(
+    node_features['e_score'] = torch.tensor(
         e_score_list, dtype=torch.float)                  # (N,)
 
-    node_features['feat_env_onehot'] = torch.tensor(
+    node_features['env_onehot'] = torch.tensor(
         env_onehot_np, dtype=torch.float)                 # (N, NUM_CARBON_CATEGORIES)
 
     # ── category feature → data.x ──
@@ -654,9 +653,12 @@ def build_graphs(data_type, mol_file="mol_list.txt",
                 category_feature=np.array([0, 1, 0])
             if auger_spin == 'triplet': 
                 category_feature=np.array([0, 0, 1])
-
+        #print("mol_name:", mol_name)
         node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
             _build_node_and_edge_features(mol, all_encoders, category_feature, cebe)
+        #print(xyz_symbols)
+        #print(np.column_stack((node_features['atomic_be'], node_features['mol_be'])))
+        #print(" ")
 
         if data_type in ['calc_cebe', 'exp_cebe']:
             # Build targets (same logic as v1)
