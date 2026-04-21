@@ -231,3 +231,52 @@ class TestDataPreparation:
         # non-carbon entries are -1
         n_neg = sum(1 for v in cebe if v == -1)
         assert n_neg == N_ATOMS - N_CARBONS
+
+
+# -- atomic_be_eV vs atomic_be attribute separation --------------------------
+
+@pytest.mark.essential
+class TestAtomicBeAttributeSeparation:
+    """Ensure the eV-scale reference (atomic_be_eV) and the Hartree-scale
+    node feature (atomic_be) are distinct and have correct magnitudes.
+
+    This prevents the name-collision regression where setattr overwrote
+    the eV reference with the Hartree feature, breaking evaluation.
+    """
+
+    def test_atomic_be_eV_exists(self, real_mol_graph):
+        """data.atomic_be_eV must exist (eV-scale reference for denormalization)."""
+        assert hasattr(real_mol_graph, 'atomic_be_eV')
+
+    def test_atomic_be_feature_exists(self, real_mol_graph):
+        """data.atomic_be must exist (Hartree-scale node feature for GNN input)."""
+        assert hasattr(real_mol_graph, 'atomic_be')
+
+    def test_atomic_be_eV_in_eV_range(self, real_mol_graph):
+        """eV reference values should be in a physically reasonable range.
+
+        All elements have 1s BEs: H~13.6, C~290, N~400, O~530, F~690 eV.
+        """
+        vals = real_mol_graph.atomic_be_eV
+        assert vals.min() > 10, f"atomic_be_eV too small: {vals.min():.1f}"
+        assert vals.max() < 1000, f"atomic_be_eV too large: {vals.max():.1f}"
+        # Carbon atoms specifically should be ~280–310 eV
+        carbon_mask = real_mol_graph.node_mask > 0.5
+        carbon_vals = vals[carbon_mask]
+        assert carbon_vals.min() > 280, f"Carbon atomic_be_eV too small: {carbon_vals.min():.1f}"
+        assert carbon_vals.max() < 320, f"Carbon atomic_be_eV too large: {carbon_vals.max():.1f}"
+
+    def test_atomic_be_feature_in_hartree_range(self, real_mol_graph):
+        """Hartree-scale node feature: H~0.5, C~11, N~15, O~20, F~26 Ha."""
+        vals = real_mol_graph.atomic_be
+        assert vals.min() > 0.3, f"atomic_be feature too small: {vals.min():.2f}"
+        assert vals.max() < 40, f"atomic_be feature too large: {vals.max():.1f}"
+
+    def test_atomic_be_eV_and_feature_are_different(self, real_mol_graph):
+        """The two attributes must NOT contain the same values."""
+        import torch
+        eV = real_mol_graph.atomic_be_eV
+        feat = real_mol_graph.atomic_be
+        # They have different scales (~290 vs ~10), so should never be close
+        assert not torch.allclose(eV, feat, atol=1.0), \
+            "atomic_be_eV and atomic_be have the same values — name collision!"

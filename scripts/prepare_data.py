@@ -232,7 +232,7 @@ def auger_gnn_to_cnn_dataframe(data_type, sing_pt_path, trip_pt_path,
         node_mask = sing_collated.node_mask[ns:ne]
         carbon_env = sing_collated.carbon_env_labels[ns:ne]
         true_cebe = sing_collated.true_cebe[ns:ne]
-        atomic_be = sing_collated.atomic_be[ns:ne]
+        atomic_be = sing_collated.atomic_be_eV[ns:ne]
 
         # y slices — y was stored as view(-1, 1), so each molecule has
         # n_atoms * max_spec_len * 2 rows in collated.y

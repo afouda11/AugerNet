@@ -111,7 +111,7 @@ def real_mol_graph():
         edge_index=edge_index,
         edge_attr=edge_attr,
         pos=torch.tensor(pos, dtype=torch.float),
-        atomic_be=atomic_be,
+        atomic_be_eV=atomic_be,
         node_mask=torch.FloatTensor(node_mask),
         y=torch.randn(len(xyz_symbols), 1),  # dummy targets
         atom_symbols=xyz_symbols,

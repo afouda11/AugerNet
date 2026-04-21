@@ -325,7 +325,7 @@ class MPNN(nn.Module):
             spectrum_type: (str) - 'stick' or 'fitted'
                 stick:  two heads (energy + intensity), each → spectrum_dim (default 300)
                         total output = 2 * spectrum_dim = 600
-                fitted: single intensity head → spectrum_dim (default 731)
+                fitted: single intensity head to spectrum_dim (default 731)
             spectrum_dim: (int) - per-head output dimension
                 stick mode:  300  (energy 300 + intensity 300 = 600)
                 fitted mode: 731  (intensity only on common energy grid)
@@ -372,12 +372,13 @@ class MPNN(nn.Module):
                 self.dec_eng = nn.Sequential(
                     nn.Linear(emb_dim, dec_mid),
                     nn.LayerNorm(dec_mid),
-                    nn.ReLU(),
+                    nn.Softplus(beta=2.0),
                     nn.Dropout(p=0.10),
                     nn.Linear(dec_mid, dec_mid),
-                    nn.ReLU(),
+                    nn.Softplus(beta=2.0),
                     nn.Dropout(p=0.05),
                     nn.Linear(dec_mid, spectrum_dim),
+                    nn.Softplus(beta=1.0),
                 )
 
         self.layer_type = layer_type
@@ -609,7 +610,8 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         # Internal split for backward compatibility (e.g., for CEBE training)
         train_set, val_set = train_test_split(data_list, test_size=0.10, random_state=split_seed)
 
-    print(f"Training samples: {len(train_set)} │ Validation samples: {len(val_set)}")
+    print(f"Training samples: {len(train_set)}, carbons: {sum(s == 'C' for d in train_set for s in d.atom_symbols)}")
+    print(f"Validation samples: {len(val_set)}, carbons: {sum(s == 'C' for d in val_set for s in d.atom_symbols)}")
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=0, generator=gen,
                                 pin_memory=(device.type == "cuda"))

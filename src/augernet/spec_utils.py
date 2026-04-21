@@ -155,7 +155,7 @@ def extract_spectra(
             # canonical ordering so the same energy region always maps to
             # the same index range in the flattened target vector.
             # this suprisingly made it worse
-            #spec_arr = spec_arr[spec_arr[:, 0].argsort()]
+            spec_arr = spec_arr[spec_arr[:, 0].argsort()]
 
             # ---- normalize spectra ----
             spec_arr[:, 0] /= max_ke             # norm KE

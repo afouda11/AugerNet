@@ -916,7 +916,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
         d = Data(
             x=x, edge_index=edge_index, edge_attr=edge_attr,
             pos=torch.tensor(pos, dtype=torch.float),
-            atomic_be=atomic_be,
+            atomic_be_eV=atomic_be,
             atom_symbols=xyz_symbols,
             smiles=smiles,
             mol_name=mol_name,
@@ -983,7 +983,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
             out = model(d)
 
         pred_out = out.cpu().numpy()
-        atomic_be_vals = d.atomic_be.cpu().numpy()
+        atomic_be_vals = d.atomic_be_eV.cpu().numpy()
 
         atom_syms = d.atom_symbols
         if isinstance(atom_syms, list):

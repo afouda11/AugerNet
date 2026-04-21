@@ -9,7 +9,6 @@ Imported by train_driver.py called automatically after training
 
 import os
 import sys
-import argparse
 import numpy as np
 import torch
 import matplotlib
@@ -239,7 +238,7 @@ def run_evaluation(
         pred_out = out.cpu().detach().numpy()
         true_out = data.y.cpu().detach().numpy()
 
-        atomic_be = data.atomic_be.cpu().numpy() if isinstance(data.atomic_be, torch.Tensor) else np.array(data.atomic_be)
+        atomic_be = data.atomic_be_eV.cpu().numpy() if isinstance(data.atomic_be_eV, torch.Tensor) else np.array(data.atomic_be_eV)
 
         # Original CEBE values (eV) stored at prep time
         has_true_cebe = hasattr(data, 'true_cebe') and data.true_cebe is not None
