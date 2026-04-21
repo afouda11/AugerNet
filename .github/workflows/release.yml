@@ -23,8 +23,6 @@ on:
         default: patch
         type: choice
         options: [patch, minor, major]
-  push:
-    branches: [main]
 
 permissions:
   contents: write
