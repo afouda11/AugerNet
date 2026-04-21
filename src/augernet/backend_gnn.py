@@ -806,7 +806,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
         _call(data['exp_eval_data'], suffix='expeval')
         return val_metrics
     else:
-        # 'all' or lists not available → full experimental set
+        # 'all' or lists not available use full experimental set
         if data.get('exp_data'):
             return _call(data['exp_data'])
         return None

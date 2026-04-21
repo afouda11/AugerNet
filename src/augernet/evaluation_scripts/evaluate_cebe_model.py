@@ -1,6 +1,6 @@
 """
 Evaluate CEBE GNN Model
-
+    
 Imported by train_driver.py called automatically after training
    when ``run_evaluation: true``:
 
@@ -174,6 +174,23 @@ def run_evaluation(
     if param_file_prefix is not None:
         file_stem = f"{param_file_prefix}_{file_stem}"
 
+    # Build loss_stem: same as file_stem but with expval/expeval scrubbed from the
+    # prefix so the loss plot has a consistent name regardless of which exp split
+    # is being evaluated. Any legitimate param-search prefix is preserved.
+    if param_file_prefix is not None:
+        loss_prefix = param_file_prefix
+        for token in ('_expval', '_expeval', 'expval', 'expeval'):
+            loss_prefix = loss_prefix.replace(token, '')
+        loss_prefix = loss_prefix.strip('_') or None
+    else:
+        loss_prefix = None
+
+    loss_stem = f"{model_id}_fold{fold}" if fold is not None else model_id
+    if config_id is not None:
+        loss_stem = f"{loss_stem}_{config_id}"
+    if loss_prefix:
+        loss_stem = f"{loss_prefix}_{loss_stem}"
+
     print("\n" + "=" * 80)
     print(f"EVALUATION: Testing on experimental data{f'  (fold {fold})' if fold else ''}")
     print("=" * 80)
@@ -206,15 +223,15 @@ def run_evaluation(
         ax.set_xlim(0, epochs[-1] + 2)
         ax.grid(True, alpha=0.3, linewidth=1.0, axis='both', zorder=0)
 
-        loss_plot_path = os.path.join(png_dir, f"{file_stem}_loss.png")
-        loss_pdf_path  = os.path.join(png_dir, f"{file_stem}_loss.pdf")
+        loss_plot_path = os.path.join(png_dir, f"{loss_stem}_loss.png")
+        loss_pdf_path  = os.path.join(png_dir, f"{loss_stem}_loss.pdf")
         fig.savefig(loss_plot_path, dpi=300, bbox_inches='tight')
         fig.savefig(loss_pdf_path, bbox_inches='tight')
         print(f"Loss curves saved to: {loss_plot_path}")
         plt.close(fig)
 
         # Write raw loss data to a text file
-        loss_txt_path = os.path.join(output_dir, f"{file_stem}_loss.txt")
+        loss_txt_path = os.path.join(output_dir, f"{loss_stem}_loss.txt")
         with open(loss_txt_path, 'w') as f:
             f.write(f"{'epoch':>8s}  {'train_loss':>14s}  {'val_loss':>14s}\n")
             for ep, tl, vl in zip(epochs, train_loss, val_loss):
