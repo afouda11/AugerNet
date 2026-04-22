@@ -160,7 +160,7 @@ def _giveorbitalenergy(ele, orb, orbital_energy_file='orbitalenergy.json'):
     return cbenergy
 
 def _initialize_all_atom_encoders(skipatom_dir, max_atomic_num=118):
-    
+
     """
     Initialize ALL atom encoders for the feature-store approach.
 
@@ -258,7 +258,7 @@ def _extract_edge_attributes(mol, edge_index_order):
         if len(bond_types) == 0:
             bond_types = bond_enc
         else:
-            bond_types = np.row_stack((bond_types, bond_enc))
+            bond_types = np.vstack((bond_types, bond_enc))
     
     return bond_types
 
