@@ -1,0 +1,1914 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Machine-learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)">
+      
+      
+      
+        <link rel="canonical" href="https://afouda11.github.io/AugerNet/configuration/">
+      
+      
+        <link rel="prev" href="../run-modes/">
+      
+      
+        <link rel="next" href="../artifacts/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Configuration - AugerNet</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#configuration-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AugerNet" class="md-header__button md-logo" aria-label="AugerNet" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AugerNet
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Configuration
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/afouda11/AugerNet" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    afouda11/AugerNet
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AugerNet" class="md-nav__button md-logo" aria-label="AugerNet" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AugerNet
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/afouda11/AugerNet" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    afouda11/AugerNet
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../run-modes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run Modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#node-features-gnn-models-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Features (GNN models only)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gnn-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN Architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gnn-training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN Training
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auger-gnn-spectrum-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auger GNN — Spectrum Settings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auger-cnn-specific-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auger CNN — Specific Settings
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Auger CNN — Specific Settings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data-and-augmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data and augmentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Training
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#splitting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Splitting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hyperparameter-search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hyperparameter Search
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hyperparameter Search">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gnn-param-grid-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN param grid example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cnn-param-grid-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CNN param grid example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evaluate-predict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Evaluate / Predict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-file-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output File Naming
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output File Naming">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#model_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gnn-output-files-per-fold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN output files (per fold)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cnn-output-files-per-fold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CNN output files (per fold)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#param-search-files-per-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Param search files (per config)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output-directory-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output directory naming
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../artifacts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Artifact Generation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/train/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/features/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Features
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/graphs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graphs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#node-features-gnn-models-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Features (GNN models only)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gnn-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN Architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gnn-training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN Training
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auger-gnn-spectrum-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auger GNN — Spectrum Settings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auger-cnn-specific-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auger CNN — Specific Settings
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Auger CNN — Specific Settings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data-and-augmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data and augmentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Training
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#splitting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Splitting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hyperparameter-search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hyperparameter Search
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hyperparameter Search">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gnn-param-grid-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN param grid example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cnn-param-grid-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CNN param grid example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evaluate-predict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Evaluate / Predict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-file-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output File Naming
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output File Naming">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#model_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gnn-output-files-per-fold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GNN output files (per fold)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cnn-output-files-per-fold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CNN output files (per fold)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#param-search-files-per-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Param search files (per config)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output-directory-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output directory naming
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="configuration-reference">Configuration Reference<a class="headerlink" href="#configuration-reference" title="Permanent link">&para;</a></h1>
+<p>All options are set in a YAML config file passed to the CLI via <code>--config</code>.
+See <code>examples/</code> for complete examples for each model type and mode.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>python<span class="w"> </span>-m<span class="w"> </span>augernet<span class="w"> </span>--config<span class="w"> </span>examples/gnn_cebe_configs/cv.yml
+</code></pre></div>
+<hr />
+<h2 id="identity">Identity<a class="headerlink" href="#identity" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td><code>cebe-gnn</code></td>
+<td>Model type: <code>cebe-gnn</code> / <code>auger-gnn</code> / <code>auger-cnn</code></td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>train</code></td>
+<td>Run mode: <code>cv</code> / <code>train</code> / <code>param</code> / <code>evaluate</code> / <code>predict</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="node-features-gnn-models-only">Node Features (GNN models only)<a class="headerlink" href="#node-features-gnn-models-only" title="Permanent link">&para;</a></h2>
+<p>Node features are selected by a compact key string where each digit maps to a feature
+from the catalog below. For example, <code>'035'</code> selects SkipAtom-200 + atomic BE + e-score.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Name</th>
+<th>Dim</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td><code>skipatom_200</code></td>
+<td>200</td>
+<td>SkipAtom atom-type embedding</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td><code>skipatom_30</code></td>
+<td>30</td>
+<td>SkipAtom atom-type embedding (compact)</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td><code>onehot</code></td>
+<td>5</td>
+<td>Element one-hot (H, C, N, O, F)</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td><code>atomic_be</code></td>
+<td>1</td>
+<td>Isolated-atom 1s binding energy</td>
+</tr>
+<tr>
+<td><code>4</code></td>
+<td><code>mol_be</code></td>
+<td>1</td>
+<td>Molecular CEBE for C, atomic for others</td>
+</tr>
+<tr>
+<td><code>5</code></td>
+<td><code>e_score</code></td>
+<td>1</td>
+<td>Electronegativity-difference score</td>
+</tr>
+<tr>
+<td><code>6</code></td>
+<td><code>env_onehot</code></td>
+<td>~8</td>
+<td>Carbon-environment one-hot</td>
+</tr>
+<tr>
+<td><code>7</code></td>
+<td><code>morgan_fp</code></td>
+<td>256</td>
+<td>Per-atom Morgan fingerprint (ECFP2)</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">feature_keys</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;035&#39;</span><span class="w">   </span><span class="c1"># SkipAtom-200 + atomic_be + e_score</span>
+</code></pre></div>
+<hr />
+<h2 id="gnn-architecture">GNN Architecture<a class="headerlink" href="#gnn-architecture" title="Permanent link">&para;</a></h2>
+<p>These fields apply to both <code>cebe-gnn</code> and <code>auger-gnn</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>layer_type</code></td>
+<td><code>EQ</code></td>
+<td><code>EQ</code> (equivariant) or <code>IN</code> (invariant)</td>
+</tr>
+<tr>
+<td><code>hidden_channels</code></td>
+<td><code>64</code></td>
+<td>Hidden channel width</td>
+</tr>
+<tr>
+<td><code>n_layers</code></td>
+<td><code>3</code></td>
+<td>Number of message-passing layers</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="gnn-training">GNN Training<a class="headerlink" href="#gnn-training" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>num_epochs</code></td>
+<td><code>300</code></td>
+<td>Maximum training epochs</td>
+</tr>
+<tr>
+<td><code>patience</code></td>
+<td><code>30</code></td>
+<td>Early-stopping patience (epochs)</td>
+</tr>
+<tr>
+<td><code>batch_size</code></td>
+<td><code>24</code></td>
+<td>Mini-batch size</td>
+</tr>
+<tr>
+<td><code>learning_rate</code></td>
+<td><code>0.001</code></td>
+<td>Peak learning rate</td>
+</tr>
+<tr>
+<td><code>optimizer_type</code></td>
+<td><code>adamw</code></td>
+<td>Optimizer</td>
+</tr>
+<tr>
+<td><code>weight_decay</code></td>
+<td><code>5e-4</code></td>
+<td>L2 regularisation</td>
+</tr>
+<tr>
+<td><code>gradient_clip_norm</code></td>
+<td><code>0.5</code></td>
+<td>Max gradient norm for clipping</td>
+</tr>
+<tr>
+<td><code>warmup_epochs</code></td>
+<td><code>10</code></td>
+<td>Linear LR warmup epochs</td>
+</tr>
+<tr>
+<td><code>min_lr</code></td>
+<td><code>1e-7</code></td>
+<td>Minimum learning rate for scheduler</td>
+</tr>
+<tr>
+<td><code>scheduler_type</code></td>
+<td><code>cosine</code></td>
+<td>LR scheduler: <code>cosine</code> / <code>onecycle</code></td>
+</tr>
+<tr>
+<td><code>dropout</code></td>
+<td><code>0.1</code></td>
+<td>Dropout between message-passing layers</td>
+</tr>
+<tr>
+<td><code>random_seed</code></td>
+<td><code>42</code></td>
+<td>Random seed for reproducibility</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="auger-gnn-spectrum-settings">Auger GNN — Spectrum Settings<a class="headerlink" href="#auger-gnn-spectrum-settings" title="Permanent link">&para;</a></h2>
+<p>These fields apply to <code>auger-gnn</code> only.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spectrum_type</code></td>
+<td><code>stick</code></td>
+<td><code>stick</code> (singlet+triplet) or <code>fitted</code></td>
+</tr>
+<tr>
+<td><code>max_spec_len</code></td>
+<td><code>300</code></td>
+<td>Maximum number of stick lines per spectrum</td>
+</tr>
+<tr>
+<td><code>max_ke</code></td>
+<td><code>273</code></td>
+<td>Maximum kinetic energy (eV)</td>
+</tr>
+<tr>
+<td><code>min_ke</code></td>
+<td><code>200</code></td>
+<td>Minimum kinetic energy (eV)</td>
+</tr>
+<tr>
+<td><code>n_points</code></td>
+<td><code>731</code></td>
+<td>Number of grid points for fitted spectra</td>
+</tr>
+<tr>
+<td><code>fwhm</code></td>
+<td><code>3.768</code></td>
+<td>Broadening FWHM for fitted spectra (eV)</td>
+</tr>
+<tr>
+<td><code>ke_shift_calc</code></td>
+<td><code>-2.0</code></td>
+<td>Kinetic energy shift for calculated data</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="auger-cnn-specific-settings">Auger CNN — Specific Settings<a class="headerlink" href="#auger-cnn-specific-settings" title="Permanent link">&para;</a></h2>
+<p>These fields apply to <code>auger-cnn</code> only.</p>
+<h3 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h3>
+<p>The CNN architecture is specified as a dict. If omitted, the built-in
+<code>recommended</code> preset from <code>cnn_train_utils.py</code> is used.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">architecture</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">conv_filters</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">32</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">64</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">128</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">128</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">conv_kernels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">41</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">21</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">11</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">7</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">pool_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">fc_hidden</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">256</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">128</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">use_batch_norm</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="nt">dropout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="nt">dropout_conv</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.1</span>
+</code></pre></div>
+<p>Architecture dict keys:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conv_filters</code></td>
+<td>list[int]</td>
+<td>Number of filters per conv block</td>
+</tr>
+<tr>
+<td><code>conv_kernels</code></td>
+<td>list[int]</td>
+<td>Kernel size per conv block</td>
+</tr>
+<tr>
+<td><code>pool_size</code></td>
+<td>int</td>
+<td>Max-pool kernel size</td>
+</tr>
+<tr>
+<td><code>fc_hidden</code></td>
+<td>list[int]</td>
+<td>Hidden layer sizes in the FC head</td>
+</tr>
+<tr>
+<td><code>use_batch_norm</code></td>
+<td>bool</td>
+<td>BatchNorm after each conv block</td>
+</tr>
+<tr>
+<td><code>dropout</code></td>
+<td>float</td>
+<td>Dropout rate for FC layers</td>
+</tr>
+<tr>
+<td><code>dropout_conv</code></td>
+<td>float</td>
+<td>Dropout after each conv block</td>
+</tr>
+</tbody>
+</table>
+<h3 id="data-and-augmentation">Data and augmentation<a class="headerlink" href="#data-and-augmentation" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>merge_scheme</code></td>
+<td><code>none</code></td>
+<td>Carbon-class merging scheme</td>
+</tr>
+<tr>
+<td><code>use_augmented</code></td>
+<td><code>true</code></td>
+<td>Prepend z-score normalised delta_be</td>
+</tr>
+</tbody>
+</table>
+<h3 id="training">Training<a class="headerlink" href="#training" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>num_epochs</code></td>
+<td><code>500</code></td>
+<td>Maximum training epochs</td>
+</tr>
+<tr>
+<td><code>patience</code></td>
+<td><code>40</code></td>
+<td>Early-stopping patience</td>
+</tr>
+<tr>
+<td><code>batch_size</code></td>
+<td><code>64</code></td>
+<td>Mini-batch size</td>
+</tr>
+<tr>
+<td><code>learning_rate</code></td>
+<td><code>3e-4</code></td>
+<td>Peak learning rate</td>
+</tr>
+<tr>
+<td><code>weight_decay</code></td>
+<td><code>1e-4</code></td>
+<td>L2 regularisation</td>
+</tr>
+<tr>
+<td><code>random_seed</code></td>
+<td><code>42</code></td>
+<td>Random seed for reproducibility</td>
+</tr>
+</tbody>
+</table>
+<h3 id="splitting">Splitting<a class="headerlink" href="#splitting" title="Permanent link">&para;</a></h3>
+<p>The CNN uses <strong>random molecule-level splitting</strong> only. All carbon atoms
+from the same molecule are kept in the same fold to prevent data leakage.
+The GNN <code>split_method</code> options (<code>butina</code>, etc.) do not apply to the CNN.</p>
+<hr />
+<h2 id="cross-validation">Cross-Validation<a class="headerlink" href="#cross-validation" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>n_folds</code></td>
+<td><code>5</code></td>
+<td>Number of CV folds</td>
+</tr>
+<tr>
+<td><code>train_fold</code></td>
+<td><code>3</code></td>
+<td>Which fold to use for <code>train</code> / <code>param</code> modes</td>
+</tr>
+<tr>
+<td><code>split_method</code></td>
+<td><code>random</code></td>
+<td><code>random</code> / <code>butina</code> (GNN only; CNN always random)</td>
+</tr>
+<tr>
+<td><code>run_evaluation</code></td>
+<td><code>true</code></td>
+<td>Evaluate on experimental data after each fold</td>
+</tr>
+<tr>
+<td><code>exp_split</code></td>
+<td><code>both</code></td>
+<td>Experimental data subset: <code>all</code> / <code>val</code> / <code>eval</code> / <code>both</code></td>
+</tr>
+<tr>
+<td><code>run_unit_tests</code></td>
+<td><code>false</code></td>
+<td>Check permutation/rotation invariance (GNN only)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="hyperparameter-search">Hyperparameter Search<a class="headerlink" href="#hyperparameter-search" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>param_grid</code></td>
+<td><code>{}</code></td>
+<td>Dict of <code>field: [value, ...]</code> lists to search</td>
+</tr>
+</tbody>
+</table>
+<h3 id="gnn-param-grid-example">GNN param grid example<a class="headerlink" href="#gnn-param-grid-example" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">param_grid</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">feature_keys</span><span class="p">:</span><span class="w">    </span><span class="p p-Indicator">[</span><span class="s">&#39;035&#39;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&#39;03&#39;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">learning_rate</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">[</span><span class="nv">0.0001</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0.001</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">hidden_channels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">48</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">64</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<h3 id="cnn-param-grid-example">CNN param grid example<a class="headerlink" href="#cnn-param-grid-example" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">param_grid</span><span class="p">:</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">merge_scheme</span><span class="p">:</span><span class="w">    </span><span class="p p-Indicator">[</span><span class="nv">none</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">heteroatom</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">broadening_fwhm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1.2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">1.6</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2.0</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">learning_rate</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">[</span><span class="nv">0.0001</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0.0003</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">use_augmented</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">[</span><span class="nv">true</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">false</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<hr />
+<h2 id="evaluate-predict">Evaluate / Predict<a class="headerlink" href="#evaluate-predict" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_path</code></td>
+<td><code>''</code></td>
+<td>Path to a saved <code>.pth</code> model (relative to cwd or absolute)</td>
+</tr>
+<tr>
+<td><code>predict_dir</code></td>
+<td><code>''</code></td>
+<td>Directory of <code>.xyz</code> files for <code>predict</code> mode (GNN only)</td>
+</tr>
+</tbody>
+</table>
+<p>For evaluate and predict modes, the <code>model_id</code> used in output filenames is
+derived from the <code>model_path</code> filename (minus the <code>.pth</code> extension). The
+architecture fields must match the values used during training.</p>
+<blockquote>
+<p><strong>Note:</strong> Predict mode is not yet implemented for <code>auger-cnn</code>.</p>
+</blockquote>
+<hr />
+<h2 id="output-file-naming">Output File Naming<a class="headerlink" href="#output-file-naming" title="Permanent link">&para;</a></h2>
+<h3 id="model_id">model_id<a class="headerlink" href="#model_id" title="Permanent link">&para;</a></h3>
+<p>Each model type constructs its <code>model_id</code> differently:</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Format</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cebe-gnn</code></td>
+<td><code>cebe_gnn_{feature_keys}_{split}_{layer_type}{n_layers}_h{hidden}</code></td>
+<td><code>cebe_gnn_035_random_EQ3_h64</code></td>
+</tr>
+<tr>
+<td><code>auger-gnn</code></td>
+<td><code>auger_gnn_{feature_keys}_{split}_{layer_type}{n_layers}_h{hidden}</code></td>
+<td><code>auger_gnn_035_random_EQ3_h64</code></td>
+</tr>
+<tr>
+<td><code>auger-cnn</code></td>
+<td><code>auger_cnn_{merge_scheme}</code></td>
+<td><code>auger_cnn_none</code></td>
+</tr>
+</tbody>
+</table>
+<p>For evaluate and predict modes, <code>model_id</code> is the <code>model_path</code> filename
+without the <code>.pth</code> extension.</p>
+<h3 id="gnn-output-files-per-fold">GNN output files (per fold)<a class="headerlink" href="#gnn-output-files-per-fold" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{model_id}_fold{fold}.pth</code></td>
+<td>Saved model weights</td>
+</tr>
+<tr>
+<td><code>{model_id}_fold{fold}_loss.png</code></td>
+<td>Training/validation loss curves</td>
+</tr>
+<tr>
+<td><code>{model_id}_fold{fold}_scatter.png</code></td>
+<td>Predicted vs experimental scatter</td>
+</tr>
+<tr>
+<td><code>{model_id}_fold{fold}_results.txt</code></td>
+<td>Numeric predicted vs true (carbon only)</td>
+</tr>
+<tr>
+<td><code>{model_id}_cv_summary.json</code></td>
+<td>Cross-validation summary (<code>cv</code> mode)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cnn-output-files-per-fold">CNN output files (per fold)<a class="headerlink" href="#cnn-output-files-per-fold" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{model_id}_fold{fold}.pth</code></td>
+<td>Saved model weights</td>
+</tr>
+<tr>
+<td><code>training_history_fold{fold}.csv</code></td>
+<td>Per-epoch loss and accuracy</td>
+</tr>
+<tr>
+<td><code>training_plots_fold{fold}.png</code></td>
+<td>Training curve plots</td>
+</tr>
+</tbody>
+</table>
+<h3 id="param-search-files-per-config">Param search files (per config)<a class="headerlink" href="#param-search-files-per-config" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{search_id}_{model_id}_fold{fold}_{config_id}.pth</code></td>
+<td>Saved model weights</td>
+</tr>
+<tr>
+<td><code>{search_id}_{model_id}_param_summary.json</code></td>
+<td>Ranked leaderboard JSON</td>
+</tr>
+</tbody>
+</table>
+<h3 id="output-directory-naming">Output directory naming<a class="headerlink" href="#output-directory-naming" title="Permanent link">&para;</a></h3>
+<p>Each model type writes to its own results directory:</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Directory pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cebe-gnn</code></td>
+<td><code>cebe_gnn_{mode}_results/</code></td>
+</tr>
+<tr>
+<td><code>auger-gnn</code></td>
+<td><code>auger_gnn_{mode}_results/</code></td>
+</tr>
+<tr>
+<td><code>auger-cnn</code></td>
+<td><code>auger_cnn_{mode}_results/</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each contains <code>outputs/</code> and <code>pngs/</code> subdirectories. Train, cv, and param
+modes also create a <code>models/</code> subdirectory.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.expand", "navigation.instant", "navigation.path", "navigation.sections", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
