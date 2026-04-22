@@ -5,8 +5,8 @@ authors:
     given-names: Adam Emad Ahmed
     orcid: https://orcid.org/0000-0002-9445-5537
 title: "AugerNet: GNN predictions of carbon 1s core-electron binding energies."
-version: 1.1.0
+version: 1.0.0
 identifiers:
   - type: doi
-    value: placeholder
+    value: 10.5281/zenodo.19689244
 date-released: 2026-04-22
