@@ -163,25 +163,130 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_exp_split_names(split):
-    """Load mol-name sets for the experimental val/eval split.
+    """Return hardcoded mol-name sets for the experimental val/eval split.
 
-    Reads ``mol_list_val.txt`` and ``mol_list_eval.txt`` from the raw
-    exp_cebe directory.  Returns ``(val_names, eval_names)`` as sets.
+    Returns ``(val_names, eval_names)`` as sets.
     """
-    from augernet import DATA_RAW_DIR
-    exp_dir = os.path.join(DATA_RAW_DIR, 'exp_cebe')
+    _VAL_NAMES = {
+        "fluoromethane",
+        "1-3-5-trifluorobenzene",
+        "1-2-3-5-tetrafluorobenzene",
+        "pentafluorobenzene",
+        "hexafluorobenzene",
+        "nitrobenzene",
+        "aniline",
+        "tetracyanoethylene",
+        "tetracyanoethylene-oxide",
+        "4-fluorobenzonitrile",
+        "benzotrifluoride",
+        "benzonitrile",
+        "benzaldehyde",
+        "4-dimethylamino-aniline",
+        "nitromethane",
+        "cinnamaldehyde",
+        "2-5-dimethylacetophenone",
+        "nitrosyl-cyanide",
+        "carbon-dioxide",
+        "difluoromethane",
+        "1-1-difluoroethylene",
+        "trifluoroacetic-acid",
+        "1-1-1-trifluoroethane",
+        "carbonyl-fluoride",
+        "hexafluoroethane",
+        "bis-trifluoromethyl-ether",
+        "bis-trifluoromethyl-peroxide",
+        "hexafluoroacetone",
+        "octafluoropropane",
+        "dimethyl-carbonate",
+        "2-nitropropane",
+        "trimethylamine",
+        "carbon-suboxide",
+        "ethyl-fluoroacetate",
+        "octafluoro-2-butene",
+        "perfluoro-tert-butanol",
+        "pyrrole",
+        "2-butyne",
+        "acetic-anhydride",
+        "2-methyl-2-nitropropane",
+        "1-1-3-trimethylurea",
+        "hexafluoroacetylacetone",
+        "cyanamide",
+        "fluorobenzene",
+        "p-fluoroaniline",
+        "p-fluorophenol",
+        "o-difluorobenzene",
+        "acetic-acid",
+        "acetone",
+        "acrylic-acid",
+        "benzene",
+        "butane",
+        "benzophenone",
+        "cyclobutane",
+        "cyclohexane",
+        "ethyl-trifluoroacetate-esca",
+        "hexane",
+        "m-bis-trifluoromethyl-benzene",
+        "methyl-methacrylate",
+        "p-bis-trifluoromethyl-benzene",
+        "pentane",
+        "3-3-3-trifluoropropyne",
+        "acetylacetone",
+    }
 
-    def _read(fname):
-        path = os.path.join(exp_dir, fname)
-        if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"Exp split file not found: {path}\n"
-                f"Run  generate_exp_split.py  to create it."
-            )
-        with open(path) as f:
-            return {line.strip() for line in f if line.strip()}
+    _EVAL_NAMES = {
+        "1-2-3-4-tetrafluorobenzene",
+        "1-2-4-5-tetrafluorobenzene",
+        "phenol",
+        "4-aminobenzonitrile",
+        "toluene",
+        "acetophenone",
+        "octane",
+        "decane",
+        "tridecane",
+        "methylamine",
+        "vinyl-fluoride",
+        "ethyl-fluoride",
+        "difluoroacetic-acid",
+        "trifluoroethylene",
+        "tetrafluoroethylene",
+        "bis-trifluoromethyl-trioxide",
+        "ketene",
+        "trifluoromethane",
+        "cyanoguanidine",
+        "3-3-3-trifluoropropene",
+        "trifluoronitrosomethane",
+        "hexafluoropropene",
+        "ethyl-formate",
+        "ethyl-difluoroacetate",
+        "hexafluorocyclobutene",
+        "hexafluoro-2-butyne",
+        "octafluorocyclobutane",
+        "isocyanic-acid",
+        "ethyl-acetate",
+        "trimethylacetonitrile",
+        "p-fluoronitrobenzene",
+        "p-difluorobenzene",
+        "acrylonitrile",
+        "adamantane",
+        "anthrone",
+        "2-4-6-trimethylacetophenone",
+        "diphenyl-carbonate",
+        "4-nitrobenzaldehyde",
+        "4-trifluoromethyl-benzonitrile",
+        "cyclopentane",
+        "ethylene",
+        "fluorenone",
+        "formic-acid",
+        "indole",
+        "methyl-acrylate",
+        "methyl-isobutyrate",
+        "pyrimidine",
+        "allene",
+        "ketoavobenzone",
+        "enolavobenzone",
+    }
 
-    return _read('mol_list_val.txt'), _read('mol_list_eval.txt')
+    return _VAL_NAMES, _EVAL_NAMES
 
 
 def _split_exp_data(exp_data_all, cfg):

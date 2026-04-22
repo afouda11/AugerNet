@@ -397,7 +397,7 @@ AugerNet/
     test_cebe_gnn_graph.py              # XYZ parsing, graph building, node/edge features
     test_cebe_gnn_model.py              # MPNN construction, forward pass, symmetry tests
   data/
-    raw/                                # Raw XYZ + CEBE files + atomic BE files
+    raw/                                # Raw XYZ + CEBE + atomic BE + skipatom files 
     processed/                          # Pre-built PyG datasets + CNN pickles + norm stat files
   artifacts/                            # Release artifacts (tracked in git)
     data_manifest.yml

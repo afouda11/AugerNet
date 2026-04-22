@@ -14,8 +14,8 @@
 # and compare the output against the md5 checksums listed below.
 
 zenodo:
-  doi: "10.5281/zenodo.19688196"      # TODO: replace with actual DOI after upload
-  record_id: "19688196"                 # TODO: numeric suffix of the DOI
+  doi: "10.5281/zenodo.19688196"      
+  record_id: "19688196"                 
   url: "https://doi.org/10.5281/zenodo.19688196"
   version: "1.0.0"
   title: "AugerNet: CEBE Data"

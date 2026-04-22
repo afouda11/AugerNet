@@ -160,6 +160,7 @@ def _giveorbitalenergy(ele, orb, orbital_energy_file='orbitalenergy.json'):
     return cbenergy
 
 def _initialize_all_atom_encoders(skipatom_dir, max_atomic_num=118):
+    
     """
     Initialize ALL atom encoders for the feature-store approach.
 
