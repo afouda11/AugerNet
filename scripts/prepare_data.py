@@ -58,6 +58,28 @@ ZENODO_RAW = {
     'exp_cebe.tar.gz':  'https://zenodo.org/records/19688196/files/exp_cebe.tar.gz?download=1',
 }
 
+# SkipAtom pre-trained embeddings are bundled in data/raw/skipatom.tar.gz
+# (MIT License, lantunes et al., arXiv:2107.14664)
+_SCRIPTS_DIR    = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT      = os.path.dirname(_SCRIPTS_DIR)
+SKIPATOM_ARCHIVE = os.path.join(_REPO_ROOT, 'data', 'raw', 'skipatom.tar.gz')
+SKIPATOM_DIR     = os.path.join(_REPO_ROOT, 'data', 'raw', 'skipatom')
+
+
+def _unpack_skipatom():
+    """Unpack skipatom.tar.gz into data/raw/ if not already unpacked."""
+    if os.path.isdir(SKIPATOM_DIR):
+        return
+    if not os.path.exists(SKIPATOM_ARCHIVE):
+        raise FileNotFoundError(
+            f"SkipAtom archive not found: {SKIPATOM_ARCHIVE}\n"
+            f"Make sure data/raw/skipatom.tar.gz is present in the repository."
+        )
+    print("  Unpacking skipatom.tar.gz ...")
+    with tarfile.open(SKIPATOM_ARCHIVE, 'r:gz') as tar:
+        tar.extractall(os.path.join(_REPO_ROOT, 'data', 'raw'))
+    print(f"  Unpacked to: {SKIPATOM_DIR}")
+
 
 def _download(url, dest_path):
     """Download a file from url to dest_path with a progress message."""
@@ -214,6 +236,9 @@ def main():
     print(f"  Project root : {PROJECT_ROOT}")
     print(f"  Raw data     : {DATA_RAW_DIR}")
     print(f"  Output       : {DATA_PROCESSED_DIR}")
+
+    # Always unpack skipatom if not already done
+    _unpack_skipatom()
 
     # --from-zenodo: download processed files and optionally raw archives
     if args.from_zenodo:

@@ -297,6 +297,11 @@ To just process graphs locally from pre-downloaded raw run:
 python scripts/prepare_data.py
 ```
 
+This repository contains a compressed dir of the skipatom: https://github.com/lantunes/skipatom\
+files required to use the skipatom-200 and skipatom-30 vectors as atom type rep node features in:
+`data/raw/skipatom.tar.gz`\
+`prepare_data.py` will unpack this if it has not already been unpacked.
+
 ## Tests
 
 Tests are split into two tiers using pytest markers:
