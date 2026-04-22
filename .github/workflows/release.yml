@@ -77,7 +77,6 @@ jobs:
           tag:  "v${{ steps.version.outputs.app_version }}"
           artifacts: >
             artifacts/model_weights/*.pth,
-            artifacts/plots/*.pdf,
             artifacts/plots/*.png,
-            artifacts/config/cv.yml,
+            artifacts/config/*.yml,
             artifacts/data_manifest.yml
