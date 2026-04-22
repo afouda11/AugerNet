@@ -17,7 +17,9 @@ run_evaluation: true
 # 113 mols in exp cebe data split into: 
 #   validation (to assist fold and param search) 
 #   final evaluation sets
-exp_split: 'both' # 'all' | 'val' | 'eval' | 'both'
+# path to processed evaluation data set interally in AugerNet
+exp_split: 'both' # 'val' | 'eval' | 'both' (separate val and eval sets) | 'all' (combined val + eval set)
+# 'both' with have eval and val prefixes for the outputs
 
 # Sanity check permutation invariance & rotational invariance/equivariance
 run_unit_tests: true 

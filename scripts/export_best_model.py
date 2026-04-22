@@ -32,6 +32,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+import re
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,7 +41,7 @@ from pathlib import Path
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog='export_best_model',
+        prog='export_best_model'examples/gnn_cebe_configs/train.yml,
         description='Export the best model weights and plots to artifacts/.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -247,7 +248,13 @@ def main() -> None:
 
     # ── Plots ────────────────────────────────────────────────────────────────
     print('\nPlots:')
-    for filename in [f'{stem}_loss.png', f'{stem}_scatter.png']:
+    # loss plot has no exp-split prefix
+    loss_stem = re.sub(r'^(expval|expeval)_', '', stem)
+    for filename in [
+        f'{loss_stem}_loss.png',
+        f'expval_{loss_stem}_scatter.png',
+        f'expeval_{loss_stem}_scatter.png',
+    ]:
         copy_plot(
             src=plots_src_dir / filename,
             dst=out_dir / 'plots' / filename,

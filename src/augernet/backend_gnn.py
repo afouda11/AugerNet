@@ -227,7 +227,7 @@ def _split_exp_data(exp_data_all, cfg):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  On-the-fly stick → fitted conversion
+#  On-the-fly stick to fitted conversion
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _attach_y_fitted(sing_data, trip_data, cfg):

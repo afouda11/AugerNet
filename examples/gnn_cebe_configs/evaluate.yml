@@ -12,18 +12,16 @@
 model: cebe-gnn          # cebe-gnn | auger-gnn | cnn
 mode: evaluate           # cv | train | param | evaluate | predict
 
-# Evaluate on exp data immediately after each training cycle
-run_evaluation: true
 # 113 mols in exp cebe data split into: 
 #   validation (to assist fold and param search) 
 #   final evaluation sets
-exp_split: 'both' # 'val' | 'eval' | 'both'
-
 # path to processed evaluation data set interally in AugerNet
+exp_split: 'both' # 'val' | 'eval' | 'both' (separate val and eval sets) | 'all' (combined val + eval set)
+# 'both' with have eval and val prefixes for the outputs
 
 # ── Path to the saved model (.pth) ──────────────────────────────────────────
 # Relative to the working directory, or absolute.
-model_path: /path/to/saved/model/
+model_path: path/to/saved/model.pth
 
 # ── Must match the architecture / features used during training ──────────────
 # Node Feature Specification

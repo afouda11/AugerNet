@@ -1,6 +1,6 @@
 # AugerNet
 
-Machine learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)
+*Machine learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)*
 
 Includes:
 1) Equivariant GNN predictions of: 
@@ -9,11 +9,13 @@ Includes:
 
 2) CNN classifications of local bond environments (functional groups) from AES spectra augmented with CEBEs
 
-Currently the data for training is not available and will be released when the associated papers come online.
-A paper for the GNN CEBE predictions will be released soon and the full GNN CEBE pipeline will become availble.
-This will soon be followed by a manuscript on GNN Auger predictions and CNN bond env classification.
-Once the manuscripts are online, the software will be fully operational.
-The present release contains the routines for data preparation, model training, evaluating and predicting.
+The present code and data release only supports the GNN CEBE predictions of the following manuscript:
+
+<img src="docs/graphical_abstract.png" alt="AugerNet graphical abstract" height="350" width="700"/>
+
+The next release will accompany a future manuscript on GNN Auger predictions and CNN bond env classification and \
+will include the data for these functionalities. The present release only contains the code templates for GNN Auger \
+prediction and CNN bond environment classification.
 
 AugerNet currently provides **three model types**:
 
@@ -88,11 +90,20 @@ model: cebe-gnn        # or auger-gnn or auger-cnn
 train_fold: 3
 n_folds: 5
 run_evaluation: true
+exp_split: 'both' # 'val' | 'eval' | 'both' (separate val and eval sets) | 'all' (combined val + eval set)
 ```
 
 Output is written to `{model_type}_{mode}_results/` (e.g.
 `cebe_gnn_train_results/`, `auger_cnn_train_results/`) with
 subdirectories `models/`, `outputs/`, and `pngs/`.
+
+For `run_evaluation: true`
+113 mols in expirmental cebe data split into: 
+  - Validation set (`val`) (to assist fold and param search)
+  - Final evaluation set (`eval`)
+
+Path to processed evaluation data set interally in AugerNet \
+`exp_split: 'both'` will have `eval` and `val` prefixes assigned to different outputs
 
 ### cv — K-fold cross-validation
 
@@ -104,6 +115,7 @@ model: cebe-gnn
 n_folds: 5
 split_method: random   # random | butina (GNN only)
 run_evaluation: true
+exp_split: 'val' 
 ```
 
 ### param — Hyperparameter search
@@ -113,6 +125,8 @@ Train one fold per configuration from a Cartesian-product grid.
 ```yaml
 mode: param
 model: cebe-gnn
+run_evaluation: true
+exp_split: 'val' 
 param_grid:
   feature_keys: ['035', '03', '0356']
   learning_rate: [0.0001, 0.0003, 0.001]
@@ -120,17 +134,18 @@ param_grid:
   n_layers: [3, 4, 5]
 ```
 
-A unique `search_id` is derived from the searched dimensions so that
+A unique `search_id` is derived from the searched dimensions so that\
 different grid searches never overwrite each other.
 
 ### evaluate — Evaluate a saved model
 
-Load a previously trained `.pth` model and evaluate it on experimental data.
+Load a previously trained `.pth` model and evaluate it on experimental data.\
 Architecture fields must match the values used during training.
 
 ```yaml
 mode: evaluate
 model: cebe-gnn
+exp_split: 'both' # 'val' | 'eval' | 'both' (separate val and eval sets) | 'all' (combined val + eval set)
 model_path: cebe_gnn_train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
 feature_keys: '035'
 layer_type: EQ
@@ -140,7 +155,7 @@ n_layers: 3
 
 ### predict — Predict on new molecules
 
-Run inference on a directory of `.xyz` files using a saved GNN model.
+Run inference on a directory of `.xyz` files using a saved GNN model.\
 No pre-processing is needed — molecular graphs are built on the fly.
 
 ```yaml
@@ -162,10 +177,8 @@ n_layers: 3
 
 ### CEBE GNN (`cebe-gnn`)
 
-Predicts per-atom carbon 1s core-electron binding energies using an
-equivariant or invariant message-passing neural network. Input is a set
-of `.xyz` molecular geometries converted to PyG graphs with configurable
-node features.
+Predicts per-atom carbon 1s core-electron binding energies using an equivariant or invariant message-passing neural network.\
+Input is a set of `.xyz` molecular geometries converted to PyG graphs with configurable node features.
 
 ```yaml
 model: cebe-gnn
@@ -175,65 +188,18 @@ hidden_channels: 64
 n_layers: 3
 ```
 
-**model_id format:** `cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`
+**model_id format:** `cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`\
 Example: `cebe_gnn_035_random5_EQ3_h64`
 
 ### Auger GNN (`auger-gnn`)
 
-Predicts Auger-electron spectra from molecular graphs. Supports two
-spectrum types:
-
-- **`stick`** — predicts separate singlet and triplet stick spectra
-  (2 models per fold)
-- **`fitted`** — predicts a single combined broadened spectrum
-  (1 model per fold)
-
-```yaml
-model: auger-gnn
-feature_keys: '035'
-spectrum_type: stick     # stick | fitted
-layer_type: EQ
-hidden_channels: 64
-n_layers: 3
-```
-
-**`stick` model_id format:** `auger_gnn_{spectrum_type}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`
-**`fitted` model_id format:** `auger_gnn_{spectrum_type}{fwhm}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`
-Example: `auger_gnn_stick_035_butina10_EQ4_h32` or `auger_gnn_fitted1pt5_035_butina10_EQ4_h32`
+Predicts Auger-electron spectra from molecular graphs.\
+The details for running this model will be released in a future release.
 
 ### Auger CNN (`auger-cnn`)
 
-Classifies carbon environments from broadened Auger spectra using a 1D
-CNN. The input is a per-carbon DataFrame with Gaussian-broadened spectra,
-optionally augmented with CEBE shift information.
-
-```yaml
-model: auger-cnn
-merge_scheme: none       # class merging (none | heteroatom | ...)
-broadening_fwhm: 1.6     # Gaussian broadening FWHM in eV
-use_augmented: true       # include delta_be augmentation
-n_spectrum_points: 731
-num_epochs: 500
-patience: 40
-batch_size: 64
-learning_rate: 0.0003
-```
-
-The CNN architecture is specified as a dict in the config file:
-
-```yaml
-architecture:
-  conv_filters: [32, 64, 128, 128]
-  conv_kernels: [41, 21, 11, 7]
-  pool_size: 3
-  fc_hidden: [256, 128]
-  use_batch_norm: true
-  dropout: 0.3
-  dropout_conv: 0.1
-```
-
-**model_id format:** `auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}_BE{use_augmented}_f{filters}_k{kernels}_p{pool}_h{hidden}`
-Example: `auger_cnn_1pt5_butina5_chemical_BEtrue_f16_32_64_k21_11_7_p3_h128`
+Classifies carbon environments from broadened Auger spectra using a 1D CNN.\
+The details for running this model will be released in a future release.
 
 ## Configuration Reference
 
@@ -257,8 +223,7 @@ or see the summary tables below.
 | 3   | `atomic_be`    | 1   | Isolated-atom 1s binding energy         |
 | 4   | `mol_be`       | 1   | Molecular CEBE for C, atomic for others |
 | 5   | `e_score`      | 1   | Electronegativity-difference score      |
-| 6   | `env_onehot`   | ~8  | Carbon-environment one-hot              |
-| 7   | `morgan_fp`    | 256 | Per-atom Morgan fingerprint (ECFP2)     |
+| 6   | `env_onehot`   | 36  | Carbon-environment one-hot              |
 
 ### GNN Architecture
 
@@ -270,21 +235,11 @@ or see the summary tables below.
 
 ### Auger GNN — Spectrum
 
-| Field           | Default  | Description                              |
-|-----------------|----------|------------------------------------------|
-| `spectrum_type` | `stick`  | `stick` (singlet+triplet) or `fitted`    |
-| `max_spec_len`  | `300`    | Maximum number of stick lines            |
-| `n_points`      | `731`    | Number of grid points for fitted spectra |
-| `fwhm`          | `3.768`  | Broadening FWHM for fitted spectra (eV)  |
-| `ke_shift_calc` | `-2.0`   | Kinetic energy shift for calculated data |
+Details for this model will be released in a future release.
 
 ### Auger CNN — Specific
 
-| Field               | Default | Description                               |
-|---------------------|---------|-------------------------------------------|
-| `architecture`      | `{}`    | CNN architecture dict (see above)         |
-| `merge_scheme`      | `none`  | Carbon-class merging scheme               |
-| `use_augmented`     | `true`  | Prepend z-score normalised delta_be       |
+Details for this model will be released in a future release.
 
 ## Output File Naming
 
@@ -313,11 +268,7 @@ modes also create a `models/` subdirectory.
 
 ### CNN output files (per fold)
 
-| File                                          | Description                     |
-|-----------------------------------------------|---------------------------------|
-| `{model_id}_fold{fold}.pth`                   | Saved model weights             |
-| `training_history_fold{fold}.csv`             | Per-epoch loss and accuracy     |
-| `training_plots_fold{fold}.png`               | Training curve plots            |
+Details for this model will be released in a future release.
 
 ## Data Preparation
 
@@ -369,9 +320,9 @@ properties required by the physics of the problem.
 
 ## Artifact Generation
 
-After running cross-validation, use `scripts/export_best_model.py` to
-identify the best fold and copy its weights, plots, and config into the
-tracked `artifacts/` directory for release.
+`scripts/export_best_model.py` is used to copy the selected model to the artifact.\
+For a `cv` or `param` run identify the best fold and copy its weights, plots, and\ config into the tracked `artifacts/` directory for release.\
+Here the train run for the main rersult in the CEBE GNN manuscript is used for the artifact.
 
 ```bash
 uv run python scripts/export_best_model.py
@@ -422,8 +373,8 @@ AugerNet/
     test_cebe_gnn_graph.py              # XYZ parsing, graph building, node/edge features
     test_cebe_gnn_model.py              # MPNN construction, forward pass, symmetry tests
   data/
-    raw/                                # Raw XYZ + CEBE files
-    processed/                          # Pre-built PyG datasets + CNN pickles
+    raw/                                # Raw XYZ + CEBE files + atomic BE files
+    processed/                          # Pre-built PyG datasets + CNN pickles + norm stat files
   artifacts/                            # Release artifacts (tracked in git)
     data_manifest.yml
     config/

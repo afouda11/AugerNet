@@ -3,10 +3,10 @@ message: "If you use this software, please cite it as below."
 authors:
   - family-names: Fouda
     given-names: Adam
-    orcid: https://orcid.org/1234-5678-9012-3456
-title: "AugerNet: GNN predictions of carbon 1s core-electron binding energies (CEBEs) from molecular geometry."
-version: 0.1.0
+    orcid: https://orcid.org/0000-0002-9445-5537
+title: "AugerNet: GNN predictions of carbon 1s core-electron binding energies."
+version: 1.1.0
 identifiers:
   - type: doi
     value: 10.5281/zenodo.123456789
-date-released: 2026-03-13
+date-released: 2026-04-22

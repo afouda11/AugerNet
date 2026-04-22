@@ -18,7 +18,7 @@ zenodo:
   record_id: "XXXXXXX"                 # TODO: numeric suffix of the DOI
   url: "https://doi.org/10.5281/zenodo.XXXXXXX"
   version: "1.0.0"
-  title: "AugerNet: CEBE Training Data"
+  title: "AugerNet: CEBE Data"
   license: "CC-BY-4.0"
   description: >
     Calculated and experimental carbon 1s core-electron binding energy (CEBE)
@@ -26,12 +26,6 @@ zenodo:
 
 files:
   # Pre-processed PyG datasets (data/processed/)
-  - path: data/processed/cebe_norm_stats.pt
-    description: "Normalization statistics (mean, std) computed from calc_cebe"
-    size_bytes: 1088
-    sha256: f918e91189272890cd4a36015e96df3b873ddc334c6e98e8deb104003a89dce7
-    url: "https://zenodo.org/records/XXXXXXX/files/cebe_norm_stats.pt?download=1"
-
   - path: data/processed/gnn_calc_cebe_data.pt
     description: "Calculated CEBE molecular graphs (primary training set)"
     size_bytes: 54949546
@@ -43,12 +37,6 @@ files:
     size_bytes: 3396097
     sha256: c6097542f016e580478063da871550756b0c10cd91b7d0d6c6e481751d0fc8c7
     url: "https://zenodo.org/records/XXXXXXX/files/gnn_exp_cebe_data.pt?download=1"
-
-  - path: data/processed/gnn_pes_cebe_data.pt
-    description: "PES CEBE molecular graphs"
-    size_bytes: 1006209
-    sha256: 375735992804c5127a493f7b65da6f3c46ba3cc35c5af1e40146b12003652f1b
-    url: "https://zenodo.org/records/XXXXXXX/files/gnn_pes_cebe_data.pt?download=1"
 
   # Raw archives (data/raw/)
   - path: data/raw/calc_cebe.tar.gz
