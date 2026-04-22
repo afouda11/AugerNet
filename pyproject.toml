@@ -1,6 +1,6 @@
 [project]
 name = "augernet"
-version = "0.1.16"
+version = "1.0.0"
 description = "GNN predictions of carbon 1s core-electron binding energies (CEBEs) from molecular geometry."
 readme = "README.md"
 license = "BSD-3-Clause"
