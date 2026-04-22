@@ -4,8 +4,8 @@
 
 Includes:
 1) Equivariant GNN predictions of: 
-  a) core-electron binding energies (CEBE) 
-  b) Auger-Electron spectra (AES) 
+  - a: core-electron binding energies (CEBE) 
+  - b: Auger-Electron spectra (AES) 
 
 2) CNN classifications of local bond environments (functional groups) from AES spectra augmented with CEBEs
 
@@ -13,9 +13,10 @@ The present code and data release only supports the GNN CEBE predictions of the 
 
 <img src="docs/graphical_abstract.png" alt="AugerNet graphical abstract" height="350" width="700"/>
 
-The next release will accompany a future manuscript on GNN Auger predictions and CNN bond env classification and \
-will include the data for these functionalities. The present release only contains the code templates for GNN Auger \
-prediction and CNN bond environment classification.
+The next release will accompany a future manuscript on GNN Auger predictions and\
+CNN bond env classification and will include the data for these functionalities.\
+The present release only contains the code templates for GNN Auger prediction and\
+CNN bond environment classification.
 
 AugerNet currently provides **three model types**:
 
@@ -70,8 +71,10 @@ All runs are controlled by a single YAML config file.
 Example configs are provided in `examples/`.
 
 ```bash
-# CEBE GNN — cross-validation
-python -m augernet --config examples/gnn_cebe_configs/cv.yml
+# Download processed graph data from https://zenodo.org/records/19688196
+python scripts/prepare_data.py --from-zenodo
+# CEBE GNN — train, will recreate same model in artifact and main paper result.
+python -m augernet --config examples/gnn_cebe_configs/train.yml
 
 ```
 
@@ -271,10 +274,25 @@ modes also create a `models/` subdirectory.
 Details for this model will be released in a future release.
 
 ## Data Preparation
+Processed and raw data files are stored at https://zenodo.org/records/19688196\ 
 
-Pre-processed data files are provided in `data/processed/`. To regenerate
-them from the raw files in `data/raw/`:
+To download pre-processed data to `data/processed/` run: 
+```bash
+python scripts/prepare_data.py --from-zenodo
+```
 
+To dowloand both the pre-processed data to `data/processed/` and\
+raw data to `data/raw/` and unpack run:
+```bash
+python scripts/prepare_data.py --from-zenodo --with-raw
+```
+
+To dowloand both the raw data to `data/raw/`, unpack then process graphs locally run: 
+```bash
+python scripts/prepare_data.py --with-raw
+```
+
+To just process graphs locally from pre-downloaded raw run:
 ```bash
 python scripts/prepare_data.py
 ```
@@ -320,6 +338,7 @@ properties required by the physics of the problem.
 
 ## Artifact Generation
 
+The artifact showcases the main result of the release (in plots) and includes the\ config file and model weights that produced it.
 `scripts/export_best_model.py` is used to copy the selected model to the artifact.\
 For a `cv` or `param` run identify the best fold and copy its weights, plots, and\ config into the tracked `artifacts/` directory for release.\
 Here the train run for the main rersult in the CEBE GNN manuscript is used for the artifact.

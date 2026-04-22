@@ -38,9 +38,68 @@ CLI Reference
 import os
 import warnings
 import argparse
+import tarfile
+import urllib.request
 import numpy as np
 import pandas as pd
 from collections import Counter
+
+# =============================================================================
+# ZENODO DOWNLOAD
+# =============================================================================
+
+ZENODO_PROCESSED = {
+    'gnn_calc_cebe_data.pt': 'https://zenodo.org/records/19688196/files/gnn_calc_cebe_data.pt?download=1',
+    'gnn_exp_cebe_data.pt':  'https://zenodo.org/records/19688196/files/gnn_exp_cebe_data.pt?download=1',
+}
+
+ZENODO_RAW = {
+    'calc_cebe.tar.gz': 'https://zenodo.org/records/19688196/files/calc_cebe.tar.gz?download=1',
+    'exp_cebe.tar.gz':  'https://zenodo.org/records/19688196/files/exp_cebe.tar.gz?download=1',
+}
+
+
+def _download(url, dest_path):
+    """Download a file from url to dest_path with a progress message."""
+    filename = os.path.basename(dest_path)
+    if os.path.exists(dest_path):
+        print(f"    Already exists, skipping: {filename}")
+        return
+    print(f"    Downloading {filename} ...")
+    urllib.request.urlretrieve(url, dest_path)
+    print(f"    Saved: {dest_path}")
+
+
+def download_processed(processed_dir):
+    """Download pre-built processed .pt files from Zenodo."""
+    print("\n" + "=" * 80)
+    print("Downloading processed data from Zenodo")
+    print("=" * 80)
+    os.makedirs(processed_dir, exist_ok=True)
+    for filename, url in ZENODO_PROCESSED.items():
+        _download(url, os.path.join(processed_dir, filename))
+    print("\nProcessed data ready in:", processed_dir)
+
+
+def download_raw(raw_dir):
+    """Download raw tar.gz archives from Zenodo and unpack them."""
+    print("\n" + "=" * 80)
+    print("Downloading raw data from Zenodo")
+    print("=" * 80)
+    os.makedirs(raw_dir, exist_ok=True)
+    for filename, url in ZENODO_RAW.items():
+        archive_path = os.path.join(raw_dir, filename)
+        _download(url, archive_path)
+        folder_name = filename.replace('.tar.gz', '')
+        dest_dir = os.path.join(raw_dir, folder_name)
+        if os.path.exists(dest_dir):
+            print(f"    Already unpacked, skipping: {folder_name}/")
+        else:
+            print(f"    Unpacking {filename} ...")
+            with tarfile.open(archive_path, 'r:gz') as tar:
+                tar.extractall(raw_dir)
+            print(f"    Unpacked to: {dest_dir}")
+    print("\nRaw data ready in:", raw_dir)
 
 # Suppress RDKit deprecation warnings BEFORE importing RDKit
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -123,232 +182,6 @@ def prepare_cebe_gnn(args):
     _save_collated(exp_data, os.path.join(DATA_PROCESSED_DIR, exp_path))
 
 # =============================================================================
-# AUGER GNN
-# =============================================================================
-
-def prepare_auger_gnn(args):
-    """Prepare Singlet and Triplet Auger GNN data (calc, eval, exp)."""
-    print("\n" + "=" * 80)
-    print("Preparing  Singlet and Triplet Auger GNN data (calc, eval, exp)")
-    print("=" * 80)
-
-    print("\n Calculated Auger singlet training data...")
-    sing_calc_data = bmg.build_graphs('calc_auger', 
-                                      auger_spin='singlet', 
-                                      auger_max_ke=args.max_ke,
-                                      auger_max_spec_len=args.max_spec_len,
-                                      DEBUG=args.debug)
-
-    _print_graph_stats(sing_calc_data, "Auger calc singlet")
-
-    ce.analyze_carbon_environments(sing_calc_data, verbose=args.verbose)
-
-    sing_calc_path = _debug_suffix("gnn_calc_auger_sing_data.pt", args.debug)
-    _save_collated(sing_calc_data, os.path.join(DATA_PROCESSED_DIR, sing_calc_path))
-
-    print("\n Calculated Auger triplet training data...")
-    trip_calc_data = bmg.build_graphs('calc_auger', 
-                                      auger_spin='triplet', 
-                                      auger_max_ke=args.max_ke,
-                                      auger_max_spec_len=args.max_spec_len,
-                                      DEBUG=args.debug)
-
-    _print_graph_stats(trip_calc_data, "Auger calc triplet")
-
-    ce.analyze_carbon_environments(trip_calc_data, verbose=args.verbose)
-
-    trip_calc_path = _debug_suffix("gnn_calc_auger_trip_data.pt", args.debug)
-    _save_collated(trip_calc_data, os.path.join(DATA_PROCESSED_DIR, trip_calc_path))
-
-    print("\n Calc evaluation Auger singlet training data...")
-    sing_eval_data = bmg.build_graphs('eval_auger', 
-                                      auger_spin='singlet', 
-                                      auger_max_ke=args.max_ke,
-                                      auger_max_spec_len=args.max_spec_len,
-                                      DEBUG=args.debug)
-
-    _print_graph_stats(sing_eval_data, "Auger eval singlet")
-
-    ce.analyze_carbon_environments(sing_calc_data, verbose=args.verbose)
-
-    sing_eval_path = _debug_suffix("gnn_eval_auger_sing_data.pt", args.debug)
-    _save_collated(sing_eval_data, os.path.join(DATA_PROCESSED_DIR, sing_eval_path))
-
-    print("\n Calc evaluation Auger triplet training data...")
-    trip_eval_data = bmg.build_graphs('eval_auger', 
-                                      auger_spin='triplet', 
-                                      auger_max_ke=args.max_ke,
-                                      auger_max_spec_len=args.max_spec_len,
-                                      DEBUG=args.debug)
-
-    _print_graph_stats(trip_eval_data, "Auger eval triplet")
-
-    ce.analyze_carbon_environments(trip_eval_data, verbose=args.verbose)
-
-    trip_eval_path = _debug_suffix("gnn_eval_auger_trip_data.pt", args.debug)
-    _save_collated(trip_eval_data, os.path.join(DATA_PROCESSED_DIR, trip_eval_path))
-
-# =============================================================================
-# AUGER CNN
-# =============================================================================
-
-def auger_gnn_to_cnn_dataframe(data_type, sing_pt_path, trip_pt_path, 
-                               auger_max_spec_len=300, auger_max_ke=273):
-    """
-    Extract a per-carbon DataFrame from a saved Auger GNN .pt file.
-
-    Each row is one carbon atom with its stick spectrum, molecular CEBE,
-    normalized binding energy shift, and carbon environment class.
-    Gaussian broadening is deferred to training time.
-
-    Parameters
-    ----------
-    pt_path : str
-        Path to collated Auger GNN ``(data, slices)`` file.
-    auger_max_spec_len : int
-        Max number of spectral peaks used during graph building (for reshape).
-    auger_max_ke : float
-        Max KE used to normalise energies during graph building.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per carbon atom with columns:
-        ``mol_name, smiles, atom_idx, carbon_env_label, true_cebe,
-        atomic_be, delta_be, stick_energies, stick_intensities``
-    """
-    sing_collated, sing_slices = torch.load(sing_pt_path, weights_only=False)
-    trip_collated, trip_slices = torch.load(trip_pt_path, weights_only=False)
-    dataset = []
-    n_mols = len(sing_slices['x']) - 1
-
-    for i in range(n_mols):
-        # Node-level slices (for node_mask, carbon_env, atomic_be, etc.)
-        ns, ne = int(sing_slices['x'][i]), int(sing_slices['x'][i + 1])
-        n_atoms = ne - ns
-
-        mol_name = sing_collated.mol_name[i]
-        smiles = sing_collated.smiles[i]
-        node_mask = sing_collated.node_mask[ns:ne]
-        carbon_env = sing_collated.carbon_env_labels[ns:ne]
-        true_cebe = sing_collated.true_cebe[ns:ne]
-        atomic_be = sing_collated.atomic_be_eV[ns:ne]
-
-        # y slices — y was stored as view(-1, 1), so each molecule has
-        # n_atoms * max_spec_len * 2 rows in collated.y
-        ys, ye = int(sing_slices['y'][i]), int(sing_slices['y'][i + 1])
-        sing_y_flat = sing_collated.y[ys:ye].view(-1)
-        sing_y_2d = sing_y_flat.view(n_atoms, auger_max_spec_len * 2)
-        # Undo the transpose+reshape: (N, 2*L) → (N, L, 2)
-        sing_y_spec = sing_y_2d.view(n_atoms, 2, auger_max_spec_len).transpose(1, 2)
-
-        tys, tye = int(trip_slices['y'][i]), int(trip_slices['y'][i + 1])
-        trip_y_flat = trip_collated.y[tys:tye].view(-1)
-        trip_y_2d = trip_y_flat.view(n_atoms, auger_max_spec_len * 2)
-        # Undo the transpose+reshape: (N, 2*L) → (N, L, 2)
-        trip_y_spec = trip_y_2d.view(n_atoms, 2, auger_max_spec_len).transpose(1, 2)
-
-        if data_type == 'eval':
-            exp_spec_path = os.path.join(DATA_RAW_DIR, 'eval_auger', f"{mol_name}_exp.txt")
-            exp_spec      = np.loadtxt(exp_spec_path)
-
-        for j in range(n_atoms):
-            if node_mask[j].item() < 0.5:
-                continue  # skip non-carbons
-
-            sing_spec = sing_y_spec[j]                      # (max_spec_len, 2)
-            trip_spec = trip_y_spec[j]                      # (max_spec_len, 2)
-            # Remove zero-padding rows
-            sing_valid = sing_spec[:, 1].abs() > 0
-            sing_spec_valid = sing_spec[sing_valid]
-            trip_valid = trip_spec[:, 1].abs() > 0
-            trip_spec_valid = trip_spec[trip_valid]
-
-            # De-normalise energies (spectra were stored as E/max_ke)
-            sing_energies = sing_spec_valid[:, 0].numpy() * auger_max_ke
-            sing_intensities = sing_spec_valid[:, 1].numpy()
-            trip_energies = trip_spec_valid[:, 0].numpy() * auger_max_ke
-            trip_intensities = trip_spec_valid[:, 1].numpy()
-
-            cebe_val = true_cebe[j].item()
-            be_val = atomic_be[j].item()
-            if data_type == 'calc': 
-              dataset.append({
-                  'mol_name': mol_name,
-                  'smiles': smiles,
-                  'atom_idx': j,
-                  'carbon_env_label': carbon_env[j].item(),
-                  'true_cebe': cebe_val,
-                  'atomic_be': be_val,
-                  'delta_be': be_val - cebe_val,
-                  'sing_stick_energies': sing_energies,
-                  'sing_stick_intensities': sing_intensities,
-                  'trip_stick_energies': trip_energies,
-                  'trip_stick_intensities': trip_intensities,
-              })
-            if data_type == 'eval': 
-              dataset.append({
-                  'mol_name': mol_name,
-                  'smiles': smiles,
-                  'atom_idx': j,
-                  'carbon_env_label': carbon_env[j].item(),
-                  'true_cebe': cebe_val,
-                  'atomic_be': be_val,
-                  'delta_be': be_val - cebe_val,
-                  'sing_stick_energies': sing_energies,
-                  'sing_stick_intensities': sing_intensities,
-                  'trip_stick_energies': trip_energies,
-                  'trip_stick_intensities': trip_intensities,
-                  'exp_spec': exp_spec 
-              })
-
-    df = pd.DataFrame(dataset)
-    print(f"  CNN DataFrame: {len(df)} carbons from {n_mols} molecules")
-    return df
-
-
-def prepare_auger_cnn(args):
-    """
-    Prepare Auger CNN data by extracting per-carbon DataFrames
-    from the already-processed Auger GNN .pt files.
-
-    Saves one pickle for calc (singlet + triplet) and eval (singlet + triplet).
-    """
-    print("\n" + "=" * 80)
-    print("Preparing Auger CNN DataFrames from Auger GNN graphs")
-    print("=" * 80)
-
-    gnn_files = {
-        'calc_sing': _debug_suffix("gnn_calc_auger_sing_data.pt", args.debug),
-        'calc_trip': _debug_suffix("gnn_calc_auger_trip_data.pt", args.debug),
-        'eval_sing': _debug_suffix("gnn_eval_auger_sing_data.pt", args.debug),
-        'eval_trip': _debug_suffix("gnn_eval_auger_trip_data.pt", args.debug),
-    }
-
-    sing_calc_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['calc_sing'])
-    trip_calc_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['calc_trip'])
-    sing_eval_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['eval_sing'])
-    trip_eval_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['eval_trip'])
-
-    calc_df = auger_gnn_to_cnn_dataframe('calc',
-            sing_calc_pt_path, trip_calc_pt_path,
-            auger_max_spec_len=args.max_spec_len,
-            auger_max_ke=args.max_ke,
-        )
-    eval_df = auger_gnn_to_cnn_dataframe('eval',
-            sing_eval_pt_path, trip_eval_pt_path, 
-            auger_max_spec_len=args.max_spec_len,
-            auger_max_ke=args.max_ke,
-        )
-
-    calc_out_path = _debug_suffix("cnn_auger_calc.pkl", args.debug)
-    eval_out_path = _debug_suffix("cnn_auger_eval.pkl", args.debug)
-    calc_df.to_pickle(os.path.join(DATA_PROCESSED_DIR, calc_out_path))
-    eval_df.to_pickle(os.path.join(DATA_PROCESSED_DIR, eval_out_path))
-    print(f"    Saved: {os.path.join(DATA_PROCESSED_DIR, calc_out_path)}")
-    print(f"    Saved: {os.path.join(DATA_PROCESSED_DIR, eval_out_path)}")
-
-# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -359,6 +192,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
+    parser.add_argument('--from-zenodo', action='store_true',
+                        help='Download pre-built processed data files from Zenodo '
+                             '(skips local graph building)')
+    parser.add_argument('--with-raw', action='store_true',
+                        help='Also download and unpack raw data archives from Zenodo '
+                             '(use with --from-zenodo to also regenerate graphs locally)')
     parser.add_argument('--debug', action='store_true',
                         help='Only generate first 5 in mol_list.txt for testing')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -369,27 +208,34 @@ def main():
                         help='Max number of final states in auger spec')
     args = parser.parse_args()
 
-    print("╔" + "═" * 78 + "╗")
-    print("║" + "  DATA PREPARATION — AUGER-NET".center(78) + "║")
-    print("╚" + "═" * 78 + "╝")
+    print("=" * 80)
+    print("  DATA PREPARATION -- AUGER-NET")
+    print("=" * 80)
     print(f"  Project root : {PROJECT_ROOT}")
     print(f"  Raw data     : {DATA_RAW_DIR}")
     print(f"  Output       : {DATA_PROCESSED_DIR}")
+
+    # --from-zenodo: download processed files and optionally raw archives
+    if args.from_zenodo:
+        download_processed(DATA_PROCESSED_DIR)
+        if args.with_raw:
+            download_raw(DATA_RAW_DIR)
+        print("\nDone. To regenerate graphs from raw data, run without --from-zenodo.")
+        return
+
+    # --with-raw alone: download raw archives then build graphs
+    if args.with_raw:
+        download_raw(DATA_RAW_DIR)
+
     print(f"  Debug mode   : {args.debug}")
     print(f"  Verbose      : {args.verbose}")
 
     #make cebe gnn graphs
     prepare_cebe_gnn(args)
 
-    #make auger gnn graphs
-    prepare_auger_gnn(args)
-
-    #make auger cnn dataframes (from gnn graphs)
-    prepare_auger_cnn(args)
-
     # ---- Final summary ----
     print("\n" + "=" * 80)
-    print("ALL DATA PREPARATION COMPLETE")
+    print("DATA PREPARATION COMPLETE")
     print("=" * 80)
 
     print("\nReady for training!")

@@ -9,44 +9,45 @@
 #
 # To verify data integrity after downloading, run from the repo root:
 #
-#   shasum -a 256 data/processed/*.pt data/raw/*.tar.gz
+#    md5 data/processed/*.pt data/raw/*.tar.gz
 #
-# and compare the output against the sha256 checksums listed below.
+# and compare the output against the md5 checksums listed below.
 
 zenodo:
-  doi: "10.5281/zenodo.XXXXXXX"       # TODO: replace with actual DOI after upload
-  record_id: "XXXXXXX"                 # TODO: numeric suffix of the DOI
-  url: "https://doi.org/10.5281/zenodo.XXXXXXX"
+  doi: "10.5281/zenodo.19688196"      # TODO: replace with actual DOI after upload
+  record_id: "19688196"                 # TODO: numeric suffix of the DOI
+  url: "https://doi.org/10.5281/zenodo.19688196"
   version: "1.0.0"
   title: "AugerNet: CEBE Data"
   license: "CC-BY-4.0"
   description: >
     Calculated and experimental carbon 1s core-electron binding energy (CEBE)
-    datasets used to train and evaluate the AugerNet GNN models.
+    datasets used to train and evaluate the AugerNet GNN models.  
+    Both the raw .tar.gz and processed graph .pt dataset are included.
 
 files:
   # Pre-processed PyG datasets (data/processed/)
   - path: data/processed/gnn_calc_cebe_data.pt
     description: "Calculated CEBE molecular graphs (primary training set)"
-    size_bytes: 54949546
-    sha256: b4fbe91d68b92dabe207477868d0454a3a021fe687f34baa6e3fd272f9c8af91
-    url: "https://zenodo.org/records/XXXXXXX/files/gnn_calc_cebe_data.pt?download=1"
+    size_bytes: 30019098
+    md5: a7b3a3a999003d891bf2191c352a73af
+    url: "https://zenodo.org/records/19688196/files/gnn_calc_cebe_data.pt?download=1"
 
   - path: data/processed/gnn_exp_cebe_data.pt
     description: "Experimental CEBE molecular graphs (evaluation set)"
-    size_bytes: 3396097
-    sha256: c6097542f016e580478063da871550756b0c10cd91b7d0d6c6e481751d0fc8c7
-    url: "https://zenodo.org/records/XXXXXXX/files/gnn_exp_cebe_data.pt?download=1"
+    size_bytes: 1856499
+    md5: 5b967b97268aa315e41b0ebc28c0eada
+    url: "https://zenodo.org/records/19688196/files/gnn_exp_cebe_data.pt?download=1"
 
   # Raw archives (data/raw/)
   - path: data/raw/calc_cebe.tar.gz
     description: "Raw calculated CEBE XYZ files and outputs"
-    size_bytes: 2897870
-    sha256: 7c209279b00c592763b9cff6c03099b53957ef444d4bfd97514e72a7e0c81c10
-    url: "https://zenodo.org/records/XXXXXXX/files/calc_cebe.tar.gz?download=1"
+    size_bytes: 1573664
+    md5: 2e8a5c5f1ab43ccd6b828513ec46a65c
+    url: "https://zenodo.org/records/19688196/files/calc_cebe.tar.gz?download=1"
 
   - path: data/raw/exp_cebe.tar.gz
     description: "Raw experimental CEBE XYZ files and outputs"
-    size_bytes: 955323
-    sha256: 86507f379efabccb6b70959e2e9f171ed579686b1331eda357f0cae7f5dd9de8
-    url: "https://zenodo.org/records/XXXXXXX/files/exp_cebe.tar.gz?download=1"
+    size_bytes: 961134
+    md5: e67d539ecbf258e48cc4a745d53e19e9
+    url: "https://zenodo.org/records/19688196/files/exp_cebe.tar.gz?download=1"

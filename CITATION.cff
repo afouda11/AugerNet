@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 authors:
   - family-names: Fouda
-    given-names: Adam
+    given-names: Adam Emad Ahmed
     orcid: https://orcid.org/0000-0002-9445-5537
 title: "AugerNet: GNN predictions of carbon 1s core-electron binding energies."
 version: 1.1.0
