@@ -1,12 +1,12 @@
 """
-Data Preparation for All Model Pipelines
+Data Preparation for CEBE GNN Model
 =================================================
 
-All outputs are written to  data/processed/  under the project root.
+Outputs are written to data/processed/ under the project root.
 
 Feature Store Approach
 ------------------------------------
-ALL possible node features are computed and stored as separate attributes
+All possible node features are computed and stored as separate attributes
 during preparation.  ``data.x`` contains only the category_feature.
 Feature selection is implemented at training time via
 ``feature_assembly.assemble_node_features()``.
@@ -15,23 +15,17 @@ File naming:
     Molecular graphs for GNN
         gnn_calc_cebe_data.pt           (CEBE calculated training)
         gnn_exp_cebe_data.pt            (CEBE experimental evaluation)
-        gnn_sing_calc_auger_data.pt     (Auger singlet calculated)
-        gnn_trip_calc_auger_data.pt     (Auger triplet calculated)
-        gnn_sing_eval_auger_data.pt     (Auger singlet evaluation)
-        gnn_trip_eval_auger_data.pt     (Auger triplet evaluation)
 
-    Carbon atom Pandas dataframe for CNN
-        cnn_auger_calc.pkl              (Calculated training)
-        cnn_auger_eval.pkl              (Calc. + Exp. evaluation)
 
 CLI Reference
 -------------
   python prepare_data.py [OPTIONS]
 
-    --debug              Only generate first 5 in mol_list.txt for testing
-    --verbose, -v        Print detailed per-molecule environment tables
-    --max_ke             Max KE to normalize auger spec energies by, default 273
-    --max_spec_len       Max number of final states in auger spec, default 300
+    --from-zenodo       Download pre-built processed data files from Zenodo (skips local graph building)
+    --with-raw          Also download and unpack raw data archives from Zenodo 
+                        (use with --from-zenodo to also regenerate graphs locally)
+    --debug             Only generate first 5 in mol_list.txt for testing
+    --verbose, -v       Print detailed per-molecule environment tables
 
 """
 
