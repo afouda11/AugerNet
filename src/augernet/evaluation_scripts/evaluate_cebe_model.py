@@ -259,7 +259,8 @@ def run_evaluation(
     all_true_out = []
     molecule_results = {}
 
-    # for split-CP (don't consider keto- and enol avobenzene as have approx exp CEBEs)
+    # for split-CP 
+    # (don't consider keto- and enol avobenzene as have approx exp CEBEs)
     all_pred_out_no_avo = []
     all_true_out_no_avo = []
 
