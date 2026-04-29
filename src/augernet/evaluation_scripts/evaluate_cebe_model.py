@@ -391,7 +391,7 @@ def run_evaluation(
     plt.tight_layout()
 
     plot_path = os.path.join(png_dir, f"{file_stem}_scatter.png")
-    plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+    plt.savefig(plot_path, dpi=3000, bbox_inches='tight')
     print(f"Scatter plot saved to: {plot_path}")
     plt.close()
 
