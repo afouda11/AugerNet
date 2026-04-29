@@ -1,5 +1,5 @@
 """
-Auger CNN Data — Carbon-centric DataFrame utilities
+Auger CNN Data - Carbon-centric DataFrame utilities
 =====================================================
 
 Loads the per-carbon DataFrames produced by ``prepare_data.py`` and wraps
@@ -14,9 +14,9 @@ These are combined and Gaussian-broadened into a single spectrum inside
 ``CarbonDataset.__init__`` (cached once, not re-computed every epoch).
 
 Public API (consumed by ``backend_cnn.py``):
-    load_carbon_dataframe(path) → pd.DataFrame
-    CarbonDataset(df, ...)      → torch Dataset
-    diagnose_dataframe(df)      → prints column summary
+    load_carbon_dataframe(path) -> pd.DataFrame
+    CarbonDataset(df, ...)      -> torch Dataset
+    diagnose_dataframe(df)      -> prints column summary
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ from typing import Any, Dict
 from augernet.spec_utils import fit_spectrum_to_grid
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 #  I/O
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def load_carbon_dataframe(filepath: str) -> pd.DataFrame:
     """Load a carbon DataFrame from ``.pkl`` or ``.parquet``."""
@@ -49,7 +49,7 @@ def load_carbon_dataframe(filepath: str) -> pd.DataFrame:
             df = pd.read_pickle(filepath)
         except Exception:
             df = pd.read_parquet(filepath)
-    print(f"✓ Loaded {len(df)} carbon atoms from: {filepath}")
+    print(f"Loaded {len(df)} carbon atoms from: {filepath}")
     return df
 
 
@@ -61,12 +61,12 @@ def diagnose_dataframe(df: pd.DataFrame) -> None:
           f"{n_envs} environments")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 #  Dataset
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 class CarbonDataset(Dataset):
-    """PyTorch Dataset — one sample per carbon atom.
+    """PyTorch Dataset - one sample per carbon atom.
 
     Handles the new data format with separate singlet/triplet sticks.
     Singlet + triplet peaks are **combined** and Gaussian-broadened once
@@ -105,7 +105,7 @@ class CarbonDataset(Dataset):
 
         n_atoms = len(self.df)
 
-        # ── Combine sing+trip sticks and broaden once ────────────────────
+        # -- Combine sing+trip sticks and broaden once --
         t0 = _time.time()
         energy_grid = np.linspace(energy_min, energy_max, n_points)
         self._spectra = np.zeros((n_atoms, n_points), dtype=np.float32)
@@ -119,7 +119,7 @@ class CarbonDataset(Dataset):
             row = self.df.iloc[i]
 
             if has_sing and has_trip:
-                # New format — separate singlet / triplet
+                # New format - separate singlet / triplet
                 se = np.asarray(row['sing_stick_energies'], dtype=np.float64)
                 si = np.asarray(row['sing_stick_intensities'], dtype=np.float64)
                 te = np.asarray(row['trip_stick_energies'], dtype=np.float64)
@@ -127,7 +127,7 @@ class CarbonDataset(Dataset):
                 energies = np.concatenate([se, te])
                 intensities = np.concatenate([si, ti])
             elif has_combined:
-                # Old format — already combined
+                # Old format - already combined
                 energies = np.asarray(row['stick_energies'], dtype=np.float64)
                 intensities = np.asarray(row['stick_intensities'], dtype=np.float64)
             else:
@@ -147,7 +147,7 @@ class CarbonDataset(Dataset):
         print(f"  Pre-broadened {n_atoms} spectra "
               f"(FWHM={broadening_fwhm} eV) in {elapsed:.1f}s")
 
-        # ── delta_be z-score normalisation ─────────────────────────────────
+        # -- delta_be z-score normalisation --
         if 'delta_be' in df.columns:
             mu = df['delta_be'].mean()
             std = df['delta_be'].std() + 1e-8
@@ -155,10 +155,10 @@ class CarbonDataset(Dataset):
         else:
             self._delta_be_norm = np.zeros(n_atoms, dtype=np.float32)
 
-        print(f"✓ CarbonDataset: {n_atoms} atoms, "
+        print(f"CarbonDataset: {n_atoms} atoms, "
               f"augment={include_augmentation}")
 
-    # ─────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------
     def __len__(self) -> int:
         return len(self.df)
 
