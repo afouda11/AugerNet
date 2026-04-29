@@ -900,6 +900,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             model_id=model_id,
             config_id=config_id,
             param_file_prefix=pfx or None,
+            alpha=cfg.cp_alpha,
         )
 
     if split == 'val' and data.get('exp_val_data'):

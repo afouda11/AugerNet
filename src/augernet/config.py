@@ -65,6 +65,7 @@ class AugerNetConfig:
     #   validation (to assist fold and param search) 
     #   final evaluation sets
     exp_split: str = 'both'           # all | val | eval | both
+    cp_alpha: float = 0.1              # split conformal prediction confidence level
     # Sanity check permutation invariance & rotational invariance/equivariance
     run_unit_tests: bool = False
 
