@@ -119,6 +119,7 @@ class AugerCNN1D(nn.Module):
         use_bn    = architecture.get('use_batch_norm', False)
         dropout   = architecture.get('dropout', 0.2)
         drop_conv = architecture.get('dropout_conv', 0.0)
+        use_global_pool = architecture.get('use_global_pool', False)
 
         n_blocks = len(filters)
         if len(kernels) != n_blocks:
@@ -128,6 +129,7 @@ class AugerCNN1D(nn.Module):
             )
 
         self.architecture = architecture
+        self.use_global_pool = use_global_pool
 
         # ---- build conv blocks ------------------------------------------------
         self.conv_blocks = nn.ModuleList()
@@ -143,13 +145,30 @@ class AugerCNN1D(nn.Module):
             self.conv_blocks.append(block)
             in_ch = out_ch
 
-        self.pool = nn.MaxPool1d(pool_size)
+        #self.pool = nn.MaxPool1d(pool_size)
+        if isinstance(pool_size, int):
+            pool_sizes = [pool_size] * n_blocks
+        else:
+            pool_sizes = list(pool_size)
+            if len(pool_sizes) != n_blocks:
+                raise ValueError(
+                    f"conv_filters has {n_blocks} entries but "
+                     f"pool_size has {len(pool_sizes)}"
+                )
+        self.pools = nn.ModuleList([nn.AvgPool1d(p) for p in pool_sizes])
 
         # ---- compute flattened size -------------------------------------------
         conv_out_len = input_length
-        for _ in range(n_blocks):
-            conv_out_len = conv_out_len // pool_size
-        self.flat_size = filters[-1] * conv_out_len
+#         for _ in range(n_blocks):
+#             conv_out_len = conv_out_len // pool_size
+#         self.flat_size = filters[-1] * conv_out_len
+        for p in pool_sizes:
+            conv_out_len = conv_out_len // p
+
+        if use_global_pool:
+            self.flat_size = filters[-1]
+        else:
+            self.flat_size = filters[-1] * conv_out_len
 
         # ---- build FC layers --------------------------------------------------
         self.fc_layers = nn.ModuleList()
@@ -179,14 +198,18 @@ class AugerCNN1D(nn.Module):
 
     # ------------------------------------------------------------------
     def forward(self, x):
-        # x shape: (batch, 1, input_length)
-        for block in self.conv_blocks:
-            x = self.pool(block(x))
-        x = x.flatten(1)
+        #for block in self.conv_blocks:
+        for block, pool in zip(self.conv_blocks, self.pools):
+            x = pool(block(x))
+        if self.use_global_pool:
+            x = x.mean(dim=2)      
+        else:
+            x = x.flatten(1)
 
         for fc in self.fc_layers:
             x = self.dropout_fc(F.relu(fc(x)))
         x = self.fc_out(x)
+
         return x
 
 # =============================================================================
@@ -408,58 +431,6 @@ def get_class_weights_and_counts(
 
     return weights, counts
 
-
-# =============================================================================
-# DIAGNOSTICS
-# =============================================================================
-
-def diagnose_dataframe(df: pd.DataFrame) -> None:
-    """Run diagnostics on the carbon DataFrame."""
-    print("\n" + "=" * 70)
-    print("CARBON DATAFRAME DIAGNOSTICS")
-    print("=" * 70)
-    print(f"\nDataFrame shape: {df.shape}")
-    print(f"Total carbon atoms: {len(df)}")
-    print(f"Total molecules: {df['mol_name'].nunique()}")
-
-    class_dist = df['carbon_env_label'].value_counts().sort_index()
-    print(f"\nClass distribution ({len(class_dist)} active classes):")
-
-    print(f"\n  Unique classes: {len(class_dist)}")
-    print(f"  Min class count: {class_dist.min()}")
-    print(f"  Max class count: {class_dist.max()}")
-    print(f"  Imbalance ratio: {class_dist.max() / class_dist.min():.1f}x")
-
-    # Detect stick columns (new format: sing/trip separate; old: combined)
-    has_sing = 'sing_stick_energies' in df.columns
-    has_combined = 'stick_energies' in df.columns
-
-    if has_sing:
-        se = df['sing_stick_energies']
-        te = df['trip_stick_energies']
-        n_peaks = [len(s) + len(t) for s, t in zip(se, te)]
-        print(f"\nSpectrum type: STICK (sing+trip, broadened on-the-fly)")
-        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
-              f"mean={np.mean(n_peaks):.1f}")
-        all_e = np.concatenate([e for e in se if e is not None and len(e) > 0]
-                               + [e for e in te if e is not None and len(e) > 0])
-        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
-    elif has_combined:
-        n_peaks = [len(e) for e in df['stick_energies'].values if e is not None]
-        print(f"\nSpectrum type: STICK (combined, broadened on-the-fly)")
-        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
-              f"mean={np.mean(n_peaks):.1f}")
-        all_e = np.concatenate([e for e in df['stick_energies'] if e is not None and len(e) > 0])
-        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
-    elif 'spectrum_intensity_only' in df.columns:
-        spectra = np.stack(df['spectrum_intensity_only'].values)
-        print(f"\nSpectrum type: PRE-BROADENED")
-        print(f"  Shape: {spectra.shape}")
-        print(f"  Min: {spectra.min():.4f}, Max: {spectra.max():.4f}")
-
-    print("=" * 70)
-
-
 # =============================================================================
 # EVALUATION
 # =============================================================================
@@ -535,9 +506,8 @@ def evaluate_with_molecule_details(
             true_name = class_names[true_label] if true_label < len(class_names) else f"class_{true_label}"
             pred_name = class_names[pred_label] if pred_label < len(class_names) else f"class_{pred_label}"
             status = "CORRECT" if pred_label == true_label else "WRONG"
-            mark = "✓" if status == "CORRECT" else "✗"
             print(f"{atom_idx:<10} {true_name:<50} {pred_name:<50} "
-                  f"{confidence:>6.1f}%   {mark} {status}")
+                  f"{confidence:>6.1f}%   {status}")
             # Strip 'C_' prefix for cleaner CSV output
             true_display = true_name.removeprefix('C_')
             pred_display = pred_name.removeprefix('C_')
@@ -553,7 +523,7 @@ def evaluate_with_molecule_details(
         #csv_df = csv_df.drop_duplicates().reset_index(drop=True)
         csv_path = Path(output_dir) / f"eval_{eval_type}{csv_suffix}.csv"
         csv_df.to_csv(csv_path, index=False)
-        print(f"\n✓ Saved evaluation CSV: {csv_path}")
+        print(f"\nSaved evaluation CSV: {csv_path}")
         print(f"  Rows: {len(csv_df)} (deduplicated from {len(csv_records)} atoms)")
 
     # ---- Deduplicated metrics -------------------------------------------------
@@ -619,6 +589,56 @@ def evaluate_with_molecule_details(
         'dedup_predictions': dedup_preds, 'dedup_labels': dedup_labels,
     }
 
+# =============================================================================
+# DIAGNOSTICS
+# =============================================================================
+
+def diagnose_dataframe(df: pd.DataFrame) -> None:
+    """Run diagnostics on the carbon DataFrame."""
+    print("\n" + "=" * 70)
+    print("CARBON DATAFRAME DIAGNOSTICS")
+    print("=" * 70)
+    print(f"\nDataFrame shape: {df.shape}")
+    print(f"Total carbon atoms: {len(df)}")
+    print(f"Total molecules: {df['mol_name'].nunique()}")
+
+    class_dist = df['carbon_env_label'].value_counts().sort_index()
+    print(f"\nClass distribution ({len(class_dist)} active classes):")
+
+    print(f"\n  Unique classes: {len(class_dist)}")
+    print(f"  Min class count: {class_dist.min()}")
+    print(f"  Max class count: {class_dist.max()}")
+    print(f"  Imbalance ratio: {class_dist.max() / class_dist.min():.1f}x")
+
+    # Detect stick columns (new format: sing/trip separate; old: combined)
+    has_sing = 'sing_stick_energies' in df.columns
+    has_combined = 'stick_energies' in df.columns
+
+    if has_sing:
+        se = df['sing_stick_energies']
+        te = df['trip_stick_energies']
+        n_peaks = [len(s) + len(t) for s, t in zip(se, te)]
+        print(f"\nSpectrum type: STICK (sing+trip, broadened on-the-fly)")
+        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
+              f"mean={np.mean(n_peaks):.1f}")
+        all_e = np.concatenate([e for e in se if e is not None and len(e) > 0]
+                               + [e for e in te if e is not None and len(e) > 0])
+        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
+    elif has_combined:
+        n_peaks = [len(e) for e in df['stick_energies'].values if e is not None]
+        print(f"\nSpectrum type: STICK (combined, broadened on-the-fly)")
+        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
+              f"mean={np.mean(n_peaks):.1f}")
+        all_e = np.concatenate([e for e in df['stick_energies'] if e is not None and len(e) > 0])
+        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
+    elif 'spectrum_intensity_only' in df.columns:
+        spectra = np.stack(df['spectrum_intensity_only'].values)
+        print(f"\nSpectrum type: PRE-BROADENED")
+        print(f"  Shape: {spectra.shape}")
+        print(f"  Min: {spectra.min():.4f}, Max: {spectra.max():.4f}")
+
+    print("=" * 70)
+
 
 # =============================================================================
 # PLOTTING UTILITIES
@@ -665,7 +685,7 @@ def plot_training_history(history: Dict[str, List[float]], output_dir: str) -> N
         plt.tight_layout()
         plot_path = Path(output_dir) / 'training_plots.png'
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        print(f"✓ Saved training plots: {plot_path}")
+        print(f"Saved training plots: {plot_path}")
         plt.close()
     except Exception as e:
-        print(f"⚠ Failed to save plots: {e}")
+        print(f"Failed to save plots: {e}")

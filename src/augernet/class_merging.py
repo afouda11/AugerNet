@@ -9,12 +9,12 @@ chemically similar environments.
 
 Three schemes are available:
 
-  'none'          — No merging (original 36 classes, ~33 active)
-  'conservative'  — 36 → 16 classes.  Merges only spectrally indistinguishable
+  'none'          -- No merging (original 36 classes, ~33 active)
+  'conservative'  -- 36 -> 16 classes.  Merges only spectrally indistinguishable
                      pairs while preserving maximum chemical resolution.
-  'practical'     — 36 → 11 classes.  Guided by what the CNN can actually
+  'practical'     -- 36 -> 11 classes.  Guided by what the CNN can actually
                      distinguish based on spectral separability analysis.
-  'aggressive'    — 36 → 6 classes.  Maximum CNN accuracy, minimum chemical
+  'aggressive'    -- 36 -> 6 classes.  Maximum CNN accuracy, minimum chemical
                      resolution.
 
 Usage:
@@ -26,7 +26,7 @@ Usage:
 
     # For display:
     merged_names = get_merged_class_names(scheme='practical')
-    # merged_names[new_label_idx] → human-readable name
+    # merged_names[new_label_idx] -> human-readable name
 """
 
 from collections import OrderedDict
@@ -41,31 +41,31 @@ from augernet.carbon_environment import (
     IDX_TO_CARBON_ENV,
 )
 
-# Original class name → original index (for reference)
+# Original class name -> original index (for reference)
 _ORIG_NAMES = list(CARBON_ENVIRONMENT_PATTERNS.keys())
-_NAME2IDX = CARBON_ENV_TO_IDX  # e.g. 'C_methyl' → 32
+_NAME2IDX = CARBON_ENV_TO_IDX  # e.g. 'C_methyl' -> 32
 
 
 # =============================================================================
 #  SCHEME DEFINITIONS
 # =============================================================================
-# Each scheme maps: merged_class_name → list of original C_ class names.
+# Each scheme maps: merged_class_name -> list of original C_ class names.
 # The order of keys defines the new label indices (0, 1, 2, ...).
 
 MERGING_SCHEMES: Dict[str, OrderedDict] = {}
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CHEMICAL (36 → 17)  ★ Best experimental generalization
-#  Groups by heteroatom neighbors.  Aromatic merged into hydrocarbon —
-#  critical for bridging the calc→exp domain gap (exp benzene spectra are
-#  shifted ~5 eV and 3-10× broader, making "aromatic" indistinguishable
-#  from other C─C environments at experimental resolution).
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+#  CHEMICAL (36 -> 17)  * Best experimental generalization
+#  Groups by heteroatom neighbors.  Aromatic merged into hydrocarbon --
+#  critical for bridging the calc->exp domain gap (exp benzene spectra are
+#  shifted ~5 eV and 3-10x broader, making "aromatic" indistinguishable
+#  from other C-C environments at experimental resolution).
+# ------------------------------------------------------------------------------
 MERGING_SCHEMES['chemical'] = OrderedDict([
-    #('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-    ('arom_N',              ['C_arom_N']),
-    ('arom_O',              ['C_arom_O']),
-    ('arom_O_N',            ['C_arom_O_N']),
+    ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
+    #('arom_N',              ['C_arom_N']),
+    #('arom_O',              ['C_arom_O']),
+    #('arom_O_N',            ['C_arom_O_N']),
     ('aryl_N',              ['C_aryl_amine', 'C_aryl_nitro']),
     ('aryl_O',              ['C_phenol', 'C_aryl_ether']),
     ('aryl_F',              ['C_aryl_fluoride']),
@@ -83,7 +83,7 @@ MERGING_SCHEMES['chemical'] = OrderedDict([
     ('fluorinated',         ['C_fluorinated']),
     ('cumulated_N',         ['C_carbodiimide', 'C_ketenimine']),
     ('cumulated_O',         ['C_ketene', 'C_CO2']),
-    ('isocyanate',        ['C_isocyanate']),
+    ('isocyanate',          ['C_isocyanate']),
 ])
 # MERGING_SCHEMES['chemical'] = OrderedDict([
 #     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
@@ -106,10 +106,10 @@ MERGING_SCHEMES['chemical'] = OrderedDict([
 #                              'C_ketene', 'C_CO2', 'C_isocyanate']),
 # ])
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CONSERVATIVE (36 → 16)
+# ------------------------------------------------------------------------------
+#  CONSERVATIVE (36 -> 16)
 #  Merges only the most spectrally overlapping groups.
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 MERGING_SCHEMES['conservative'] = OrderedDict([
     ('aromatic_ring',     ['C_aromatic', 'C_arom_N', 'C_arom_O', 'C_arom_O_N']),
     ('aryl_substituted',  ['C_phenol', 'C_aryl_amine', 'C_aryl_ether',
@@ -129,10 +129,10 @@ MERGING_SCHEMES['conservative'] = OrderedDict([
                            'C_ketenimine', 'C_allene', 'C_CO2']),
 ])
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PRACTICAL (36 → 11)  ★ Recommended
+# ------------------------------------------------------------------------------
+#  PRACTICAL (36 -> 11)  * Recommended
 #  Guided by spectral separability + CNN confusion analysis.
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 MERGING_SCHEMES['practical'] = OrderedDict([
     ('aromatic_ring',     ['C_aromatic', 'C_arom_N', 'C_arom_O', 'C_arom_O_N']),
     ('aryl_substituted',  ['C_phenol', 'C_aryl_amine', 'C_aryl_ether',
@@ -151,10 +151,10 @@ MERGING_SCHEMES['practical'] = OrderedDict([
                            'C_ketenimine', 'C_allene', 'C_CO2']),
 ])
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  AGGRESSIVE (36 → 6)
+# ------------------------------------------------------------------------------
+#  AGGRESSIVE (36 -> 6)
 #  Maximum discriminability, minimum resolution.
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 MERGING_SCHEMES['aggressive'] = OrderedDict([
     ('aromatic_pi',       ['C_aromatic', 'C_arom_N', 'C_arom_O', 'C_arom_O_N',
                            'C_phenol', 'C_aryl_amine', 'C_aryl_ether',
@@ -182,7 +182,7 @@ def get_available_schemes() -> List[str]:
 
 
 def get_scheme(name: str) -> OrderedDict:
-    """Return the merging scheme definition (merged_name → [original_names])."""
+    """Return the merging scheme definition (merged_name -> [original_names])."""
     if name == 'none':
         # Identity: each original class maps to itself
         return OrderedDict(
@@ -198,7 +198,7 @@ def get_scheme(name: str) -> OrderedDict:
 
 def build_label_map(scheme_name: str) -> Dict[int, int]:
     """
-    Build a mapping from original label index → new (merged) label index.
+    Build a mapping from original label index -> new (merged) label index.
 
     Parameters
     ----------
@@ -306,13 +306,13 @@ def apply_label_merging(
         n_classes = len(counts)
         total = (new_labels >= 0).sum()
         print(f"\n  Label merging: scheme='{scheme_name}'  "
-              f"({len(IDX_TO_CARBON_ENV)} → {n_classes} classes)")
+              f"({len(IDX_TO_CARBON_ENV)} -> {n_classes} classes)")
         for new_idx in sorted(counts.keys()):
             pct = 100 * counts[new_idx] / total
             print(f"    {new_idx:>3}: {merged_names[new_idx]:<25} "
                   f"{counts[new_idx]:>5} ({pct:>5.1f}%)")
         if n_unmapped > 0:
-            print(f"    ⚠ {n_unmapped} atoms had unmapped labels (set to -1)")
+            print(f"    WARNING: {n_unmapped} atoms had unmapped labels (set to -1)")
 
     return df
 
@@ -338,5 +338,5 @@ def print_scheme_summary(scheme_name: str) -> None:
     print(f"{'=' * 70}")
     for new_idx, (merged_name, orig_names) in enumerate(scheme.items()):
         orig_str = ', '.join(n.removeprefix('C_') for n in orig_names)
-        print(f"  {new_idx:>3}: {merged_name:<25} ← {orig_str}")
+        print(f"  {new_idx:>3}: {merged_name:<25} <- {orig_str}")
     print()

@@ -10,7 +10,7 @@ Provides the same routine signatures as ``backend_gnn.py``:
 
 Dependencies:
   augernet.cnn_train_utils   — AugerCNN1D, CNNTrainer, etc.
-  augernet.carbon_dataframe  — CarbonDataset, load_carbon_dataframe
+  augernet.carbon_dataframe  — CarbonDataset
   augernet.class_merging     — apply_label_merging, get_num_classes, etc.
 """
 
@@ -29,6 +29,7 @@ from augernet.cnn_train_utils import AugerCNN1D
 from augernet import carbon_dataframe as cdf
 from augernet.class_merging import (
     apply_label_merging,
+    get_merged_class_names,
     get_num_classes,
     print_scheme_summary,
 )
@@ -142,7 +143,8 @@ def load_data(cfg) -> Dict[str, Any]:
     eval_data  = os.path.join(DATA_PROCESSED_DIR, 'cnn_auger_eval.pkl')
 
     print(f"\nLoading training data: {train_data}")
-    train_df = cdf.load_carbon_dataframe(train_data)
+    train_df = pd.read_pickle(train_data)
+    print(f"Loaded {len(train_df)} carbon atoms from: {train_data}")
     ctu.diagnose_dataframe(train_df)
 
     # Keep unmerged copy for param search
@@ -390,18 +392,85 @@ def load_saved_model(save_paths, data, cfg):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Evaluation  (placeholder — full implementation not included)
+#  Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                    train_results=None, **_extra):
-    """Evaluate a trained CNN model.
+    """Evaluate a trained CNN model on the held-out eval set.
 
-    .. note::
-       Full evaluation (per-molecule detail, experimental data comparison)
-       is not included in this release.  This stub prints a reminder.
+    Loads the eval pkl, applies the same merge scheme / broadening params
+    that were used during training, then calls
+    ``ctu.evaluate_with_molecule_details`` for per-molecule CSV output and
+    summary statistics.
     """
-    print("  ⚠ CNN evaluation is not included in this release.")
+    model  = model_result['model']
+    device = model_result['device']
+
+    # ── Resolve params from cfg ───────────────────────────────────────────
+    merge_scheme    = getattr(cfg, 'merge_scheme', 'none')
+    use_augmented   = getattr(cfg, 'use_augmented', False)
+    broadening_fwhm = getattr(cfg, 'fwhm', 1.6)
+    energy_min      = getattr(cfg, 'min_ke', 200.0)
+    energy_max      = getattr(cfg, 'max_ke', 273.0)
+    n_points        = getattr(cfg, 'n_points', 731)
+
+    eval_data_path = data['eval_data_path']
+
+    print(f"\n{'=' * 70}")
+    print(f"CNN EVALUATION — Fold {fold}")
+    print(f"  Eval data: {eval_data_path}")
+    print(f"  Merge scheme: {merge_scheme}")
+    print(f"{'=' * 70}")
+
+    # ── Load + merge eval DataFrame ───────────────────────────────────────
+    eval_df = pd.read_pickle(eval_data_path)
+    print(f"  Loaded {len(eval_df)} eval carbon atoms")
+
+    if merge_scheme != 'none':
+        eval_df = apply_label_merging(eval_df, merge_scheme)
+        n_before = len(eval_df)
+        eval_df = eval_df[eval_df['carbon_env_label'] >= 0].reset_index(drop=True)
+        if len(eval_df) != n_before:
+            print(f"  Dropped {n_before - len(eval_df)} unmapped atoms after merging")
+
+    # ── Build eval dataset (same broadening as training) ──────────────────
+    base_dataset = cdf.CarbonDataset(
+        eval_df,
+        include_augmentation=False,
+        broadening_fwhm=broadening_fwhm,
+        energy_min=energy_min, energy_max=energy_max,
+        n_points=n_points,
+    )
+    eval_dataset = ctu.CarbonLabelDataset(base_dataset, eval_df)
+
+    # ── Resolve class names ───────────────────────────────────────────────
+    if merge_scheme != 'none':
+        class_names = get_merged_class_names(merge_scheme)
+        num_classes = get_num_classes(merge_scheme)
+    else:
+        class_names = ctu.CARBON_ENVIRONMENT_NAMES
+        num_classes = ctu.NUM_CARBON_CLASSES
+
+    csv_suffix = f'_fold{fold}' if fold is not None else ''
+
+    # ── Run evaluation ────────────────────────────────────────────────────
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    results = ctu.evaluate_with_molecule_details(
+        df=eval_df,
+        model=model,
+        device=device,
+        dataset=eval_dataset,
+        output_dir=output_dir,
+        eval_type='eval',
+        csv_suffix=csv_suffix,
+        class_names_override=class_names,
+        num_classes_override=num_classes,
+    )
+
+    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
