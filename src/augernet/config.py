@@ -217,11 +217,11 @@ class AugerNetConfig:
                 # Build filter and kernel strings from architecture
                 filters_str = 'f' + '_'.join(str(f) for f in self.architecture.get('conv_filters', []))
                 kernels_str = 'k' + '_'.join(str(k) for k in self.architecture.get('conv_kernels', []))
-                p_str =  f"p{self.architecture.get('pool_size', [])}"
-                h_str =  f"h{self.architecture.get('fc_hidden', [])}"
+                pool_str    = 'p' + '_'.join(str(p) for p in self.architecture.get('pool_size', []))
+                hidden_str  =  'h' + '_'.join(str(h) for h in self.architecture.get('fc_hidden', []))
                 self.model_id = (
                     f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
-                    f"BE{self.use_augmented}_{filters_str}_{kernels_str}_{p_str}_{h_str}"
+                    f"BE{self.use_augmented}_{filters_str}_{kernels_str}_{pool_str}_{hidden_str}"
                 )
 
         # results sub dirs: outputs files, train loss and eval pngs, and models 

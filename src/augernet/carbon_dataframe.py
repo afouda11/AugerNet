@@ -14,7 +14,6 @@ These are combined and Gaussian-broadened into a single spectrum inside
 ``CarbonDataset.__init__`` (cached once, not re-computed every epoch).
 
 Public API (consumed by ``backend_cnn.py``):
-    load_carbon_dataframe(path) -> pd.DataFrame
     CarbonDataset(df, ...)      -> torch Dataset
     diagnose_dataframe(df)      -> prints column summary
 """
@@ -31,27 +30,9 @@ from typing import Any, Dict
 
 from augernet.spec_utils import fit_spectrum_to_grid
 
-
 # ---------------------------------------------------------------------------
 #  I/O
 # ---------------------------------------------------------------------------
-
-def load_carbon_dataframe(filepath: str) -> pd.DataFrame:
-    """Load a carbon DataFrame from ``.pkl`` or ``.parquet``."""
-    filepath = str(filepath)
-    if filepath.endswith(('.pkl', '.pickle')):
-        df = pd.read_pickle(filepath)
-    elif filepath.endswith('.parquet'):
-        df = pd.read_parquet(filepath)
-    else:
-        # Try pickle first, then parquet
-        try:
-            df = pd.read_pickle(filepath)
-        except Exception:
-            df = pd.read_parquet(filepath)
-    print(f"Loaded {len(df)} carbon atoms from: {filepath}")
-    return df
-
 
 def diagnose_dataframe(df: pd.DataFrame) -> None:
     """Print a one-line summary of a carbon DataFrame."""
@@ -59,7 +40,6 @@ def diagnose_dataframe(df: pd.DataFrame) -> None:
     n_envs = df['carbon_env_label'].nunique()
     print(f"  DataFrame: {len(df)} carbons, {n_mols} molecules, "
           f"{n_envs} environments")
-
 
 # ---------------------------------------------------------------------------
 #  Dataset
