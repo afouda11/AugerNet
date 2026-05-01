@@ -119,7 +119,9 @@ class AugerCNN1D(nn.Module):
         use_bn    = architecture.get('use_batch_norm', False)
         dropout   = architecture.get('dropout', 0.2)
         drop_conv = architecture.get('dropout_conv', 0.0)
+        pool_method = architecture.get('pool_method', 'max')
         use_global_pool = architecture.get('use_global_pool', False)
+
 
         n_blocks = len(filters)
         if len(kernels) != n_blocks:
@@ -155,7 +157,10 @@ class AugerCNN1D(nn.Module):
                     f"conv_filters has {n_blocks} entries but "
                      f"pool_size has {len(pool_sizes)}"
                 )
-        self.pools = nn.ModuleList([nn.AvgPool1d(p) for p in pool_sizes])
+        if pool_method == 'avg':
+            self.pools = nn.ModuleList([nn.AvgPool1d(p) for p in pool_sizes])
+        if pool_method == 'max':
+            self.pools = nn.ModuleList([nn.MaxPool1d(p) for p in pool_sizes])
 
         # ---- compute flattened size -------------------------------------------
         conv_out_len = input_length
