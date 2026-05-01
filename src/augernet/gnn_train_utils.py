@@ -387,13 +387,15 @@ class MPNN(nn.Module):
         self.spectrum_dim = spectrum_dim
         self.dropout = dropout
 
-    def forward(self, data):
+    def forward(self, data, return_embedding=False):
         """
         Args:
             data: (PyG.Data) - batch of PyG graphs
+            return_embedding: if True, return node embeddings h before the
+                              prediction head instead of predictions.
 
         Returns:
-            out: (batch_size, out_dim) - prediction for each graph
+            out: (n_nodes, emb_dim) if return_embedding else (n_nodes, out_dim)
         """
         h = self.lin_in(data.x) # (n, d_n) -> (n, d)
 
@@ -433,6 +435,9 @@ class MPNN(nn.Module):
 
                 # Dropout (only active during training)
                 h = F.dropout(h, p=self.dropout, training=self.training)
+
+        if return_embedding:
+            return h
 
         if self.pred_type == "CEBE":
             out = self.lin_pred(h)

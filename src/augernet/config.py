@@ -103,7 +103,6 @@ class AugerNetConfig:
     norm_stats_file: str = 'cebe_norm_stats.pt'
 
     # ── Spectrum ─────────────────────────────────────────────────────────────────
-    spectrum_type: str = 'stick'                # stick | fitted
     max_spec_len: int = 300
     max_ke: int = 273
     min_ke: int = 200
@@ -111,7 +110,12 @@ class AugerNetConfig:
     fwhm: float = 3.768
     ke_shift_calc: float = -2.0
 
-    # ── CNN-specific (auger-cnn) ─────────────────────────────────────────
+
+    # ── Auger GNN specific (auger-gnn) ─────────────────────────────────────────
+    spectrum_type: str = 'stick'                # stick | fitted
+    task_type: str = 'single'                   # single (just auger) | multi (auger + cebe)
+
+    # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
     use_augmented: bool = True       # prepend z-score normalised delta_be to spectrum
     merge_scheme: str = 'none'       # class merging scheme
@@ -157,7 +161,7 @@ class AugerNetConfig:
         if self.model == 'cebe-gnn':
             self.result_dir  = os.path.join(cwd, f'cebe_gnn_{self.mode}_results')
         if self.model == 'auger-gnn':
-            self.result_dir  = os.path.join(cwd, f'auger_gnn_{self.mode}_results')
+            self.result_dir  = os.path.join(cwd, f'auger_gnn_{self.mode}_{self.task_type}_results')
         if self.model == 'auger-cnn':
             self.result_dir  = os.path.join(cwd, f'auger_cnn_{self.mode}_results')
 
