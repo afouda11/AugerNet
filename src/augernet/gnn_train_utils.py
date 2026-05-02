@@ -479,47 +479,6 @@ class MPNN(nn.Module):
 
         return out
 
-def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim.Optimizer, layer_type, pred_type, schedular):
-    total_loss = 0
-    total_samples = 0
-
-    model.train()
-
-    for data in data_loader:
-        optimizer.zero_grad()
-        #out = model(data, layer_type, pred_type)
-        out = model(data)
-        #print("Batch y:", data.y)
-        #print("Output:", out)
-        if pred_type == "CEBE":
-            loss = F.mse_loss(out, data.cebe_y)
-        elif pred_type == "AUGER":
-            idx   = data.node_mask.nonzero(as_tuple=True)[0]
-            # Handle both 300-dim (split) and 600-dim (original) mask_bin for backward compatibility
-            mask = data.mask_bin[idx]
-            out_sel = out[idx]
-            y_sel = data.y[idx]
-
-            # Ensure mask and y/out have same dimensions
-            spec_dim = model.spectrum_dim
-            if mask.shape != y_sel.shape:
-                if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
-                    # Mask is 2*spectrum_dim, y is spectrum_dim: take first half
-                    mask = mask[:, :spec_dim]
-
-            loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
-        loss.backward()
-        optimizer.step()
-        if pred_type == "AUGER":
-            schedular.step()
-
-        #print(out.detach().abs().mean())
-
-        total_loss += loss.item()
-        total_samples += 1
-
-    return total_loss / total_samples
-
 def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='stick'):
     """One pass over data_loader without gradient to compute mean loss.
 

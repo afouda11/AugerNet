@@ -124,6 +124,40 @@ def _handle_feature_override(data, cfg, overrides):
             data['assembled_feature_keys'] = fk_tag
 
 
+def _rebuild_y_fitted(data, cfg, hp):
+    """Rebuild ``y_fitted`` in-place when any spectrum parameter is overridden.
+
+    Called from ``train_single_run`` for ``auger-gnn fitted`` mode so that
+    param searches over ``fwhm``, ``n_points``, ``min_ke``, or ``max_ke``
+    train against targets built with the correct overridden values instead
+    of the base ``cfg`` values that were used in ``load_data``.
+
+    The rebuild mutates the shared ``data['calc_data']`` list in-place (each
+    Data object's ``y_fitted`` attribute is replaced).  Subsequent configs
+    will call this function again with their own overrides, so each config
+    always trains against self-consistent targets.
+    """
+    spectrum_keys = ('fwhm', 'n_points', 'min_ke', 'max_ke', 'max_spec_len')
+    needs_rebuild = any(
+        hp.get(k, getattr(cfg, k)) != getattr(cfg, k)
+        for k in spectrum_keys
+        if k in hp
+    )
+    if not needs_rebuild:
+        return
+
+    import types
+    tmp = types.SimpleNamespace()
+    for k in spectrum_keys:
+        setattr(tmp, k, hp.get(k, getattr(cfg, k)))
+
+    auger_norm_stats = data['auger_norm_stats']
+    print(f"  [param override] Rebuilding y_fitted "
+          f"(fwhm={tmp.fwhm}, n_points={tmp.n_points}, "
+          f"ke=[{tmp.min_ke}, {tmp.max_ke}])")
+    _attach_y_fitted(data['calc_data'], auger_norm_stats, tmp)
+
+
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
                      pred_type='CEBE', spectrum_type='stick', spectrum_dim=300,
                      task_type='single'):
@@ -521,6 +555,11 @@ def train_single_run(
     # If param search overrides feature_keys, re-assemble node features
     # in-place on the shared data dict before training starts.
     _handle_feature_override(data, cfg, overrides)
+
+    # For auger-gnn fitted: rebuild y_fitted targets if spectrum params
+    # (fwhm, n_points, min_ke, max_ke) were overridden for this config.
+    if cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', 'stick') == 'fitted':
+        _rebuild_y_fitted(data, cfg, hp)
 
     model_id = cfg.model_id
 
@@ -953,7 +992,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             output_dir=output_dir, fold=fold,
             png_dir=png_dir,
             train_results=train_results,
-            norm_stats_file=cfg.norm_stats_file,
+            norm_stats_file=cfg.cebe_norm_stats_file,
             model_id=model_id,
             config_id=config_id,
             param_file_prefix=pfx or None,
@@ -1013,21 +1052,18 @@ def run_unit_tests(model, data, cfg):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Predict (inference on arbitrary .xyz files) — CEBE only
+#  Predict: from user defined .xyz dir
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_predict(*, model_path: str, predict_dir: str, cfg):
+    """Build graphs from .xyz files, run inference, and write output.
 
-    """Build graphs from .xyz files, run CEBE inference, and write output.
+    Supports ``cebe-gnn`` (scalar per-atom CEBE) and ``auger-gnn``
+    (per-molecule Auger spectrum, fitted or stick).
 
-    Currently only supports CEBE-GNN.  Auger predict requires a different
-    workflow and will be added separately.
+    For ``auger-gnn stick``, both ``model_path`` (singlet) and
+    ``cfg.trip_model_path`` (triplet) must be set in the YAML.
     """
-    if cfg.model != 'cebe-gnn':
-        raise NotImplementedError(
-            f"Predict mode is not yet implemented for model '{cfg.model}'."
-        )
-
     from augernet.build_molecular_graphs import (
         _mol_from_xyz_order,
         _build_node_and_edge_features,
@@ -1042,9 +1078,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
         f for f in os.listdir(predict_dir) if f.endswith('.xyz')
     )
     if not xyz_files:
-        raise FileNotFoundError(
-            f"No .xyz files found in: {predict_dir}"
-        )
+        raise FileNotFoundError(f"No .xyz files found in: {predict_dir}")
 
     mol_names = [os.path.splitext(f)[0] for f in xyz_files]
 
@@ -1055,15 +1089,13 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
     skipatom_dir = os.path.join(DATA_RAW_DIR, 'skipatom')
     all_encoders = _initialize_all_atom_encoders(skipatom_dir)
 
-    norm_stats = torch.load(cfg.norm_stats_file, weights_only=False)
-    mean = norm_stats['mean']
-    std  = norm_stats['std']
-
-    category_feature = np.array([1, 0, 0])   # CEBE category
     feature_keys = cfg.feature_keys_parsed
-    data_list = []
 
-    print(f"  Building molecular graphs...")
+    # Category feature: choose CEBE category for node features
+    category_feature = np.array([1, 0, 0])
+
+    print("  Building molecular graphs...")
+    data_list = []
     for xyz_file, mol_name in zip(xyz_files, mol_names):
         xyz_path = os.path.join(predict_dir, xyz_file)
         mol, xyz_symbols, pos, smiles = _mol_from_xyz_order(
@@ -1088,12 +1120,61 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
             setattr(d, attr_name, tensor)
         data_list.append(d)
 
-    print(f"  Assembled {len(data_list)} graphs")
-
     print(f"  Assembling features {cfg.feature_keys}")
+    from augernet.feature_assembly import assemble_dataset
     assemble_dataset(data_list, feature_keys)
 
-    # ── Load model ───────────────────────────────────────────────────────
+    output_dir = cfg.outputs_dir
+    os.makedirs(output_dir, exist_ok=True)
+    file_stem = cfg.model_id
+
+    if cfg.model == 'cebe-gnn':
+        _predict_cebe(
+            model_path, data_list, mol_names,
+            cfg=cfg, output_dir=output_dir, file_stem=file_stem,
+        )
+
+    elif cfg.model == 'auger-gnn':
+        load_kw = dict(
+            layer_type=cfg.layer_type,
+            hidden_channels=cfg.hidden_channels,
+            n_layers=cfg.n_layers,
+            dropout=cfg.dropout,
+            **_model_load_kwargs(cfg),
+        )
+        if cfg.spectrum_type == 'fitted':
+            model, device = _load_model_from_path(model_path, data_list, **load_kw)
+            _predict_auger_fitted(
+                model, device, data_list, mol_names,
+                cfg=cfg, output_dir=output_dir, file_stem=file_stem,
+            )
+        else:  # stick
+            sing_model, device = _load_model_from_path(model_path, data_list, **load_kw)
+            trip_model = None
+            trip_path = getattr(cfg, 'trip_model_path', '')
+            if trip_path:
+                trip_path = os.path.abspath(trip_path)
+                trip_model, _ = _load_model_from_path(trip_path, data_list, **load_kw)
+            else:
+                print("  WARNING: trip_model_path not set — only singlet spectra will be written.")
+            _predict_auger_stick(
+                sing_model, trip_model, device, data_list, mol_names,
+                cfg=cfg, output_dir=output_dir, file_stem=file_stem,
+            )
+    else:
+        raise NotImplementedError(
+            f"Predict mode not implemented for model '{cfg.model}'."
+        )
+
+
+def _predict_cebe(model_path, data_list, mol_names, *, cfg, output_dir, file_stem):
+    """Run CEBE inference and write per-atom output files."""
+    from torch_geometric.loader import DataLoader
+
+    norm_stats = torch.load(cfg.cebe_norm_stats_file, weights_only=False)
+    mean = norm_stats['mean']
+    std  = norm_stats['std']
+
     model, device = _load_model_from_path(
         model_path, data_list,
         layer_type=cfg.layer_type,
@@ -1102,43 +1183,26 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
         dropout=cfg.dropout,
     )
 
-    # ── Inference ────────────────────────────────────────────────────────
-    output_dir = cfg.outputs_dir
-
-    #file_stem = f"{cfg.model_id}_fold{fold}" if fold is not None else cfg.model_id
-    file_stem = cfg.model_id
-
     print(f"\n{'=' * 80}")
-    print(f"  PREDICT: Running inference on {len(data_list)} molecules")
-    print(f"  NOTE: Model is trained on carbon 1s CEBEs only.")
-    print(f"        Predictions for non-carbon atoms are not meaningful.")
+    print(f"  PREDICT: Running CEBE inference on {len(data_list)} molecules")
     print(f"{'=' * 80}")
 
     loader = DataLoader(data_list, batch_size=1, shuffle=False)
-
-    all_pred = []
-    all_atoms = []
+    all_pred, all_atoms = [], []
     molecule_results = {}
 
     for i, d in enumerate(loader):
         n_nodes = d.x.size(0)
-        nodes_in_edges = set(
-            d.edge_index[0].tolist() + d.edge_index[1].tolist()
-        )
+        nodes_in_edges = set(d.edge_index[0].tolist() + d.edge_index[1].tolist())
+        mol_name = mol_names[i]
+
         if len(nodes_in_edges) < n_nodes:
-            mol_name_raw = d.mol_name
-            if isinstance(mol_name_raw, list):
-                mol_name_raw = mol_name_raw[0]
-            atom_syms = d.atom_symbols
-            if isinstance(atom_syms, list):
-                atom_syms = atom_syms[0]
-            atom_syms = [str(s).strip() for s in atom_syms]
-            mol_rows = [(sym, float('nan')) for sym in atom_syms]
-            molecule_results[mol_name_raw] = mol_rows
+            atom_syms = [str(s).strip() for s in (d.atom_symbols[0]
+                         if isinstance(d.atom_symbols, list) else d.atom_symbols)]
+            molecule_results[mol_name] = [(sym, float('nan')) for sym in atom_syms]
             all_pred.extend([float('nan')] * n_nodes)
             all_atoms.extend(atom_syms)
-            print(f"  Skipping {mol_name_raw}: disconnected graph "
-                  f"({len(nodes_in_edges)}/{n_nodes} nodes in edges)")
+            print(f"  Skipping {mol_name}: disconnected graph")
             continue
 
         d = d.to(device)
@@ -1147,55 +1211,180 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
 
         pred_out = out.cpu().numpy()
         atomic_be_vals = d.atomic_be_eV.cpu().numpy()
+        atom_syms = [str(s).strip() for s in (d.atom_symbols[0]
+                     if isinstance(d.atom_symbols, list) else d.atom_symbols)]
 
-        atom_syms = d.atom_symbols
-        if isinstance(atom_syms, list):
-            atom_syms = atom_syms[0]
-        atom_syms = [str(s).strip() for s in atom_syms]
-
-        mol_name_raw = d.mol_name
-        if isinstance(mol_name_raw, list):
-            mol_name_raw = mol_name_raw[0]
         mol_rows = []
-
         for j in range(len(pred_out)):
             sym = atom_syms[j] if j < len(atom_syms) else '?'
-            ref = atomic_be_vals[j]
-            pred_be = float(ref - (pred_out[j] * std + mean))
+            pred_be = float(atomic_be_vals[j] - (pred_out[j] * std + mean))
             mol_rows.append((sym, pred_be))
             all_pred.append(pred_be)
             all_atoms.append(sym)
+        molecule_results[mol_name] = mol_rows
 
-        molecule_results[mol_name_raw] = mol_rows
-
-    # ── Write _labels.txt ────────────────────────────────────────────────
     label_path = os.path.join(output_dir, f"{file_stem}_labels.txt")
     with open(label_path, 'w') as f:
-        f.write(f"# CEBE Predictions\n")
+        f.write("# CEBE Predictions\n")
         f.write(f"# Model: {cfg.model_id}\n")
-        f.write(f"# Note: Only carbon (C) predictions are meaningful.\n")
-        f.write(f"#       Non-carbon rows are marked with * and should be ignored.\n")
-        f.write(f"# Columns: atom_symbol  pred_BE(eV)\n#\n")
+        f.write("# Note: Only carbon (C) predictions are meaningful.\n")
+        f.write("# Columns: atom_symbol  pred_BE(eV)\n#\n")
         for mol_name, rows in molecule_results.items():
             f.write(f"# --- {mol_name} ---\n")
             for sym, pred_be in rows:
                 marker = ' ' if sym == 'C' else '*'
                 f.write(f"{sym:>3s}{marker}   {pred_be:10.4f}\n")
-            f.write(f"\n")
+            f.write("\n")
     print(f"  Label results saved to {label_path}")
 
-    # ── Write _results.txt (numeric, carbon atoms only) ──────────────────
     carbon_preds = [p for s, p in zip(all_atoms, all_pred) if s == 'C']
     results_path = os.path.join(output_dir, f"{file_stem}_results.txt")
     np.savetxt(results_path, np.array(carbon_preds).reshape(-1, 1))
     print(f"  Numeric results saved to {results_path}")
 
-    # ── Summary table ────────────────────────────────────────────────────
-    print(f"\n{'Molecule':<22s} {'N_C':>5s} {'N_atoms':>8s} {'Mean C_1s (eV)':>15s}")
-    print("-" * 55)
-    for mol_name, rows in molecule_results.items():
-        c_preds = [p for s, p in rows if s == 'C']
-        n_c = len(c_preds)
-        n_tot = len(rows)
-        mean_c = np.mean(c_preds) if c_preds else float('nan')
-        print(f"{mol_name:<22s} {n_c:>5d} {n_tot:>8d} {mean_c:>15.4f}")
+
+def _predict_auger_fitted(model, device, data_list, mol_names,
+                           *, cfg, output_dir, file_stem):
+    """Run auger-gnn fitted inference and write per-molecule spectrum files."""
+    from torch_geometric.loader import DataLoader
+
+    print(f"\n{'=' * 80}")
+    print(f"  PREDICT: Running Auger fitted inference on {len(data_list)} molecules")
+    print(f"  FWHM: {cfg.fwhm} eV  |  Grid: [{cfg.min_ke}, {cfg.max_ke}] eV  "
+          f"|  {cfg.n_points} points")
+    print(f"{'=' * 80}")
+
+    energy_grid = np.linspace(cfg.min_ke, cfg.max_ke, cfg.n_points)
+    loader = DataLoader(data_list, batch_size=1, shuffle=False)
+
+    model.eval()
+    spectra = {}
+    with torch.no_grad():
+        for mol_idx, d in enumerate(loader):
+            d = d.to(device)
+            out = model(d)
+            if getattr(model, 'task_type', 'single') == 'multi':
+                out = out[1]
+
+            # node_mask identifies carbon atoms with predictions
+            node_mask = d.node_mask.squeeze()
+            valid_nodes = node_mask.nonzero(as_tuple=True)[0]
+
+            mol_spectrum = np.zeros(cfg.n_points)
+            for nidx in valid_nodes:
+                mol_spectrum += out[nidx].cpu().numpy()
+
+            if mol_spectrum.max() > 0:
+                mol_spectrum /= mol_spectrum.max()
+            spectra[mol_names[mol_idx]] = mol_spectrum
+
+    # Write one output file per molecule: two-column [energy, intensity]
+    print(f"\n  Writing spectra to {output_dir}/")
+    for mol_name, spectrum in spectra.items():
+        out_path = os.path.join(output_dir, f"{file_stem}_{mol_name}_spectrum.txt")
+        np.savetxt(out_path,
+                   np.column_stack([energy_grid, spectrum]),
+                   header=f"energy_eV  intensity  (model={cfg.model_id}, fwhm={cfg.fwhm})",
+                   fmt="%.6f")
+
+    # Summary table
+    print(f"\n{'Molecule':<22s} {'N_C':>5s} {'Peak KE (eV)':>14s}")
+    print("-" * 45)
+    for mol_name, spectrum in spectra.items():
+        d = data_list[mol_names.index(mol_name)]
+        n_c = int(d.node_mask.sum().item()) if hasattr(d, 'node_mask') else 0
+        peak_ke = float(energy_grid[np.argmax(spectrum)]) if spectrum.max() > 0 else float('nan')
+        print(f"{mol_name:<22s} {n_c:>5d} {peak_ke:>14.2f}")
+
+    print(f"\n  {len(spectra)} spectra written to {output_dir}/")
+
+
+def _predict_auger_stick(sing_model, trip_model, device, data_list, mol_names,
+                          *, cfg, output_dir, file_stem):
+    """Run auger-gnn stick inference and write broadened per-molecule spectra.
+
+    Singlet and triplet intensities are summed onto a common energy grid
+    using the fwhm from cfg.
+    """
+    from torch_geometric.loader import DataLoader
+    from augernet.spec_utils import fit_spectrum_to_grid
+
+    print(f"\n{'=' * 80}")
+    print(f"  PREDICT: Running Auger stick inference on {len(data_list)} molecules")
+    print(f"  FWHM: {cfg.fwhm} eV  |  Grid: [{cfg.min_ke}, {cfg.max_ke}] eV")
+    print(f"{'=' * 80}")
+
+    energy_grid = np.linspace(cfg.min_ke, cfg.max_ke, cfg.n_points)
+    loader = DataLoader(data_list, batch_size=1, shuffle=False)
+
+    # Load auger norm stats for energy de-normalisation
+    auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
+    maxE = auger_norm_stats['maxE']
+    max_spec_len = cfg.max_spec_len
+
+    def _run_model(model, data_list, device):
+        """Return {mol_idx: array(n_valid_atoms, 2*max_spec_len)} raw outputs."""
+        loader = DataLoader(data_list, batch_size=1, shuffle=False)
+        outputs = {}
+        model.eval()
+        with torch.no_grad():
+            for mol_idx, d in enumerate(loader):
+                d = d.to(device)
+                out = model(d)
+                if getattr(model, 'task_type', 'single') == 'multi':
+                    out = out[1]
+                node_mask = d.node_mask.squeeze()
+                valid = node_mask.nonzero(as_tuple=True)[0]
+                outputs[mol_idx] = {
+                    int(ai): out[ai].cpu().numpy() for ai in valid
+                }
+        return outputs
+
+    sing_out = _run_model(sing_model, data_list, device)
+    trip_out = _run_model(trip_model, data_list, device) if trip_model else {}
+
+    spectra = {}
+    for mol_idx, mol_name in enumerate(mol_names):
+        mol_spectrum = np.zeros(cfg.n_points)
+        for ai, s_vec in sing_out.get(mol_idx, {}).items():
+            # s_vec shape: (2*max_spec_len,) = [energies_norm, intensities]
+            e_s = s_vec[:max_spec_len] * maxE
+            i_s = s_vec[max_spec_len:]
+            # add ke_shift to align calculated → experimental frame
+            e_s += cfg.ke_shift_calc
+            _, broadened = fit_spectrum_to_grid(
+                e_s, i_s, fwhm=cfg.fwhm,
+                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
+                n_points=cfg.n_points,
+            )
+            mol_spectrum += broadened
+
+        for ai, t_vec in trip_out.get(mol_idx, {}).items():
+            e_t = t_vec[:max_spec_len] * maxE + cfg.ke_shift_calc
+            i_t = t_vec[max_spec_len:]
+            _, broadened = fit_spectrum_to_grid(
+                e_t, i_t, fwhm=cfg.fwhm,
+                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
+                n_points=cfg.n_points,
+            )
+            mol_spectrum += broadened
+
+        if mol_spectrum.max() > 0:
+            mol_spectrum /= mol_spectrum.max()
+        spectra[mol_name] = mol_spectrum
+
+    print(f"\n  Writing spectra to {output_dir}/")
+    for mol_name, spectrum in spectra.items():
+        out_path = os.path.join(output_dir, f"{file_stem}_{mol_name}_spectrum.txt")
+        np.savetxt(out_path,
+                   np.column_stack([energy_grid, spectrum]),
+                   header=f"energy_eV  intensity  (model={cfg.model_id}, fwhm={cfg.fwhm})",
+                   fmt="%.6f")
+
+    print(f"\n{'Molecule':<22s} {'Peak KE (eV)':>14s}")
+    print("-" * 38)
+    for mol_name, spectrum in spectra.items():
+        peak_ke = float(energy_grid[np.argmax(spectrum)]) if spectrum.max() > 0 else float('nan')
+        print(f"{mol_name:<22s} {peak_ke:>14.2f}")
+
+    print(f"\n  {len(spectra)} spectra written to {output_dir}/")
