@@ -158,7 +158,6 @@ def assemble_node_features(
     data,
     feature_keys: Sequence[int],
     inplace: bool = True,
-    norm_stats: Optional[Dict[str, float]] = None,
 ):
     """
     Concatenate selected node features into ``data.x``.
@@ -225,7 +224,6 @@ def assemble_node_features(
 def assemble_dataset(
     data_list: list,
     feature_keys: Sequence[int],
-    norm_stats: Optional[Dict[str, float]] = None,
 ) -> list:
     """
     Apply ``assemble_node_features`` to every graph in a list (in-place).
@@ -243,10 +241,8 @@ def assemble_dataset(
     Returns the same list for convenience.
     """
     for data in data_list:
-        assemble_node_features(data, feature_keys, inplace=True,
-                               norm_stats=norm_stats)
+        assemble_node_features(data, feature_keys, inplace=True)
     return data_list
-
 
 def describe_features(feature_keys: Sequence[int]) -> str:
     """
