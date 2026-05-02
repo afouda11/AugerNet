@@ -270,8 +270,22 @@ def run_evaluation(
         with torch.no_grad():
             out = model(data)
 
+        # Multi-task models return (cebe_out, auger_out); extract CEBE head
+        if isinstance(out, tuple):
+            out = out[0]
+
         pred_out = out.cpu().detach().numpy()
-        true_out = data.y.cpu().detach().numpy()
+
+        # Support both old format (data.y, shape N) and new format (data.cebe_y, shape N x 1)
+        if data.y is not None:
+            true_out = data.y.cpu().detach().numpy().reshape(-1)
+        elif hasattr(data, 'cebe_y') and data.cebe_y is not None:
+            true_out = data.cebe_y.cpu().detach().numpy().reshape(-1)
+        else:
+            raise ValueError(
+                f"Data object for molecule has neither 'y' nor 'cebe_y' set. "
+                f"Cannot evaluate CEBE."
+            )
 
         atomic_be = data.atomic_be_eV.cpu().numpy() if isinstance(data.atomic_be_eV, torch.Tensor) else np.array(data.atomic_be_eV)
 
@@ -298,7 +312,7 @@ def run_evaluation(
         mol_atom_rows = []
         for j, val in enumerate(true_out):
             sym = atom_syms[j] if j < len(atom_syms) else '?'
-            if val != -1:
+            if float(val) != -1:
                 pred_be = atomic_be[j] - ((pred_out[j] * std) + mean)
 
                 if has_true_cebe:

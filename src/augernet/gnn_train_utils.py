@@ -308,7 +308,7 @@ class EquivariantMPNNLayer(MessagePassing):
 class MPNN(nn.Module):
     def __init__(self, num_layers=4, emb_dim=64, in_dim=11, edge_dim=4, out_dim=1,
                 layer_type="IN", pred_type="AUGER", spectrum_type='stick', spectrum_dim=300,
-                dropout=0.0):
+                dropout=0.0, task_type='single'):
 
         """Message Passing Neural Network model for graph property prediction
 
@@ -386,6 +386,17 @@ class MPNN(nn.Module):
         self.spectrum_type = spectrum_type
         self.spectrum_dim = spectrum_dim
         self.dropout = dropout
+        self.task_type = task_type
+
+        # Multi-task adapters and uncertainty weights (only for pred_type == 'AUGER')
+        if task_type == 'multi' and pred_type == 'AUGER':
+            self.adapter_cebe  = nn.Linear(emb_dim, emb_dim)
+            self.adapter_auger = nn.Linear(emb_dim, emb_dim)
+            # Learnable log-variance for uncertainty weighting (Kendall et al. 2018)
+            # log_var[0] -> CEBE task, log_var[1] -> Auger task
+            self.log_var = nn.Parameter(torch.zeros(2))
+            # CEBE scalar prediction head (shared encoder -> adapter -> scalar)
+            self.lin_pred = nn.Linear(emb_dim, 1)
 
     def forward(self, data, return_embedding=False):
         """
@@ -442,14 +453,29 @@ class MPNN(nn.Module):
         if self.pred_type == "CEBE":
             out = self.lin_pred(h)
         elif self.pred_type == "AUGER":
-            if self.spectrum_type == 'fitted':
-                # Fitted: intensity-only output on common energy grid
-                out = self.dec_int(h)
+            if self.task_type == 'multi':
+                # Multi-task: route through task-specific adapters
+                h_cebe  = F.silu(self.adapter_cebe(h))
+                h_auger = F.silu(self.adapter_auger(h))
+                cebe_out = self.lin_pred(h_cebe)
+                if self.spectrum_type == 'fitted':
+                    # Fitted: intensity-only output on common energy grid
+                    auger_out = self.dec_int(h_auger)
+                else:
+                    # Stick: concatenate energy and intensity heads
+                    out_int = self.dec_int(h_auger)
+                    out_eng = self.dec_eng(h_auger)
+                    auger_out = torch.cat([out_eng, out_int], dim=-1)
+                return cebe_out, auger_out
             else:
-                # Stick: concatenate energy and intensity heads
-                out_int = self.dec_int(h)
-                out_eng = self.dec_eng(h)
-                out = torch.cat([out_eng, out_int], dim=-1)
+                if self.spectrum_type == 'fitted':
+                    # Fitted: intensity-only output on common energy grid
+                    out = self.dec_int(h)
+                else:
+                    # Stick: concatenate energy and intensity heads
+                    out_int = self.dec_int(h)
+                    out_eng = self.dec_eng(h)
+                    out = torch.cat([out_eng, out_int], dim=-1)
 
         return out
 
@@ -501,15 +527,39 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
         spectrum_type: 'stick' (600-dim energy+intensity) or 'fitted' (n_points intensity)
     """
     model.eval()
+    task_type = getattr(model, 'task_type', 'single')
     total_loss, n_batches = 0.0, 0
     with torch.no_grad():
         for data in data_loader:
             data = data.to(device)
             out = model(data)
-            if pred_type == "CEBE":
+
+            if task_type == 'multi':
+                # Multi-task: out is (cebe_out, auger_out) tuple
+                cebe_out, auger_out = out
+                idx = data.node_mask.nonzero(as_tuple=True)[0]
+                # CEBE loss
+                loss_cebe = F.mse_loss(cebe_out[idx], data.cebe_y[idx])
+                # Auger loss
+                out_sel = auger_out[idx]
+                if spectrum_type == 'fitted':
+                    y_sel = data.y_fitted[idx]
+                    loss_auger = F.mse_loss(out_sel, y_sel)
+                else:
+                    y_sel = data.y[idx]
+                    mask  = data.mask_bin[idx]
+                    spec_dim = model.spectrum_dim
+                    if mask.shape != y_sel.shape:
+                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
+                            mask = mask[:, :spec_dim]
+                    loss_auger = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                # Uncertainty-weighted combined loss
+                lv = model.log_var
+                loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                        torch.exp(-lv[1]) * loss_auger + lv[1])
+            elif pred_type == "CEBE":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
-                loss = F.mse_loss(out[idx], data.y[idx])
-#                 loss = F.mse_loss(out, data.y)
+                loss = F.mse_loss(out[idx], data.cebe_y[idx])
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
                 out_sel = out[idx]
@@ -572,9 +622,16 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
                 pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", plot_results=False, val_data_list=None,
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7,
-                spectrum_type='stick', scheduler_type='cosine'):
+                spectrum_type='stick', scheduler_type='cosine',
+                task_type='single', mt_warmup_epochs=10, mt_log_grad_cosine=False,
+                mt_finetune_auger=False, mt_finetune_epochs=50):
     """
-    Advanced training loop with gradient clipping, configurable optimizer and LR scheduler.
+    Training loop with gradient clipping, configurable optimizer and LR scheduler.
+
+    Also multi-task training for:
+    Step 1: CEBE warmup
+    Step 2: joint CEBE + Auger training with uncertainty weighting
+    Step 3: fine-tuning Auger model
 
     Args:
         data_list: Training data
@@ -679,10 +736,38 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
             optimizer.zero_grad()
             data = data.to(device)
             out = model(data)
-            if pred_type == "CEBE":
+            if task_type == 'multi':
+                # Multi-task: out is (cebe_out, auger_out)
+                cebe_out, auger_out = out
+                idx = data.node_mask.nonzero(as_tuple=True)[0]
+                # CEBE loss
+                loss_cebe = F.mse_loss(cebe_out[idx], data.cebe_y[idx])
+                if epoch < mt_warmup_epochs:
+                    # Stage 1: CEBE-only warmup — stabilise encoder first
+                    loss = loss_cebe
+                else:
+                    # Stage 2: joint training with uncertainty weighting
+                    out_sel = auger_out[idx]
+                    if spectrum_type == 'fitted':
+                        y_sel = data.y_fitted[idx]
+                        loss_auger = F.mse_loss(out_sel, y_sel)
+                    else:
+                        y_sel = data.y[idx]
+                        mask  = data.mask_bin[idx]
+                        spec_dim = model.spectrum_dim
+                        if mask.shape != y_sel.shape:
+                            if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
+                                mask = mask[:, :spec_dim]
+                        loss_auger = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                    lv = model.log_var
+                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                            torch.exp(-lv[1]) * loss_auger + lv[1])
+                    if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
+                        print(f"  [multi] Switching to joint UW training at epoch {epoch}")
+            elif pred_type == "CEBE":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
-                loss = F.mse_loss(out[idx], data.y[idx])
-                #loss = F.mse_loss(out, data.y)
+                loss = F.mse_loss(out[idx], data.cebe_y[idx])
+                #loss = F.mse_loss(out, data.cebe_y)
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
                 out_sel = out[idx]
@@ -757,6 +842,51 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         if verbose:
             print(f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}")
 
+    # ── Optional multi-task Stage 3: Auger-only fine-tune ────────────────────
+    if task_type == 'multi' and mt_finetune_auger and mt_finetune_epochs > 0:
+        if verbose:
+            print(f"\n[multi] Stage 3: Auger-only fine-tune for {mt_finetune_epochs} epochs")
+        # Freeze CEBE adapter and lin_pred; unfreeze Auger decoder + adapter
+        for name, p in model.named_parameters():
+            if 'adapter_cebe' in name or 'lin_pred' in name:
+                p.requires_grad_(False)
+        ft_optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=max_lr * 0.1, weight_decay=weight_decay
+        )
+        for ft_epoch in range(mt_finetune_epochs):
+            model.train()
+            ft_loss, ft_n = 0.0, 0
+            for data in train_loader:
+                ft_optimizer.zero_grad()
+                data = data.to(device)
+                _, auger_out = model(data)
+                idx = data.node_mask.nonzero(as_tuple=True)[0]
+                out_sel = auger_out[idx]
+                if spectrum_type == 'fitted':
+                    y_sel = data.y_fitted[idx]
+                    loss = F.mse_loss(out_sel, y_sel)
+                else:
+                    y_sel = data.y[idx]
+                    mask  = data.mask_bin[idx]
+                    spec_dim = model.spectrum_dim
+                    if mask.shape != y_sel.shape:
+                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
+                            mask = mask[:, :spec_dim]
+                    loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
+                ft_optimizer.step()
+                ft_loss += loss.item(); ft_n += 1
+            ft_train = ft_loss / ft_n
+            ft_val   = eval_mpnn(val_loader, model, device, layer_type, 'AUGER', spectrum_type=spectrum_type)
+            train_results.append([num_epochs + ft_epoch, ft_train, ft_val])
+            if verbose:
+                print(f"  FT Epoch {ft_epoch:03d} │ train {ft_train:.5f} │ val {ft_val:.5f}")
+        # Re-enable all parameters
+        for p in model.parameters():
+            p.requires_grad_(True)
+
     return train_results
 
 def permute_graph(data, perm):
@@ -773,6 +903,8 @@ def permute_graph(data, perm):
         data.batch = data.batch[perm]
     if hasattr(data, 'y') and data.y is not None and data.y.size(0) == perm.size(0):
         data.y = data.y[perm]
+    if hasattr(data, 'cebe_y') and data.cebe_y is not None and data.cebe_y.size(0) == perm.size(0):
+        data.cebe_y = data.cebe_y[perm]
     if hasattr(data, 'node_mask') and data.node_mask is not None:
         data.node_mask = data.node_mask[perm]
 
@@ -811,6 +943,9 @@ def permutation_equivariance_unit_test_model(module, dataloader):
 
     # Forward pass on original example
     out_1 = module(data)
+    # Multi-task models return (cebe_out, auger_out) — test the Auger head
+    if isinstance(out_1, tuple):
+        out_1 = out_1[1]
 
     # Create random permutation
     perm = torch.randperm(data.x.shape[0])
@@ -818,6 +953,8 @@ def permutation_equivariance_unit_test_model(module, dataloader):
 
     # Forward pass on permuted example
     out_2 = module(data)
+    if isinstance(out_2, tuple):
+        out_2 = out_2[1]
 
     # Node-level equivariance: output rows should follow the permutation
     return torch.allclose(out_1[perm], out_2, atol=1e-04)
@@ -893,6 +1030,9 @@ def rot_trans_invariance_unit_test(module, dataloader, lin_in=None):
     # Forward pass on original example
     if isinstance(module, MPNN):
         out_1 = module(data)
+        # Multi-task models return (cebe_out, auger_out) — test the Auger head
+        if isinstance(out_1, tuple):
+            out_1 = out_1[1]
     else:
         h = lin_in(data.x) if lin_in is not None else data.x
         if isinstance(module, EquivariantMPNNLayer):
@@ -911,6 +1051,8 @@ def rot_trans_invariance_unit_test(module, dataloader, lin_in=None):
     # Forward pass on rotated + translated example
     if isinstance(module, MPNN):
         out_2 = module(data)
+        if isinstance(out_2, tuple):
+            out_2 = out_2[1]
     else:
         # h is unchanged (features are not rotated, only positions)
         if isinstance(module, EquivariantMPNNLayer):

@@ -45,6 +45,9 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'architecture', 'use_augmented', 'merge_scheme',
     # splitting
     'n_folds', 'split_method',
+    # multi-task
+    'mt_warmup_epochs', 'mt_finetune_auger', 'mt_finetune_epochs',
+    'mt_log_grad_cosine',
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,6 +120,11 @@ class AugerNetConfig:
     # ── Auger GNN specific (auger-gnn) ─────────────────────────────────────────
     spectrum_type: str = 'stick'                # stick | fitted
     task_type: str = 'single'                   # single (just auger) | multi (auger + cebe)
+    # multi-task hyper-params (only used when task_type == 'multi')
+    mt_warmup_epochs: int = 10                  # epochs of CEBE-only warmup before joint training
+    mt_finetune_auger: bool = False             # after joint training, fine-tune on Auger loss only
+    mt_finetune_epochs: int = 50                # epochs of Auger-only fine-tune (if mt_finetune_auger)
+    mt_log_grad_cosine: bool = False            # log cosine similarity of task gradients each epoch
 
     # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
@@ -167,7 +175,7 @@ class AugerNetConfig:
         if self.model == 'cebe-gnn':
             self.result_dir  = os.path.join(cwd, f'cebe_gnn_{self.mode}_results')
         if self.model == 'auger-gnn':
-            self.result_dir  = os.path.join(cwd, f'auger_gnn_{self.mode}_{self.task_type}_results')
+            self.result_dir  = os.path.join(cwd, f'auger_gnn_{self.mode}_results')
         if self.model == 'auger-cnn':
             self.result_dir  = os.path.join(cwd, f'auger_cnn_{self.mode}_results')
 
@@ -210,15 +218,16 @@ class AugerNetConfig:
                     f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                 )
             if self.model == 'auger-gnn':
+                task_tag = f'_{self.task_type}' if self.task_type == 'multi' else ''
                 if self.spectrum_type == 'fitted':
                     fwhm_str = str(self.fwhm).replace('.', 'pt')
                     self.model_id = (
-                        f"auger_gnn_{self.spectrum_type}{fwhm_str}_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                        f"auger_gnn_{self.spectrum_type}{fwhm_str}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
                         f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                     )
                 if self.spectrum_type == 'stick':
                     self.model_id = (
-                        f"auger_gnn_{self.spectrum_type}_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                        f"auger_gnn_{self.spectrum_type}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
                         f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                     )
             if self.model == 'auger-cnn':

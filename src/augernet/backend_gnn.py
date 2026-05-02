@@ -125,7 +125,8 @@ def _handle_feature_override(data, cfg, overrides):
 
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
-                     pred_type='CEBE', spectrum_type='stick', spectrum_dim=300):
+                     pred_type='CEBE', spectrum_type='stick', spectrum_dim=300,
+                     task_type='single'):
     """Build, train, and return a single MPNN model + train_results."""
     model = gtu.MPNN(
         num_layers=hp['n_layers'], emb_dim=hp['hidden_channels'],
@@ -133,6 +134,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         out_dim=1, layer_type=hp['layer_type'], pred_type=pred_type,
         dropout=hp['dropout'],
         spectrum_type=spectrum_type, spectrum_dim=spectrum_dim,
+        task_type=task_type,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -148,9 +150,15 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         warmup_epochs=hp['warmup_epochs'], min_lr=hp['min_lr'],
         scheduler_type=hp.get('scheduler_type', 'cosine'),
         pct_start=hp.get('pct_start', 0.3),
+        task_type=task_type,
     )
     if pred_type == 'AUGER':
         loop_kwargs['spectrum_type'] = spectrum_type
+    if task_type == 'multi':
+        loop_kwargs['mt_warmup_epochs']  = hp.get('mt_warmup_epochs', 10)
+        loop_kwargs['mt_log_grad_cosine'] = hp.get('mt_log_grad_cosine', False)
+        loop_kwargs['mt_finetune_auger'] = hp.get('mt_finetune_auger', False)
+        loop_kwargs['mt_finetune_epochs'] = hp.get('mt_finetune_epochs', 50)
 
     train_results = gtu.train_loop(train_data, model, device, **loop_kwargs)
     model.eval()
@@ -661,6 +669,7 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
         sing_train, sing_val, in_channels, edge_dim, device, hp,
         pred_type='AUGER', spectrum_type='stick',
         spectrum_dim=cfg.max_spec_len,
+        task_type=cfg.task_type,
     )
 
     # ── Triplet ──────────────────────────────────────────────────────────
@@ -669,6 +678,7 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
         trip_train, trip_val, in_channels, edge_dim, device, hp,
         pred_type='AUGER', spectrum_type='stick',
         spectrum_dim=cfg.max_spec_len,
+        task_type=cfg.task_type,
     )
 
     # ── Combine results ──────────────────────────────────────────────────
@@ -710,6 +720,7 @@ def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
         train_data, val_data, in_channels, edge_dim, device, hp,
         pred_type='AUGER', spectrum_type='fitted',
         spectrum_dim=cfg.n_points,
+        task_type=cfg.task_type,
     )
 
     bvl, btl, bve, ftl, fvl, n_ep = _extract_results(train_results)
@@ -743,6 +754,7 @@ def _load_model_from_path(
     pred_type: str = 'CEBE',
     spectrum_type: str = 'stick',
     spectrum_dim: int = 300,
+    task_type: str = 'single',
 ) -> Tuple[torch.nn.Module, torch.device]:
     """Load any GNN model from a .pth file."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -756,6 +768,7 @@ def _load_model_from_path(
         out_dim=1, layer_type=layer_type, pred_type=pred_type,
         dropout=dropout,
         spectrum_type=spectrum_type, spectrum_dim=spectrum_dim,
+        task_type=task_type,
     ).to(device)
 
     if not os.path.exists(model_path):
@@ -779,7 +792,8 @@ def _model_load_kwargs(cfg):
     if cfg.model == 'cebe-gnn':
         return dict(pred_type='CEBE')
     elif cfg.model == 'auger-gnn':
-        kw = dict(pred_type='AUGER', spectrum_type=cfg.spectrum_type)
+        kw = dict(pred_type='AUGER', spectrum_type=cfg.spectrum_type,
+                  task_type=cfg.task_type)
         if cfg.spectrum_type == 'fitted':
             kw['spectrum_dim'] = cfg.n_points
         else:
@@ -853,6 +867,9 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
 
     CEBE-GNN: evaluates on experimental data via evaluate_cebe_model.
     Auger-GNN: evaluates on experimental spectra via evaluate_auger_model.
+    Auger-GNN (multi-task): additionally evaluates CEBE head on the
+                            experimental CEBE dataset via evaluate_cebe_model,
+                            identical to the CEBE-GNN evaluation path.
     """
     # ── Auger-GNN evaluation ─────────────────────────────────────────────
     if cfg.model == 'auger-gnn':
@@ -874,13 +891,38 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             device_a = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model_id = cfg.model_id
 
-        return _run_auger_eval(
+        auger_metrics = _run_auger_eval(
             model_dict, device_a,
             output_dir=output_dir, png_dir=png_dir, cfg=cfg,
             fold=fold, train_results=train_results,
             model_id=model_id, config_id=config_id,
             param_file_prefix=param_file_prefix,
         )
+
+        # ── Multi-task: also evaluate CEBE head on experimental CEBE data ──
+        if getattr(cfg, 'task_type', 'single') == 'multi':
+            # Use singlet model (both models share the same CEBE head weights)
+            cebe_model = model_dict.get('sing_model', model_dict.get('model'))
+            if cebe_model is not None:
+                from .evaluation_scripts.evaluate_cebe_model import (
+                    run_evaluation as _run_cebe_eval,
+                )
+                # Load and assemble experimental CEBE data on-the-fly
+                exp_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_exp_cebe_data.pt')
+                exp_data_mt = [exp_ds[i] for i in range(len(exp_ds))]
+                assemble_dataset(exp_data_mt, cfg.feature_keys_parsed)
+                _run_cebe_eval(
+                    cebe_model, device_a, exp_data_mt,
+                    output_dir=output_dir, fold=fold,
+                    png_dir=png_dir,
+                    train_results=train_results,
+                    norm_stats_file=cfg.cebe_norm_stats_file,
+                    model_id=model_id,
+                    config_id=config_id,
+                    param_file_prefix=param_file_prefix,
+                )
+
+        return auger_metrics
 
     # ── CEBE-GNN evaluation ──────────────────────────────────────────────
     from .evaluation_scripts.evaluate_cebe_model import run_evaluation as _run_eval
