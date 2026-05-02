@@ -101,7 +101,9 @@ class AugerNetConfig:
     scheduler_type: str = 'cosine'   # cosine | onecycle
     pct_start: float = 0.3           # OneCycleLR only
 
-    norm_stats_file: str = 'cebe_norm_stats.pt'
+    cebe_norm_stats_file: str = 'cebe_norm_stats.pt'
+    auger_norm_stats_file: str = 'auger_norm_stats.pt'
+
 
     # ── Spectrum ─────────────────────────────────────────────────────────────────
     max_spec_len: int = 300
@@ -150,8 +152,11 @@ class AugerNetConfig:
 
         # ── norm_stats_file  ──────────────────────────────────────
         # assign filename into processed dir
-        self.norm_stats_file = os.path.join(
-                DATA_PROCESSED_DIR, self.norm_stats_file
+        self.cebe_norm_stats_file = os.path.join(
+                DATA_PROCESSED_DIR, self.cebe_norm_stats_file
+            )
+        self.auger_norm_stats_file = os.path.join(
+                DATA_PROCESSED_DIR, self.auger_norm_stats_file
             )
 
         cwd = os.getcwd()

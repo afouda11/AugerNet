@@ -466,7 +466,7 @@ def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim
         #print("Batch y:", data.y)
         #print("Output:", out)
         if pred_type == "CEBE":
-            loss = F.mse_loss(out, data.y)
+            loss = F.mse_loss(out, data.cebe_y)
         elif pred_type == "AUGER":
             idx   = data.node_mask.nonzero(as_tuple=True)[0]
             # Handle both 300-dim (split) and 600-dim (original) mask_bin for backward compatibility
@@ -475,13 +475,11 @@ def train_mpnn(data_loader: DataLoader, model: nn.Module, optimizer: torch.optim
             y_sel = data.y[idx]
 
             # Ensure mask and y/out have same dimensions
+            spec_dim = model.spectrum_dim
             if mask.shape != y_sel.shape:
-                if y_sel.shape[1] == 300 and mask.shape[1] == 600:
-                    # Mask is 600-dim, y is 300-dim: take first 300 of mask
-                    mask = mask[:, :300]
-                elif y_sel.shape[1] == 600 and mask.shape[1] == 600:
-                    # Both 600-dim: keep as is
-                    pass
+                if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
+                    # Mask is 2*spectrum_dim, y is spectrum_dim: take first half
+                    mask = mask[:, :spec_dim]
 
             loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
         loss.backward()
@@ -521,12 +519,13 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                     y_sel = data.y_fitted[idx]
                     loss = F.mse_loss(out_sel, y_sel)
                 else:
-                    # Stick: target is data.y (N, 600) with mask
+                    # Stick: target is data.y (N, 2*spectrum_dim) with mask
                     y_sel = data.y[idx]
                     mask = data.mask_bin[idx]
+                    spec_dim = model.spectrum_dim
                     if mask.shape != y_sel.shape:
-                        if y_sel.shape[1] == 300 and mask.shape[1] == 600:
-                            mask = mask[:, :300]
+                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
+                            mask = mask[:, :spec_dim]
                     loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
             total_loss += loss.item()
             n_batches  += 1
@@ -700,16 +699,17 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         print(f"DEBUG AUGER: y_fitted_sel.shape={y_sel.shape}")
                     loss = F.mse_loss(out_sel, y_sel)
                 else:
-                    # Stick: target is data.y (N, 600) with binary mask
+                    # Stick: target is data.y (N, 2*spectrum_dim) with binary mask
                     y_sel = data.y[idx]
                     mask = data.mask_bin[idx]
                     if epoch == 0 and n_batches == 0:
                         print(f"DEBUG AUGER: data.y.shape={data.y.shape}, data.mask_bin.shape={data.mask_bin.shape}")
                         print(f"DEBUG AUGER: y_sel.shape={y_sel.shape}, mask.shape={mask.shape}")
                     # Ensure mask and y/out have same dimensions
+                    spec_dim = model.spectrum_dim
                     if mask.shape != y_sel.shape:
-                        if y_sel.shape[1] == 300 and mask.shape[1] == 600:
-                            mask = mask[:, :300]
+                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
+                            mask = mask[:, :spec_dim]
                     loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
 
             loss.backward()

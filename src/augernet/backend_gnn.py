@@ -77,7 +77,7 @@ def _get_fold_split(calc_data, fold, n_folds, split_method, random_seed,
             f"Unknown split_method '{split_method}'. "
             f"Supported: 'random', 'butina'."
         )
-
+    # folds from GroupKFold and KFold contain two lists [0] train and [1] val
     train_idx, val_idx = folds[fold - 1]  # fold is 1-indexed
     train_idx = train_idx.tolist() if hasattr(train_idx, 'tolist') else list(train_idx)
     val_idx = val_idx.tolist() if hasattr(val_idx, 'tolist') else list(val_idx)
@@ -118,9 +118,9 @@ def _handle_feature_override(data, cfg, overrides):
         if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
             print(f"  Re-assembling features for key override: {fk_tag}")
             ns = data.get('norm_stats')
-            assemble_dataset(data['calc_data'], fk_parsed, norm_stats=ns)
+            assemble_dataset(data['calc_data'], fk_parsed)
             if data.get('exp_data'):
-                assemble_dataset(data['exp_data'], fk_parsed, norm_stats=ns)
+                assemble_dataset(data['exp_data'], fk_parsed)
             data['assembled_feature_keys'] = fk_tag
 
 
@@ -335,7 +335,8 @@ def _split_exp_data(exp_data_all, cfg):
 #  On-the-fly stick to fitted conversion
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _attach_y_fitted(sing_data, trip_data, cfg):
+def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
+
     """Create ``y_fitted`` on each singlet Data object by combining singlet +
     triplet stick spectra and Gaussian-broadening onto a common energy grid.
 
@@ -346,27 +347,27 @@ def _attach_y_fitted(sing_data, trip_data, cfg):
     After this call every element in *sing_data* has a new attribute
     ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
     """
-    max_ke = cfg.max_ke
-    for s_data, t_data in zip(sing_data, trip_data):
-        n_atoms = s_data.x.size(0)
-        s_y = s_data.y.view(n_atoms, 600).numpy()
-        t_y = t_data.y.view(n_atoms, 600).numpy()
-        s_sl = int(s_data.spec_len.item())
-        t_sl = int(t_data.spec_len.item())
+    max_spec_len = cfg.max_spec_len
+    maxE = auger_norm_stats['maxE']
+
+    for data in calc_data:
+        n_atoms = data.x.size(0)
+        s_y = data.sing_y.view(n_atoms, 2*max_spec_len).numpy()
+        t_y = data.trip_y.view(n_atoms, 2*max_spec_len).numpy()
         fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
 
-        for ai in s_data.node_mask.nonzero(as_tuple=True)[0].tolist():
+        for ai in data.node_mask.nonzero(as_tuple=True)[0].tolist():
             # Un-normalise energies and concatenate singlet + triplet sticks
-            e = np.concatenate([s_y[ai, :s_sl] * max_ke,
-                                t_y[ai, :t_sl] * max_ke])
-            inten = np.concatenate([s_y[ai, 300:300 + s_sl],
-                                    t_y[ai, 300:300 + t_sl]])
+            e = np.concatenate([s_y[ai, :max_spec_len] * maxE,
+                                t_y[ai, :max_spec_len] * maxE])
+            inten = np.concatenate([s_y[ai, max_spec_len:],
+                                    t_y[ai, max_spec_len:]])
             _, fitted[ai] = fit_spectrum_to_grid(
                 e, inten, fwhm=cfg.fwhm,
                 energy_min=cfg.min_ke, energy_max=cfg.max_ke,
                 n_points=cfg.n_points,
             )
-        s_data.y_fitted = torch.tensor(fitted, dtype=torch.float32)
+        data.y_fitted = torch.tensor(fitted, dtype=torch.float32)
     print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
           f"fwhm={cfg.fwhm})")
 
@@ -392,10 +393,10 @@ def load_data(cfg) -> Dict[str, Any]:
     feature_keys = cfg.feature_keys_parsed
 
     # Load dataset-wide CEBE norm stats for mol_be scaling (key 4)
-    norm_stats = torch.load(cfg.norm_stats_file, weights_only=False)
+    cebe_norm_stats = torch.load(cfg.cebe_norm_stats_file, weights_only=False)
 
     # ── CEBE-GNN ─────────────────────────────────────────────────────────
-    if cfg.model == 'cebe-gnn' or (cfg.model == 'auger-gnn' and cfg.task_type == 'multi'):
+    if cfg.model == 'cebe-gnn':
 
         ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_cebe_data.pt')
         calc_data = [ds[i] for i in range(len(ds))]
@@ -414,99 +415,60 @@ def load_data(cfg) -> Dict[str, Any]:
                   f"(val={len(exp_val)}, eval={len(exp_eval)})")
 
         print(f"  Assembling features {cfg.feature_keys}")
-        assemble_dataset(calc_data, feature_keys, norm_stats=norm_stats)
-        assemble_dataset(exp_data_all, feature_keys, norm_stats=norm_stats)
+        assemble_dataset(calc_data, feature_keys)
+        assemble_dataset(exp_data_all, feature_keys)
         print(f"  Calculated data: {len(calc_data)} molecules, "
               f"x.shape[1]={calc_data[0].x.size(1)}")
-        if cfg.model == 'cebe-gnn':
-            return {
-                'calc_data': calc_data,
-                'exp_data': exp_data_all,
-                'exp_val_data': exp_val,
-                'exp_eval_data': exp_eval,
-                'assembled_feature_keys': cfg.feature_keys,
-                'norm_stats': norm_stats,
-            }
-        else:
-            cebe_calc_data = calc_data
-            cebe_exp_data = exp_data_all
-            cebe_exp_val = exp_val
-            cebe_exp_eval = exp_eval
-            cebe_norm_stats = norm_stats
-
+        return {
+            'calc_data': calc_data,
+            'exp_data': exp_data_all,
+            'exp_val_data': exp_val,
+            'exp_eval_data': exp_eval,
+            'assembled_feature_keys': cfg.feature_keys,
+            'norm_stats': cebe_norm_stats,
+        }
 
     # ── Auger-GNN ────────────────────────────────────────────────────────
-    elif cfg.model == 'auger-gnn':
+    if cfg.model == 'auger-gnn':
         spec_type = cfg.spectrum_type
-        task_type = cfg.task_type
 
         # Singlet and triplet are always loaded
-        sing_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_auger_sing_data.pt')
-        sing_calc_data = [sing_ds[i] for i in range(len(sing_ds))]
-        trip_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_auger_trip_data.pt')
-        trip_calc_data = [trip_ds[i] for i in range(len(trip_ds))]
+        ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_auger_data.pt')
+        calc_data = [ds[i] for i in range(len(ds))]
 
+        auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
         # Reshape y from (n_atoms*600, 1) to (n_atoms, 600) so that PyG
         # DataLoader batching concatenates correctly along the atom axis.
-        for dlist in (sing_calc_data, trip_calc_data):
-            for d in dlist:
-                n_atoms = d.x.size(0)
-                d.y = d.y.view(n_atoms, 600)
+        for d in calc_data:
+            n_atoms = d.x.size(0)
+            d.sing_y = d.sing_y.view(n_atoms, 2*cfg.max_spec_len)
+            d.trip_y = d.trip_y.view(n_atoms, 2*cfg.max_spec_len)
 
-        print(f"  Loaded {len(sing_calc_data)} singlet, "
-              f"{len(trip_calc_data)} triplet molecules ({spec_type})")
+        print(f"  Loaded {len(calc_data)} molecules ({spec_type})")
         if spec_type == 'stick':
             print(f"  Assembling features {cfg.feature_keys}")
-            assemble_dataset(sing_calc_data, feature_keys, norm_stats=norm_stats)
-            assemble_dataset(trip_calc_data, feature_keys, norm_stats=norm_stats)
-            print(f"  x.shape[1]={sing_calc_data[0].x.size(1)}")
+            assemble_dataset(calc_data, feature_keys)
+            print(f"  x.shape[1]={calc_data[0].x.size(1)}")
 
-            if task_type == 'single':
-                return {
-                    'calc_data': sing_calc_data,  # used for splitting
-                    'sing_calc_data': sing_calc_data,
-                    'trip_calc_data': trip_calc_data,
-                    'assembled_feature_keys': cfg.feature_keys,
-                    'norm_stats': norm_stats,
-                }
-            if task_type == 'multi':
-                return {
-                    'calc_data': sing_calc_data,
-                    'sing_calc_data': sing_calc_data,
-                    'trip_calc_data': trip_calc_data,
-                    'assembled_feature_keys': cfg.feature_keys,
-                    'norm_stats': norm_stats,
-                    'cebe_calc_data': cebe_calc_data,
-                    'cebe_exp_data': cebe_exp_data,
-                    'cebe_exp_val': cebe_exp_val,
-                    'cebe_exp_eval': cebe_exp_eval,
-                    'cebe_norm_stats': cebe_norm_stats
-                }
+            return {
+                'calc_data': calc_data,  # used for splitting
+                'assembled_feature_keys': cfg.feature_keys,
+                'cebe_norm_stats': cebe_norm_stats,
+                'auger_norm_stats': auger_norm_stats,
+            }
         else:  # fitted — build y_fitted on-the-fly from stick data
-            _attach_y_fitted(sing_calc_data, trip_calc_data, cfg)
+            _attach_y_fitted(calc_data, auger_norm_stats, cfg)
             print(f"  Assembling features {cfg.feature_keys}")
-            assemble_dataset(sing_calc_data, feature_keys, norm_stats=norm_stats)
-            print(f"  x.shape[1]={sing_calc_data[0].x.size(1)}, "
-                  f"y_fitted.shape={sing_calc_data[0].y_fitted.shape}")
+            assemble_dataset(calc_data, feature_keys)
+            print(f"  x.shape[1]={calc_data[0].x.size(1)}, "
+                  f"y_fitted.shape={calc_data[0].y_fitted.shape}")
             # Note sing_calc_data is both singlet and triplet
-            if task_type == 'single':
-                return {
-                        'calc_data': sing_calc_data,
-                        'assembled_feature_keys': cfg.feature_keys,
-                        'norm_stats': norm_stats,
-                }
-            if task_type == 'multi':
-                return {
-                        'calc_data': sing_calc_data,
-                        'assembled_feature_keys': cfg.feature_keys,
-                        'norm_stats': norm_stats,
-                        'cebe_calc_data': cebe_calc_data,
-                        'cebe_exp_data': cebe_exp_data,
-                        'cebe_exp_val': cebe_exp_val,
-                        'cebe_exp_eval': cebe_exp_eval,
-                        'cebe_norm_stats': cebe_norm_stats
-                }
-
+            return {
+                    'calc_data': calc_data,
+                    'assembled_feature_keys': cfg.feature_keys,
+                    'cebe_norm_stats': cebe_norm_stats,
+                    'auger_norm_stats': auger_norm_stats
+            }
     else:
         raise ValueError(
             f"Unknown model '{cfg.model}'. "
@@ -667,8 +629,26 @@ def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
 def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
                        device, hp, fold, verbose, cfg):
     """Train singlet + triplet GNN models on one fold."""
-    sing_calc = data['sing_calc_data']
-    trip_calc = data['trip_calc_data']
+    import copy
+    calc_data = data['calc_data']
+    spec_dim = 2 * cfg.max_spec_len
+
+    # Build singlet and triplet views from the combined data objects.
+    # Shallow copies let us set d.y / d.mask_bin independently without
+    # touching the shared tensors in the original list.
+    sing_calc = []
+    trip_calc = []
+    for d in calc_data:
+        n_atoms = d.x.size(0)
+        ds = copy.copy(d)
+        ds.y = d.sing_y.view(n_atoms, spec_dim)
+        ds.mask_bin = d.sing_mask_bin
+        sing_calc.append(ds)
+
+        dt = copy.copy(d)
+        dt.y = d.trip_y.view(n_atoms, spec_dim)
+        dt.mask_bin = d.trip_mask_bin
+        trip_calc.append(dt)
 
     sing_train = [sing_calc[i] for i in train_idx]
     sing_val   = [sing_calc[i] for i in val_idx]
@@ -1069,7 +1049,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
     print(f"  Assembled {len(data_list)} graphs")
 
     print(f"  Assembling features {cfg.feature_keys}")
-    assemble_dataset(data_list, feature_keys, norm_stats=norm_stats)
+    assemble_dataset(data_list, feature_keys)
 
     # ── Load model ───────────────────────────────────────────────────────
     model, device = _load_model_from_path(
