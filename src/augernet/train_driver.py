@@ -110,6 +110,21 @@ def _build_param_configs(param_grid: dict) -> List[dict]:
             for combo in itertools.product(*values)]
 
 
+def _cfg_with_overrides(cfg, overrides: dict):
+    """Return a shallow copy of *cfg* with per-config override fields applied.
+
+    Used by ``run_param_search`` to ensure that evaluation of each config
+    uses the same parameter values (e.g. ``fwhm``, ``n_points``) that were
+    used during training — not the base config values.
+    """
+    import copy
+    cfg_copy = copy.copy(cfg)
+    for k, v in overrides.items():
+        if hasattr(cfg_copy, k):
+            setattr(cfg_copy, k, v)
+    return cfg_copy
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  k-fold cross-validation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,12 +275,15 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
             )
             elapsed = time.time() - t0
 
-            # Save loss curve and run evaluation for this fold
+            # Save loss curve and run evaluation for this fold.
+            # Build a per-config cfg copy so spectrum params (e.g. fwhm)
+            # used during evaluation match those used during training.
             eval_metrics = None
             if cfg.run_evaluation:
+                eval_cfg = _cfg_with_overrides(cfg, config)
                 eval_metrics = be.run_evaluation(
                     result, data, fold,
-                    output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
+                    output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=eval_cfg,
                     train_results=result.get('train_results'),
                     config_id=config_id,
                     param_file_prefix=search_id,
@@ -458,8 +476,36 @@ def _run_evaluate(data, cfg):
     if cfg.model == 'auger-cnn':
         # CNN backend: _load_model_from_path takes (path, data, cfg)
         model, device = be._load_model_from_path(model_path, data, cfg)
+        result = (model, device)
+
+    elif cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', 'stick') == 'stick':
+        # Stick mode requires both singlet and triplet models.
+        calc_data = data['calc_data']
+        load_kw = dict(
+            layer_type=cfg.layer_type,
+            hidden_channels=cfg.hidden_channels,
+            n_layers=cfg.n_layers,
+            dropout=cfg.dropout,
+            **be._model_load_kwargs(cfg),
+        )
+        sing_model, device = be._load_model_from_path(model_path, calc_data, **load_kw)
+        trip_model = None
+        trip_path = cfg.trip_model_path
+        if trip_path:
+            trip_path = os.path.abspath(trip_path)
+            if not os.path.isfile(trip_path):
+                raise FileNotFoundError(f"Triplet model file not found: {trip_path}")
+            print(f"  Loading triplet model from: {trip_path}")
+            trip_model, _ = be._load_model_from_path(trip_path, calc_data, **load_kw)
+        else:
+            print("  WARNING: No trip_model_path provided — evaluating singlet model only.")
+        result = {
+            'model': sing_model, 'device': device,
+            'sing_model': sing_model, 'trip_model': trip_model,
+        }
+
     else:
-        # GNN backend: _load_model_from_path takes (path, calc_data, **kwargs)
+        # GNN backend (cebe-gnn or auger-gnn fitted): single model file
         calc_data = data['calc_data']
         model, device = be._load_model_from_path(
             model_path, calc_data,
@@ -469,12 +515,13 @@ def _run_evaluate(data, cfg):
             dropout=cfg.dropout,
             **be._model_load_kwargs(cfg),
         )
+        result = (model, device)
 
     # Try to infer fold from filename (e.g. …_fold3.pth → 3)
     fold = _infer_fold_from_path(model_path)
 
     be.run_evaluation(
-        (model, device), data, fold,
+        result, data, fold,
         output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
     )
 
