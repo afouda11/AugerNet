@@ -359,7 +359,7 @@ def _build_node_and_edge_features(mol, all_encoders, cebe_values):
             e_score_list.append(0.0)
 
     # ── carbon environment one-hot ──
-    _, carbon_env_indices, env_onehot_np = ce.get_all_carbon_environment_labels(mol)
+    carbon_env_labels, carbon_env_indices, env_onehot_np = ce.get_all_carbon_environment_labels(mol)
 
     # ── assemble node_features dict ──
     node_features = {}
@@ -406,7 +406,7 @@ def _build_node_and_edge_features(mol, all_encoders, cebe_values):
 
     x = torch.zeros(n_atoms, 0, dtype=torch.float)
 
-    return node_features, x, edge_index, edge_attr, atomic_be_tensor, carbon_env_indices
+    return node_features, x, edge_index, edge_attr, atomic_be_tensor, carbon_env_indices, carbon_env_labels
 
 # =============================================================================
 # LOAD MOLECULE FROM XYZ 2 MOL WITH PRECISE ATOM ORDERING
@@ -663,7 +663,7 @@ def build_graphs(data_type,
         cebe = np.loadtxt(cebe_path)
 
         #print("mol_name:", mol_name)
-        node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
+        node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices, carbon_env_labels = \
             _build_node_and_edge_features(mol, all_encoders, cebe)
 
         # Build targets (same logic as v1)
@@ -699,7 +699,8 @@ def build_graphs(data_type,
                 true_cebe=true_cebe,
                 smiles=smiles, 
                 mol_name=mol_name,
-                carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+                carbon_env_labels=carbon_env_labels,
+                carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
             )
 
         if data_type in ['calc_auger', 'eval_auger']:
@@ -709,27 +710,24 @@ def build_graphs(data_type,
                                             data_type, mol_dir, mol_name, 
                                             maxE, maxI, auger_max_spec_len
                                         ) 
+
             #singlet
             sing_spec_out_array = np.array(sing_spec_out)
             sing_y = torch.from_numpy(sing_spec_out_array).float()
-            sing_mask_rows = ~(sing_y.abs().sum(dim=2) == 0)
-            sing_mask_flat = sing_mask_rows.repeat(1, 2).float()
-            sing_y = sing_y.transpose(1, 2).reshape(len(xyz_symbols), auger_max_spec_len * 2)
+            sing_mask_rows = sing_y.abs().sum(dim=-1) > 0
             #triplet
             trip_spec_out_array = np.array(trip_spec_out)
             trip_y = torch.from_numpy(trip_spec_out_array).float()
-            trip_mask_rows = ~(trip_y.abs().sum(dim=2) == 0)
-            trip_mask_flat = trip_mask_rows.repeat(1, 2).float()
-            trip_y = trip_y.transpose(1, 2).reshape(len(xyz_symbols), auger_max_spec_len * 2)
+            trip_mask_rows = trip_y.abs().sum(dim=-1) > 0
 
             data = Data(
                 x=x, edge_index=edge_index, edge_attr=edge_attr,
                 node_mask=torch.FloatTensor(node_mask),
                 cebe_y=cebe_y.view(-1, 1),
-                sing_y=sing_y.view(-1, 1),
-                trip_y=trip_y.view(-1, 1),
-                sing_mask_bin=sing_mask_flat,
-                trip_mask_bin=trip_mask_flat,
+                sing_y=sing_y,
+                trip_y=trip_y,
+                sing_mask_bin=sing_mask_rows,
+                trip_mask_bin=trip_mask_rows,
                 sing_spec_len=sing_spec_len,
                 trip_spec_len=trip_spec_len,
                 pos=torch.tensor(pos, dtype=torch.float), 
@@ -738,7 +736,8 @@ def build_graphs(data_type,
                 atom_symbols=xyz_symbols, 
                 smiles=smiles, 
                 mol_name=mol_name,
-                carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+                carbon_env_labels=carbon_env_labels,
+                carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
             )
 
         # Store all features as separate attributes

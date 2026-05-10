@@ -76,6 +76,7 @@ class CarbonDataset(Dataset):
         broadening_fwhm: float = 1.6,
         energy_min: float = 200.0,
         energy_max: float = 273.0,
+        
         n_points: int = 731,
     ):
         self.df = df.reset_index(drop=True)

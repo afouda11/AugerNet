@@ -275,13 +275,18 @@ def train_single_run(
         train_df, num_classes=num_classes,
     )
 
+    label_smoothing = _g('label_smoothing', 0.1)
+    noise_std       = _g('augment_noise_std', 0.0)
+
     trainer = ctu.CNNTrainer(
         model=model, device=device,
         learning_rate=learning_rate, weight_decay=weight_decay,
         patience=patience,
         scheduler_type=scheduler_type,
-        cosine_T_max=num_epochs,
+        cosine_T_max=patience * 2,   # LR decays within the early-stopping window
         class_weights=class_weights,
+        label_smoothing=label_smoothing,
+        noise_std=noise_std,
     )
 
     if verbose:
