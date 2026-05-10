@@ -479,12 +479,7 @@ def load_data(cfg) -> Dict[str, Any]:
         calc_data = [ds[i] for i in range(len(ds))]
 
         auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
-        # Reshape y from (n_atoms*600, 1) to (n_atoms, 600) so that PyG
-        # DataLoader batching concatenates correctly along the atom axis.
-        for d in calc_data:
-            n_atoms = d.x.size(0)
-            d.sing_y = d.sing_y.view(n_atoms, 2*cfg.max_spec_len)
-            d.trip_y = d.trip_y.view(n_atoms, 2*cfg.max_spec_len)
+        # sing_y / trip_y are already (n_atoms, spec_dim, 2) — no reshape needed.
 
         print(f"  Loaded {len(calc_data)} molecules ({spec_type})")
         if spec_type == 'stick':
@@ -678,7 +673,7 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
     """Train singlet + triplet GNN models on one fold."""
     import copy
     calc_data = data['calc_data']
-    spec_dim = 2 * cfg.max_spec_len
+    spec_dim = cfg.max_spec_len
 
     # Build singlet and triplet views from the combined data objects.
     # Shallow copies let us set d.y / d.mask_bin independently without
@@ -688,12 +683,14 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
     for d in calc_data:
         n_atoms = d.x.size(0)
         ds = copy.copy(d)
-        ds.y = d.sing_y.view(n_atoms, spec_dim)
+        #ds.y = d.sing_y.view(n_atoms, spec_dim)
+        ds.y = d.sing_y
         ds.mask_bin = d.sing_mask_bin
         sing_calc.append(ds)
 
         dt = copy.copy(d)
-        dt.y = d.trip_y.view(n_atoms, spec_dim)
+        #dt.y = d.trip_y.view(n_atoms, spec_dim)
+        dt.y = d.trip_y
         dt.mask_bin = d.trip_mask_bin
         trip_calc.append(dt)
 

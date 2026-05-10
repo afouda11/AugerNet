@@ -129,6 +129,12 @@ class AugerCNN1D(nn.Module):
                 f"conv_filters has {n_blocks} entries but "
                 f"conv_kernels has {len(kernels)}"
             )
+        even_ks = [ks for ks in kernels if ks % 2 == 0]
+        if even_ks:
+            raise ValueError(
+                f"All conv_kernels must be odd so that padding=ks//2 exactly "
+                f"preserves the sequence length. Even kernel(s) found: {even_ks}"
+            )
 
         self.architecture = architecture
         self.use_global_pool = use_global_pool
@@ -252,10 +258,13 @@ class CNNTrainer:
                  learning_rate: float = 5e-4, weight_decay: float = 1e-4,
                  patience: int = 20, scheduler_type: str = 'cosine',
                  cosine_T_max: int = None,
-                 class_weights: torch.Tensor = None):
+                 class_weights: torch.Tensor = None,
+                 label_smoothing: float = 0.0,
+                 noise_std: float = 0.0):
         self.model = model.to(device)
         self.device = device
         self.patience = patience
+        self.noise_std = noise_std
         self.optimizer = torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
@@ -281,11 +290,14 @@ class CNNTrainer:
         if class_weights is not None:
             self.criterion = nn.CrossEntropyLoss(
                 weight=class_weights.to(device),
+                label_smoothing=label_smoothing,
             )
-            print(f"  Using CrossEntropyLoss with inverse-frequency class weights")
+            print(f"  Using CrossEntropyLoss with inverse-frequency class weights"
+                  f"{f' + label_smoothing={label_smoothing}' if label_smoothing else ''}")
         else:
-            self.criterion = nn.CrossEntropyLoss()
-            print(f"  Using CrossEntropyLoss with no class weights")
+            self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            print(f"  Using CrossEntropyLoss with no class weights"
+                  f"{f' + label_smoothing={label_smoothing}' if label_smoothing else ''}")
 
         self.history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
         self.best_model_state = None
@@ -303,6 +315,11 @@ class CNNTrainer:
                 labels = labels.to(self.device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
+
+            # Online augmentation: Gaussian noise (train only)
+            if self.noise_std > 0.0:
+                spectra = spectra + torch.randn_like(spectra) * self.noise_std
+                spectra = spectra.clamp(min=0.0)
 
             self.optimizer.zero_grad()
 

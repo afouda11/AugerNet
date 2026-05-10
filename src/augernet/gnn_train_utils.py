@@ -323,9 +323,8 @@ class MPNN(nn.Module):
             edge_dim: (int) - edge feature dimension `d_e`
             out_dim: (int) - output dimension (CEBE only, fixed to 1)
             spectrum_type: (str) - 'stick' or 'fitted'
-                stick:  two heads (energy + intensity), each → spectrum_dim (default 300)
-                        total output = 2 * spectrum_dim = 600
-                fitted: single intensity head to spectrum_dim (default 731)
+                stick:  two heads (energy + intensity), 
+                fitted: single intensity head to spectrum_dim 
             spectrum_dim: (int) - per-head output dimension
                 stick mode:  300  (energy 300 + intensity 300 = 600)
                 fitted mode: 731  (intensity only on common energy grid)
@@ -393,7 +392,7 @@ class MPNN(nn.Module):
             self.adapter_cebe  = nn.Linear(emb_dim, emb_dim)
             self.adapter_auger = nn.Linear(emb_dim, emb_dim)
             # Learnable log-variance for uncertainty weighting (Kendall et al. 2018)
-            # log_var[0] -> CEBE task, log_var[1] -> Auger task
+            # log_var[0] for CEBE task and log_var[1] for Auger task
             self.log_var = nn.Parameter(torch.zeros(2))
             # CEBE scalar prediction head (shared encoder -> adapter -> scalar)
             self.lin_pred = nn.Linear(emb_dim, 1)
@@ -465,17 +464,19 @@ class MPNN(nn.Module):
                     # Stick: concatenate energy and intensity heads
                     out_int = self.dec_int(h_auger)
                     out_eng = self.dec_eng(h_auger)
-                    auger_out = torch.cat([out_eng, out_int], dim=-1)
+                    #auger_out = torch.cat([out_eng, out_int], dim=-1)
+                    auger_out = (out_eng, out_int)
                 return cebe_out, auger_out
             else:
                 if self.spectrum_type == 'fitted':
                     # Fitted: intensity-only output on common energy grid
                     out = self.dec_int(h)
                 else:
-                    # Stick: concatenate energy and intensity heads
+                    # Stick: tuple of  energy and intensity heads
                     out_int = self.dec_int(h)
                     out_eng = self.dec_eng(h)
-                    out = torch.cat([out_eng, out_int], dim=-1)
+                    #out = torch.cat([out_eng, out_int], dim=-1)
+                    out = (out_eng, out_int)
 
         return out
 
@@ -500,18 +501,19 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                 # CEBE loss
                 loss_cebe = F.mse_loss(cebe_out[idx], data.cebe_y[idx])
                 # Auger loss
-                out_sel = auger_out[idx]
                 if spectrum_type == 'fitted':
+                    out_sel = auger_out[idx]
                     y_sel = data.y_fitted[idx]
                     loss_auger = F.mse_loss(out_sel, y_sel)
                 else:
+                    out_e = auger_out[0][idx]
+                    out_i = auger_out[1][idx]
                     y_sel = data.y[idx]
                     mask  = data.mask_bin[idx]
-                    spec_dim = model.spectrum_dim
-                    if mask.shape != y_sel.shape:
-                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
-                            mask = mask[:, :spec_dim]
-                    loss_auger = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                    loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss_auger = loss_e + loss_i
+
                 # Uncertainty-weighted combined loss
                 lv = model.log_var
                 loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
@@ -521,21 +523,23 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                 loss = F.mse_loss(out[idx], data.cebe_y[idx])
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
-                out_sel = out[idx]
 
                 if spectrum_type == 'fitted':
+                    out_sel = out[idx]
                     # Fitted: target is data.y_fitted (N, n_points), no mask needed
                     y_sel = data.y_fitted[idx]
                     loss = F.mse_loss(out_sel, y_sel)
                 else:
+                    out_e = out[0][idx]
+                    out_i = out[1][idx]
                     # Stick: target is data.y (N, 2*spectrum_dim) with mask
                     y_sel = data.y[idx]
+                    #mask out zero padding
                     mask = data.mask_bin[idx]
-                    spec_dim = model.spectrum_dim
-                    if mask.shape != y_sel.shape:
-                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
-                            mask = mask[:, :spec_dim]
-                    loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                    loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss = loss_e + loss_i
+
             total_loss += loss.item()
             n_batches  += 1
     return total_loss / n_batches
@@ -583,7 +587,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7,
                 spectrum_type='stick', scheduler_type='cosine',
                 task_type='single', mt_warmup_epochs=10, mt_log_grad_cosine=False,
-                mt_finetune_auger=False, mt_finetune_epochs=50):
+                mt_finetune_auger=False, mt_finetune_epochs=50, split_seed = 42):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
 
@@ -616,8 +620,6 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         'onecycle' (OneCycleLR, per-batch — original AUGER schedule)
     """
 
-    split_seed = 42
-
     seed(0)
     gen = torch.Generator().manual_seed(0)
 
@@ -627,7 +629,6 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         train_set = data_list
         val_set = val_data_list
     else:
-        # Internal split for backward compatibility (e.g., for CEBE training)
         train_set, val_set = train_test_split(data_list, test_size=0.10, random_state=split_seed)
 
     print(f"Training samples: {len(train_set)}, carbons: {sum(s == 'C' for d in train_set for s in d.atom_symbols)}")
@@ -706,55 +707,58 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     loss = loss_cebe
                 else:
                     # Stage 2: joint training with uncertainty weighting
-                    out_sel = auger_out[idx]
                     if spectrum_type == 'fitted':
+                        out_sel = auger_out[idx]
                         y_sel = data.y_fitted[idx]
                         loss_auger = F.mse_loss(out_sel, y_sel)
                     else:
+                        out_e = auger_out[0][idx]
+                        out_i = auger_out[1][idx]
                         y_sel = data.y[idx]
+                        #mask out zero padding
                         mask  = data.mask_bin[idx]
-                        spec_dim = model.spectrum_dim
-                        if mask.shape != y_sel.shape:
-                            if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
-                                mask = mask[:, :spec_dim]
-                        loss_auger = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                        #spec_dim = model.spectrum_dim
+                        loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
+                        loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                        loss_auger = loss_e + loss_i
+
+                    # Uncertainty-weighted combined loss
                     lv = model.log_var
                     loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
                             torch.exp(-lv[1]) * loss_auger + lv[1])
                     if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
                         print(f"  [multi] Switching to joint UW training at epoch {epoch}")
-            elif pred_type == "CEBE":
+            elif pred_type == "CEBE": 
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
                 loss = F.mse_loss(out[idx], data.cebe_y[idx])
                 #loss = F.mse_loss(out, data.cebe_y)
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
-                out_sel = out[idx]
-
-                # DEBUG: Print shapes on first batch of first epoch
-                if epoch == 0 and n_batches == 0:
-                    print(f"DEBUG AUGER ({spectrum_type}): idx.shape={idx.shape}")
-                    print(f"DEBUG AUGER: out_sel.shape={out_sel.shape}")
 
                 if spectrum_type == 'fitted':
+                    out_sel = out[idx]
+                    # DEBUG: Print shapes on first batch of first epoch
+                    if epoch == 0 and n_batches == 0:
+                        print(f"DEBUG AUGER ({spectrum_type}): idx.shape={idx.shape}")
+                        print(f"DEBUG AUGER: out_sel.shape={out_sel.shape}")
                     # Fitted: target is data.y_fitted (N, n_points), no mask needed
                     y_sel = data.y_fitted[idx]
                     if epoch == 0 and n_batches == 0:
                         print(f"DEBUG AUGER: y_fitted_sel.shape={y_sel.shape}")
                     loss = F.mse_loss(out_sel, y_sel)
                 else:
-                    # Stick: target is data.y (N, 2*spectrum_dim) with binary mask
+                    #tuple returned for stick spectra prediction
+                    out_e = out[0][idx]
+                    out_i = out[1][idx]
+                    # Stick: target is data.y (N, spec_dim, 2) with binary mask (N, spec_dim)
                     y_sel = data.y[idx]
                     mask = data.mask_bin[idx]
                     if epoch == 0 and n_batches == 0:
                         print(f"DEBUG AUGER: data.y.shape={data.y.shape}, data.mask_bin.shape={data.mask_bin.shape}")
                         print(f"DEBUG AUGER: y_sel.shape={y_sel.shape}, mask.shape={mask.shape}")
-                    # Ensure mask and y/out have same dimensions
-                    spec_dim = model.spectrum_dim
-                    if mask.shape != y_sel.shape:
-                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
-                            mask = mask[:, :spec_dim]
-                    loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                    loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss = loss_e + loss_i
 
             loss.backward()
 
@@ -821,18 +825,19 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 data = data.to(device)
                 _, auger_out = model(data)
                 idx = data.node_mask.nonzero(as_tuple=True)[0]
-                out_sel = auger_out[idx]
                 if spectrum_type == 'fitted':
+                    out_sel = auger_out[idx]
                     y_sel = data.y_fitted[idx]
                     loss = F.mse_loss(out_sel, y_sel)
                 else:
-                    y_sel = data.y[idx]
-                    mask  = data.mask_bin[idx]
-                    spec_dim = model.spectrum_dim
-                    if mask.shape != y_sel.shape:
-                        if y_sel.shape[1] == spec_dim and mask.shape[1] == 2 * spec_dim:
-                            mask = mask[:, :spec_dim]
-                    loss = ((out_sel - y_sel)**2 * mask).sum() / mask.sum()
+                    e_out, i_out = auger_out
+                    e_sel = e_out[idx]
+                    i_sel = i_out[idx]
+                    y_sel = data.y[idx]      # (n_carbons, spec_dim, 2)
+                    mask  = data.mask_bin[idx]  # (n_carbons, spec_dim)
+                    loss_e = ((e_sel - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss_i = ((i_sel - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss = loss_e + loss_i
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
                 ft_optimizer.step()

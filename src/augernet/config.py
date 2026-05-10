@@ -43,6 +43,7 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'n_points', 'fwhm', 'ke_shift_calc',
     # CNN-specific
     'architecture', 'use_augmented', 'merge_scheme',
+    'label_smoothing', 'augment_noise_std',
     # splitting
     'n_folds', 'split_method',
     # multi-task
@@ -130,11 +131,15 @@ class AugerNetConfig:
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
     use_augmented: bool = True       # prepend z-score normalised delta_be to spectrum
     merge_scheme: str = 'none'       # class merging scheme
+    label_smoothing: float = 0.0     # CrossEntropyLoss label smoothing (0 = off)
+    augment_noise_std: float = 0.0   # online Gaussian noise std added during training (0 = off)
 
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
     # evaluate + predict modes
     model_path: str = ''             # relative path to a saved .pth model file
+    # auger-gnn stick evaluate/predict: also need the triplet model
+    trip_model_path: str = ''        # relative path to saved triplet .pth (stick mode only)
     # predict mode
     predict_dir: str = ''            # directory of .xyz files for predict mode
 
@@ -218,7 +223,11 @@ class AugerNetConfig:
                     f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                 )
             if self.model == 'auger-gnn':
-                task_tag = f'_{self.task_type}' if self.task_type == 'multi' else ''
+                if self.task_type == 'multi':
+                    ft_tag = f'_ft{self.mt_finetune_epochs}' if self.mt_finetune_auger else ''
+                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}'
+                else:
+                    task_tag = ''
                 if self.spectrum_type == 'fitted':
                     fwhm_str = str(self.fwhm).replace('.', 'pt')
                     self.model_id = (

@@ -214,6 +214,7 @@ def extract_spectra(
     for c_idx in carbon_idx_mapping:
         
         if c_idx == 0.0:
+            # append empty spec for non carbon atoms
             empty_spec = np.zeros((max_spec_len, 2))
             sing_spec_out.append(empty_spec)
             trip_spec_out.append(empty_spec)
@@ -269,7 +270,7 @@ def extract_spectra(
             sing_spec_pad[: sing_spec_len, :] = sing_spec_arr
             trip_spec_pad[: trip_spec_len, :] = trip_spec_arr
 
-            # This is a carbon atom with a spectrum
+            # Append carbon atom spec 
             sing_spec_out.append(sing_spec_pad)
             trip_spec_out.append(trip_spec_pad)
 
