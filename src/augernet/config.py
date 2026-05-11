@@ -77,7 +77,12 @@ class AugerNetConfig:
     n_folds: int = 5
     train_fold: int = 3
     split_method: str = 'random'     # random | butina
-
+    
+    # implemented for CNN only atm
+    butina_cutoff: float = 0.65
+    train_frac: float = 0.70
+    val_frac: float = 0.15
+    test_frac: float = 0.15
     # node features
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
 
@@ -129,10 +134,11 @@ class AugerNetConfig:
 
     # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
-    use_augmented: bool = True       # prepend z-score normalised delta_be to spectrum
     merge_scheme: str = 'none'       # class merging scheme
     label_smoothing: float = 0.0     # CrossEntropyLoss label smoothing (0 = off)
     augment_noise_std: float = 0.0   # online Gaussian noise std added during training (0 = off)
+    normalize_intensity: bool = True
+    cebe_augment: bool = True        # prepend z-score normalised delta_be to spectrum
 
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
@@ -248,7 +254,7 @@ class AugerNetConfig:
                 hidden_str  =  'h' + '_'.join(str(h) for h in self.architecture.get('fc_hidden', []))
                 self.model_id = (
                     f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
-                    f"BE{self.use_augmented}_{filters_str}_{kernels_str}_{pool_str}_{hidden_str}"
+                    f"BE{self.cebe_augment}_{filters_str}_{kernels_str}_{pool_str}_{hidden_str}"
                 )
 
         # results sub dirs: outputs files, train loss and eval pngs, and models 

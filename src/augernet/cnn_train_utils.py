@@ -57,8 +57,6 @@ def seed(seed_val=0):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-
-
 # =============================================================================
 # DEVICE UTILITIES
 # =============================================================================
@@ -89,162 +87,170 @@ def get_device(device_str: str = 'auto', verbose: bool = True) -> torch.device:
 # MODEL ARCHITECTURE
 # =============================================================================
 
-class AugerCNN1D(nn.Module):
-    """
-    Flexible 1D CNN for Auger spectra — architecture fully defined by a dict.
+class FiLMLayer(nn.Module):
+    """Feature-wise affine transform: y = gamma * x + beta"""
+    def forward(self, x, gamma, beta):
+        return gamma.unsqueeze(-1) * x + beta.unsqueeze(-1)
 
-    Parameters
-    ----------
-    input_length int  : Length of the input spectrum (+ optional extra features).
-    num_classes  int  :  Number of output classes.
-    architecture dict :
-        Keys:
-            conv_filters    list[int] : filters per conv block, e.g. [16, 32, 64]
-            conv_kernels    list[int] : kernel size per block,  e.g. [7, 5, 3]
-            pool_size       int       : max-pool kernel (default 4)
-            fc_hidden       list[int] : hidden FC layer sizes,  e.g. [128]
-            use_batch_norm  bool      : BatchNorm after each conv (default False)
-            dropout         float     : Dropout rate for fully-connected layers.
-            dropout_conv    float     : dropout after each conv block (default 0.0)
+class FiLMGenerator(nn.Module):
+    """ Maps a scalar z norm'd delta CEBE to gamma and beta parameters for every FiLM layer 
+        in FiLM'd network
     """
+    def __init__(self, channels_per_layer: list, hidden_dim: int = 64):
+        super().__init__()
+        #one gamma and one beta per channel, per FiLM layer
+        total = 2 * sum(channels_per_layer)
+        self.channels_per_layer = channels_per_layer
+        self.mlp = nn.Sequential(
+            nn.Linear(1, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, total),
+        )
+        # zero last layer so gamma starts at 1 and beta 0, so CNN starts as un-FiLM'd
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
 
-    def __init__(self, input_length: int, num_classes: int,
-                 architecture: dict):
+    def forward(self, delta_be: torch.tensor):
+        if delta_be.dim() == 1:
+            delta_be = delta_be.unsqueeze(1)
+
+        out = self.mlp(delta_be)
+        # split into (gamm_i, beta_i) pairs per layer
+        sizes = []
+        for c in self.channels_per_layer:
+            sizes.extend([c, c])
+        parts = torch.split(out, sizes, dim=1)  
+        # gamma = 1 + delta (so identity init means gamma == 1)
+        return [(1.0+ parts[2*i], parts[2*i +1])
+                for i in range(len(self.channels_per_layer))]
+
+class AugerCNN1D_FiLMd(nn.Module):
+    def __init__(self,
+        input_length: int,
+        num_classes: int,
+        parallel_kernel_sizes=(5,10,15),
+        parallel_filters=(12,12,12),
+        sequential_kernel_size=(15,15),
+        sequential_filters=(12,12),
+        conv_dropout=0.2,
+        pool_kernel=2,
+        pool_stride=2,
+        film_hidden=64
+    ):
         super().__init__()
 
-        filters   = architecture['conv_filters']
-        kernels   = architecture['conv_kernels']
-        pool_size = architecture.get('pool_size', 4)
-        fc_hidden = architecture.get('fc_hidden', [64])
-        use_bn    = architecture.get('use_batch_norm', False)
-        dropout   = architecture.get('dropout', 0.2)
-        drop_conv = architecture.get('dropout_conv', 0.0)
-        pool_method = architecture.get('pool_method', 'max')
-        use_global_pool = architecture.get('use_global_pool', False)
+        self.parallel_convs = nn.ModuleList([
+            nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
+                      stride=1, padding='same') for f, k in zip(parallel_filters, parallel_kernel_sizes)
+        ])
+        concat_channels = sum(parallel_filters)
 
+        self.seqconv1 = nn.Conv1d(in_channels=concat_channels, out_channels=sequential_filters[0], 
+                             kernel_size=sequential_kernel_size[0], stride=1, padding='same')
+        self.seqconv2 = nn.Conv1d(in_channels=sequential_filters[0], out_channels=sequential_filters[1], 
+                             kernel_size=sequential_kernel_size[1], stride=1, padding='same')
+        
+        # FiLM bits
+        # first try modulating after parallel convs and after each seq conv
+        film_channel_counts = [concat_channels, sequential_filters[0], sequential_filters[1]]
 
-        n_blocks = len(filters)
-        if len(kernels) != n_blocks:
-            raise ValueError(
-                f"conv_filters has {n_blocks} entries but "
-                f"conv_kernels has {len(kernels)}"
-            )
-        even_ks = [ks for ks in kernels if ks % 2 == 0]
-        if even_ks:
-            raise ValueError(
-                f"All conv_kernels must be odd so that padding=ks//2 exactly "
-                f"preserves the sequence length. Even kernel(s) found: {even_ks}"
-            )
+        self.film_generator = FiLMGenerator(film_channel_counts, hidden_dim=film_hidden)
 
-        self.architecture = architecture
-        self.use_global_pool = use_global_pool
+        self.film_layers = nn.ModuleList([FiLMLayer() for _ in film_channel_counts])
 
-        # ---- build conv blocks ------------------------------------------------
-        self.conv_blocks = nn.ModuleList()
-        in_ch = 1
-        for out_ch, ks in zip(filters, kernels):
-            block = nn.Sequential()
-            block.append(nn.Conv1d(in_ch, out_ch, kernel_size=ks, padding=ks // 2))
-            if use_bn:
-                block.append(nn.BatchNorm1d(out_ch))
-            block.append(nn.ReLU())
-            if drop_conv > 0:
-                block.append(nn.Dropout(drop_conv))
-            self.conv_blocks.append(block)
-            in_ch = out_ch
+        self.conv_dropout = nn.Dropout(conv_dropout)
+        self.pool = nn.AvgPool1d(kernel_size=pool_kernel, stride=pool_stride)
+        pooled_length = (input_length - pool_kernel) // pool_stride + 1
+        flat_size = sequential_filters[1] * pooled_length
+        self.fc = nn.Linear(flat_size, num_classes)
 
-        #self.pool = nn.MaxPool1d(pool_size)
-        if isinstance(pool_size, int):
-            pool_sizes = [pool_size] * n_blocks
-        else:
-            pool_sizes = list(pool_size)
-            if len(pool_sizes) != n_blocks:
-                raise ValueError(
-                    f"conv_filters has {n_blocks} entries but "
-                     f"pool_size has {len(pool_sizes)}"
-                )
-        if pool_method == 'avg':
-            self.pools = nn.ModuleList([nn.AvgPool1d(p) for p in pool_sizes])
-        if pool_method == 'max':
-            self.pools = nn.ModuleList([nn.MaxPool1d(p) for p in pool_sizes])
+    def forward(self, x: torch.Tensor, delta_be: torch.Tensor) -> torch.Tensor:
 
-        # ---- compute flattened size -------------------------------------------
-        conv_out_len = input_length
-#         for _ in range(n_blocks):
-#             conv_out_len = conv_out_len // pool_size
-#         self.flat_size = filters[-1] * conv_out_len
-        for p in pool_sizes:
-            conv_out_len = conv_out_len // p
+        # x: (B, 1, spec) 
+        # delta_be (B, 1) 
+        
+        film = self.film_generator(delta_be) 
 
-        if use_global_pool:
-            self.flat_size = filters[-1]
-        else:
-            self.flat_size = filters[-1] * conv_out_len
+        # parallel branches -> ReLU -> concat -> FiLM -> dropout
+        parallel_outs = [F.relu(conv(x)) for conv in self.parallel_convs]
+        x = torch.cat(parallel_outs, dim=1)
+        g, b = film[0]
+        x = self.film_layers[0](x, g, b)
+        x = self.conv_dropout(x)
 
-        # ---- build FC layers --------------------------------------------------
-        self.fc_layers = nn.ModuleList()
-        prev = self.flat_size
-        for h in fc_hidden:
-            self.fc_layers.append(nn.Linear(prev, h))
-            prev = h
-        self.fc_out = nn.Linear(prev, num_classes)
-        self.dropout_fc = nn.Dropout(dropout)
+        # seqconv1 -> FiLM -> RelU -> dropout
+        x = self.seqconv1(x)
+        g, b = film[1]
+        x = self.film_layers[1](x, g, b)
+        x = F.relu(x)
+        x = self.conv_dropout(x)
 
-        self._init_weights()
+        # seqconv2 -> FiLM -> RelU -> dropout
+        x = self.seqconv2(x)
+        g, b = film[2]
+        x = self.film_layers[2](x, g, b)
+        x = F.relu(x)
+        x = self.conv_dropout(x)
 
-    # ------------------------------------------------------------------
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    # ------------------------------------------------------------------
-    def forward(self, x):
-        #for block in self.conv_blocks:
-        for block, pool in zip(self.conv_blocks, self.pools):
-            x = pool(block(x))
-        if self.use_global_pool:
-            x = x.mean(dim=2)      
-        else:
-            x = x.flatten(1)
-
-        for fc in self.fc_layers:
-            x = self.dropout_fc(F.relu(fc(x)))
-        x = self.fc_out(x)
+        # pool, flatten, classify
+        x = self.pool(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.fc(x)
 
         return x
 
-# =============================================================================
-# DATASET WRAPPER
-# =============================================================================
 
-class CarbonLabelDataset(Dataset):
-    """Wrapper dataset that provides carbon environment labels."""
+class AugerCNN1D(nn.Module):
+    def __init__(self,
+                 input_length: int, 
+                 num_classes: int,
+                 parralel_kernal_size: tuple = (5, 10, 15),
+                 parralel_filters: tuple = (12, 12, 12),
+                 sequential_kernel_size: tuple = (15, 15),
+                 sequential_filters: tuple = (12, 12),
+                 conv_dropout: float = 0.2,
+                 pool_kernel:         int = 2,
+                 pool_stride:         int = 2,
+                 ):
+        super().__init__()
+        self.parallel_convs = nn.ModuleList([
+            nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
+                      stride=1, padding='same') for f, k in zip(parralel_filters, parralel_kernal_size)
+        ])
 
-    def __init__(self, base_dataset: cdf.CarbonDataset, df: pd.DataFrame):
-        self.base_dataset = base_dataset
-        self.df = df.reset_index(drop=True)
+        concat_channels = sum(parralel_filters)
 
-    def __len__(self):
-        return len(self.base_dataset)
+        self.seqconv1 = nn.Conv1d(in_channels=concat_channels, out_channels=sequential_filters[0], 
+                             kernel_size=sequential_kernel_size[0], stride=1, padding='same')
+        self.seqconv2 = nn.Conv1d(in_channels=sequential_filters[0], out_channels=sequential_filters[1], 
+                             kernel_size=sequential_kernel_size[1], stride=1, padding='same')
 
-    def __getitem__(self, idx):
-        item = self.base_dataset[idx]
-        if isinstance(item, tuple):
-            spectrum, _ = item
-        else:
-            spectrum = item['spectrum']
-        label = self.df.iloc[idx]['carbon_env_label']
-        return spectrum, torch.LongTensor([label]).squeeze()
+        self.conv_dropout = nn.Dropout(conv_dropout)
+        self.pool = nn.AvgPool1d(kernel_size=pool_kernel, stride=pool_stride)
+        pooled_length = (input_length - pool_kernel) // pool_stride + 1
+        flat_size = sequential_filters[1] * pooled_length
+        self.fc = nn.Linear(flat_size, num_classes)
+
+        self.seq_block = nn.Sequential(
+            self.seqconv1,
+            nn.ReLU(),
+            self.conv_dropout,
+            self.seqconv2,
+            nn.ReLU(),
+            self.conv_dropout,
+            self.pool,
+            nn.Flatten(),
+            self.fc,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        parralel_outs = [F.relu(conv(x)) for conv in self.parallel_convs]
+        x = torch.cat(parralel_outs, dim=1)
+        x = self.conv_dropout(x)
+        x = self.seq_block(x)
+        return x
+
 
 
 # =============================================================================
@@ -261,6 +267,7 @@ class CNNTrainer:
                  class_weights: torch.Tensor = None,
                  label_smoothing: float = 0.0,
                  noise_std: float = 0.0):
+
         self.model = model.to(device)
         self.device = device
         self.patience = patience
@@ -306,13 +313,14 @@ class CNNTrainer:
         self.model.train()
         total_loss, correct, total = 0.0, 0, 0
         for batch in train_loader:
-            if isinstance(batch, dict):
-                spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
-                labels = batch['label'].to(self.device, dtype=torch.long)
-            else:
-                spectra, labels = batch
-                spectra = spectra.to(self.device, dtype=torch.float32)
-                labels = labels.to(self.device, dtype=torch.long)
+#             if isinstance(batch, dict):
+#                 spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
+#                 labels = batch['label'].to(self.device, dtype=torch.long)
+#             else:
+            spectra, delta_be, labels = batch
+            spectra = spectra.to(self.device, dtype=torch.float32)
+            delta_be = delta_be.to(self.device, dtype=torch.float32)
+            labels = labels.to(self.device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
 
@@ -323,7 +331,7 @@ class CNNTrainer:
 
             self.optimizer.zero_grad()
 
-            logits = self.model(spectra)
+            logits = self.model(spectra, delta_be)
             loss = self.criterion(logits, labels)
             _, predicted = logits.max(1)
             correct += predicted.eq(labels).sum().item()
@@ -345,16 +353,17 @@ class CNNTrainer:
         total_loss, correct, total = 0.0, 0, 0
         with torch.no_grad():
             for batch in val_loader:
-                if isinstance(batch, dict):
-                    spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
-                    labels = batch['label'].to(self.device, dtype=torch.long)
-                else:
-                    spectra, labels = batch
-                    spectra = spectra.to(self.device, dtype=torch.float32)
-                    labels = labels.to(self.device, dtype=torch.long)
+#                 if isinstance(batch, dict):
+#                     spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
+#                     labels = batch['label'].to(self.device, dtype=torch.long)
+#                 else:
+                spectra, delta_be, labels = batch
+                spectra = spectra.to(self.device, dtype=torch.float32)
+                delta_be = delta_be.to(self.device, dtype=torch.float32)
+                labels = labels.to(self.device, dtype=torch.long)
                 if spectra.dim() == 2:
                     spectra = spectra.unsqueeze(1)
-                logits = self.model(spectra)
+                logits = self.model(spectra, delta_be)
                 loss = self.criterion(logits, labels)
                 total_loss += loss.item()
                 _, predicted = logits.max(1)
@@ -418,42 +427,6 @@ class CNNTrainer:
 
 
 # =============================================================================
-# CLASS WEIGHTS
-# =============================================================================
-
-def get_class_weights_and_counts(
-    df: pd.DataFrame,
-    num_classes: int = None,
-) -> Tuple[torch.Tensor, Dict[int, int]]:
-    """Compute inverse-frequency class weights and per-class counts.
-
-    Returns
-    -------
-    weights : torch.Tensor
-        Shape ``(n_classes,)``.  Inverse-frequency weights normalised so that
-        the active (non-zero) entries have unit mean.
-    counts : Dict[int, int]
-        ``{class_idx: sample_count}`` for every class index in
-        ``range(n_classes)``, with ``0`` for classes absent from *df*.
-    """
-    label_col = 'carbon_env_label'
-    n_classes = NUM_CARBON_CLASSES if num_classes is None else num_classes
-
-    raw_counts = df[label_col].value_counts().to_dict()
-    counts = {i: raw_counts.get(i, 0) for i in range(n_classes)}
-
-    weights = torch.zeros(n_classes, dtype=torch.float32)
-    total_samples = len(df)
-    for class_idx, count in raw_counts.items():
-        if 0 <= class_idx < n_classes:
-            weights[class_idx] = total_samples / (n_classes * count)
-    active_mask = weights > 0
-    if active_mask.sum() > 0:
-        weights[active_mask] = weights[active_mask] / weights[active_mask].mean()
-
-    return weights, counts
-
-# =============================================================================
 # EVALUATION
 # =============================================================================
 
@@ -467,7 +440,7 @@ def evaluate_with_molecule_details(
     """Evaluate model with detailed molecule-by-molecule results and CSV output."""
     model.eval()
 
-    label_col = 'carbon_env_label'
+    label_col = 'carbon_env_index'
     class_names = class_names_override if class_names_override else CARBON_ENVIRONMENT_NAMES
     num_classes = num_classes_override if num_classes_override else NUM_CARBON_CLASSES
 
@@ -476,17 +449,13 @@ def evaluate_with_molecule_details(
 
     with torch.no_grad():
         for batch in loader:
-            if isinstance(batch, (tuple, list)):
-                spectra, labels = batch[0], batch[1]
-            elif isinstance(batch, dict):
-                spectra, labels = batch['spectrum'], batch['label']
-            else:
-                raise ValueError(f"Unknown batch type: {type(batch)}")
+            spectra, delta_be, labels = batch
             spectra = spectra.to(device, dtype=torch.float32)
+            delta_be = delta_be.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            logits = model(spectra)
+            logits = model(spectra, delta_be)
             probs = torch.softmax(logits, dim=1)
             pred = logits.argmax(dim=1)
             all_preds.append(pred.cpu().item())
@@ -610,57 +579,6 @@ def evaluate_with_molecule_details(
         'predictions': all_preds, 'labels': all_labels, 'probabilities': all_probs,
         'dedup_predictions': dedup_preds, 'dedup_labels': dedup_labels,
     }
-
-# =============================================================================
-# DIAGNOSTICS
-# =============================================================================
-
-def diagnose_dataframe(df: pd.DataFrame) -> None:
-    """Run diagnostics on the carbon DataFrame."""
-    print("\n" + "=" * 70)
-    print("CARBON DATAFRAME DIAGNOSTICS")
-    print("=" * 70)
-    print(f"\nDataFrame shape: {df.shape}")
-    print(f"Total carbon atoms: {len(df)}")
-    print(f"Total molecules: {df['mol_name'].nunique()}")
-
-    class_dist = df['carbon_env_label'].value_counts().sort_index()
-    print(f"\nClass distribution ({len(class_dist)} active classes):")
-
-    print(f"\n  Unique classes: {len(class_dist)}")
-    print(f"  Min class count: {class_dist.min()}")
-    print(f"  Max class count: {class_dist.max()}")
-    print(f"  Imbalance ratio: {class_dist.max() / class_dist.min():.1f}x")
-
-    # Detect stick columns (new format: sing/trip separate; old: combined)
-    has_sing = 'sing_stick_energies' in df.columns
-    has_combined = 'stick_energies' in df.columns
-
-    if has_sing:
-        se = df['sing_stick_energies']
-        te = df['trip_stick_energies']
-        n_peaks = [len(s) + len(t) for s, t in zip(se, te)]
-        print(f"\nSpectrum type: STICK (sing+trip, broadened on-the-fly)")
-        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
-              f"mean={np.mean(n_peaks):.1f}")
-        all_e = np.concatenate([e for e in se if e is not None and len(e) > 0]
-                               + [e for e in te if e is not None and len(e) > 0])
-        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
-    elif has_combined:
-        n_peaks = [len(e) for e in df['stick_energies'].values if e is not None]
-        print(f"\nSpectrum type: STICK (combined, broadened on-the-fly)")
-        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
-              f"mean={np.mean(n_peaks):.1f}")
-        all_e = np.concatenate([e for e in df['stick_energies'] if e is not None and len(e) > 0])
-        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
-    elif 'spectrum_intensity_only' in df.columns:
-        spectra = np.stack(df['spectrum_intensity_only'].values)
-        print(f"\nSpectrum type: PRE-BROADENED")
-        print(f"  Shape: {spectra.shape}")
-        print(f"  Min: {spectra.min():.4f}, Max: {spectra.max():.4f}")
-
-    print("=" * 70)
-
 
 # =============================================================================
 # PLOTTING UTILITIES

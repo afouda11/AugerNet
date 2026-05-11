@@ -10,12 +10,7 @@ chemically similar environments.
 Three schemes are available:
 
   'none'          -- No merging (original 36 classes, ~33 active)
-  'conservative'  -- 36 -> 16 classes.  Merges only spectrally indistinguishable
-                     pairs while preserving maximum chemical resolution.
-  'practical'     -- 36 -> 11 classes.  Guided by what the CNN can actually
-                     distinguish based on spectral separability analysis.
-  'aggressive'    -- 36 -> 6 classes.  Maximum CNN accuracy, minimum chemical
-                     resolution.
+  'chemical'  -- 36 -> 17 classes, chosen for chemical similarity and well defined shapes
 
 Usage:
     from augernet.class_merging import apply_label_merging, get_merged_class_names
@@ -43,7 +38,7 @@ from augernet.carbon_environment import (
 
 # Original class name -> original index (for reference)
 _ORIG_NAMES = list(CARBON_ENVIRONMENT_PATTERNS.keys())
-_NAME2IDX = CARBON_ENV_TO_IDX  # e.g. 'C_methyl' -> 32
+  # e.g. 'C_methyl' -> 32
 
 
 # =============================================================================
@@ -55,11 +50,7 @@ _NAME2IDX = CARBON_ENV_TO_IDX  # e.g. 'C_methyl' -> 32
 MERGING_SCHEMES: Dict[str, OrderedDict] = {}
 
 # ------------------------------------------------------------------------------
-#  CHEMICAL (36 -> 17)  * Best experimental generalization
-#  Groups by heteroatom neighbors.  Aromatic merged into hydrocarbon --
-#  critical for bridging the calc->exp domain gap (exp benzene spectra are
-#  shifted ~5 eV and 3-10x broader, making "aromatic" indistinguishable
-#  from other C-C environments at experimental resolution).
+#  CHEMICAL (36 -> 17)  
 # ------------------------------------------------------------------------------
 MERGING_SCHEMES['chemical'] = OrderedDict([
     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
@@ -74,101 +65,14 @@ MERGING_SCHEMES['chemical'] = OrderedDict([
     ('carbonyl',            ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_ester_alkyl', 
                                 'C_carboxylic_acid', 'C_carboxylate']),
     ('amide_carbonyl',      ['C_amide_carbonyl']),
-    ('acyl_fluoride',       ['C_acyl_fluoride']),
     ('nitrile',             ['C_nitrile']),
     ('imine',               ['C_imine']),
-    ('enol',                ['C_enol']),
-    ('C_O_single',          ['C_ether', 'C_alcohol']),
+    ('C_O_single',          ['C_ether', 'C_alcohol', 'C_enol']),
     ('C_N_single',          ['C_amine']),
-    ('fluorinated',         ['C_fluorinated']),
+    ('alkyl_fluorinated',   ['C_fluorinated', 'C_acyl_fluoride']),
     ('cumulated_N',         ['C_carbodiimide', 'C_ketenimine']),
     ('cumulated_O',         ['C_ketene', 'C_CO2']),
     ('isocyanate',          ['C_isocyanate']),
-])
-# MERGING_SCHEMES['chemical'] = OrderedDict([
-#     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-#     ('aryl_N',              ['C_aryl_amine', 'C_aryl_nitro']),
-#     ('aryl_O',              ['C_phenol', 'C_aryl_ether']),
-#     ('aryl_F',              ['C_aryl_fluoride']),
-#     ('hydrocarbon',       ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary',
-#                                 'C_alkyne', 'C_vinyl', 'C_allene', 'C_aromatic']),
-#     ('carbonyl',            ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_ester_alkyl', 
-#                                 'C_carboxylic_acid', 'C_carboxylate']),
-#     ('amide_carbonyl',      ['C_amide_carbonyl']),
-#     ('acyl_fluoride',       ['C_acyl_fluoride']),
-#     ('nitrile',             ['C_nitrile']),
-#     ('imine',               ['C_imine']),
-#     ('enol',                ['C_enol']),
-#     ('C_O_single',          ['C_ether', 'C_alcohol']),
-#     ('C_N_single',          ['C_amine']),
-#     ('fluorinated',         ['C_fluorinated']),
-#     ('heterocumulated',     ['C_carbodiimide', 'C_ketenimine',
-#                              'C_ketene', 'C_CO2', 'C_isocyanate']),
-# ])
-
-# ------------------------------------------------------------------------------
-#  CONSERVATIVE (36 -> 16)
-#  Merges only the most spectrally overlapping groups.
-# ------------------------------------------------------------------------------
-MERGING_SCHEMES['conservative'] = OrderedDict([
-    ('aromatic_ring',     ['C_aromatic', 'C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-    ('aryl_substituted',  ['C_phenol', 'C_aryl_amine', 'C_aryl_ether',
-                           'C_aryl_fluoride', 'C_aryl_nitro']),
-    ('sp3_saturated',     ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary']),
-    ('carbonyl',          ['C_ketone', 'C_aldehyde', 'C_amide_carbonyl',
-                           'C_ester_carbonyl', 'C_carboxylic_acid',
-                           'C_carboxylate', 'C_acyl_fluoride']),
-    ('alkyne',            ['C_alkyne']),
-    ('nitrile',           ['C_nitrile']),
-    ('imine',             ['C_imine']),
-    ('vinyl',             ['C_vinyl', 'C_enol']),
-    ('C_O_single',        ['C_ether', 'C_alcohol', 'C_ester_alkyl']),
-    ('C_N_single',        ['C_amine']),
-    ('fluorinated',       ['C_fluorinated']),
-    ('cumulated',         ['C_isocyanate', 'C_carbodiimide', 'C_ketene',
-                           'C_ketenimine', 'C_allene', 'C_CO2']),
-])
-
-# ------------------------------------------------------------------------------
-#  PRACTICAL (36 -> 11)  * Recommended
-#  Guided by spectral separability + CNN confusion analysis.
-# ------------------------------------------------------------------------------
-MERGING_SCHEMES['practical'] = OrderedDict([
-    ('aromatic_ring',     ['C_aromatic', 'C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-    ('aryl_substituted',  ['C_phenol', 'C_aryl_amine', 'C_aryl_ether',
-                           'C_aryl_fluoride', 'C_aryl_nitro']),
-    ('sp3_chain',         ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary']),
-    ('carbonyl',          ['C_ketone', 'C_aldehyde', 'C_amide_carbonyl',
-                           'C_ester_carbonyl', 'C_carboxylic_acid',
-                           'C_carboxylate', 'C_acyl_fluoride']),
-    ('alkyne',            ['C_alkyne']),
-    ('nitrile',           ['C_nitrile']),
-    ('imine',             ['C_imine']),
-    ('vinyl',             ['C_vinyl', 'C_enol']),
-    ('heteroatom_sp3',    ['C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_amine']),
-    ('fluorinated',       ['C_fluorinated']),
-    ('cumulated',         ['C_isocyanate', 'C_carbodiimide', 'C_ketene',
-                           'C_ketenimine', 'C_allene', 'C_CO2']),
-])
-
-# ------------------------------------------------------------------------------
-#  AGGRESSIVE (36 -> 6)
-#  Maximum discriminability, minimum resolution.
-# ------------------------------------------------------------------------------
-MERGING_SCHEMES['aggressive'] = OrderedDict([
-    ('aromatic_pi',       ['C_aromatic', 'C_arom_N', 'C_arom_O', 'C_arom_O_N',
-                           'C_phenol', 'C_aryl_amine', 'C_aryl_ether',
-                           'C_aryl_fluoride', 'C_aryl_nitro',
-                           'C_vinyl', 'C_enol', 'C_imine', 'C_methine']),
-    ('sp3_aliphatic',     ['C_methyl', 'C_methylene', 'C_quaternary',
-                           'C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_amine']),
-    ('carbonyl',          ['C_ketone', 'C_aldehyde', 'C_amide_carbonyl',
-                           'C_ester_carbonyl', 'C_carboxylic_acid',
-                           'C_carboxylate', 'C_acyl_fluoride']),
-    ('sp_linear',         ['C_alkyne', 'C_nitrile', 'C_isocyanate',
-                           'C_carbodiimide', 'C_ketene', 'C_ketenimine',
-                           'C_CO2', 'C_allene']),
-    ('fluorinated',       ['C_fluorinated']),
 ])
 
 
@@ -203,19 +107,35 @@ def build_label_map(scheme_name: str) -> Dict[int, int]:
     Parameters
     ----------
     scheme_name : str
-        Name of the merging scheme ('none', 'conservative', 'practical', 'aggressive').
+        Name of the merging scheme ('none', 'chemical').
 
     Returns
     -------
     label_map : dict
-        {original_index: new_index}.  Unmapped original indices are mapped to -1.
+        {original_index: new_index}.
+        
+    Raises
+    ------
+    ValueError
+        If the merging scheme does not cover all original classes.
     """
     scheme = get_scheme(scheme_name)
     label_map = {}
     for new_idx, (merged_name, orig_names) in enumerate(scheme.items()):
         for orig_name in orig_names:
-            if orig_name in _NAME2IDX:
-                label_map[_NAME2IDX[orig_name]] = new_idx
+            label_map[CARBON_ENV_TO_IDX[orig_name]] = new_idx
+    
+    # Validate that all original classes are mapped
+    original_range = set(range(len(IDX_TO_CARBON_ENV)))
+    mapped_indices = set(label_map.keys())
+    if mapped_indices != original_range:
+        missing = original_range - mapped_indices
+        missing_names = [IDX_TO_CARBON_ENV.get(i, f"Unknown_{i}") for i in sorted(missing)]
+        raise ValueError(
+            f"Merging scheme '{scheme_name}' does not cover all {len(original_range)} original classes. "
+            f"Missing {len(missing)}: {missing_names}"
+        )
+    
     return label_map
 
 
@@ -247,9 +167,7 @@ def get_merged_name_to_idx(scheme_name: str) -> Dict[str, int]:
 def apply_label_merging(
     df: pd.DataFrame,
     scheme_name: str,
-    label_col: str = 'carbon_env_label',
     inplace: bool = False,
-    verbose: bool = True,
 ) -> pd.DataFrame:
     """
     Remap labels in a carbon DataFrame according to a merging scheme.
@@ -263,12 +181,8 @@ def apply_label_merging(
         Carbon-centric DataFrame with a ``carbon_env_label`` column.
     scheme_name : str
         Merging scheme name.
-    label_col : str
-        Column containing original integer labels.
     inplace : bool
         If True, modify ``df`` directly; otherwise return a copy.
-    verbose : bool
-        Print a summary of the remapping.
 
     Returns
     -------
@@ -283,36 +197,51 @@ def apply_label_merging(
 
     label_map = build_label_map(scheme_name)
     merged_names = get_merged_class_names(scheme_name)
-
-    original_labels = df[label_col].values
+    # get all 'carbon_env_index' from original DataFrame
+    original_index = df['carbon_env_index'].values
+    original_labels = df['carbon_env_label'].values
+    new_index = np.full_like(original_index, fill_value=-1)
     new_labels = np.full_like(original_labels, fill_value=-1)
 
-    for i, orig in enumerate(original_labels):
-        new_labels[i] = label_map.get(int(orig), -1)
+    for i, orig in enumerate(original_index):
+        new_index[i] = label_map.get(int(orig), -1)
+        new_labels[i] = merged_names[new_index[i]]
 
-    # Check for unmapped labels
-    unmapped_mask = new_labels == -1
-    n_unmapped = unmapped_mask.sum()
-
-    df[label_col] = new_labels
+    df['carbon_env_index'] = new_index
+    df['carbon_env_label'] = new_labels
 
     # Also store the original label for reference / reverse lookup
     if 'carbon_env_label_original' not in df.columns:
-        df['carbon_env_label_original'] = original_labels
+        df['carbon_env_label_original'] = original_index
 
-    if verbose:
-        from collections import Counter
-        counts = Counter(new_labels[new_labels >= 0])
-        n_classes = len(counts)
-        total = (new_labels >= 0).sum()
-        print(f"\n  Label merging: scheme='{scheme_name}'  "
-              f"({len(IDX_TO_CARBON_ENV)} -> {n_classes} classes)")
-        for new_idx in sorted(counts.keys()):
-            pct = 100 * counts[new_idx] / total
-            print(f"    {new_idx:>3}: {merged_names[new_idx]:<25} "
-                  f"{counts[new_idx]:>5} ({pct:>5.1f}%)")
-        if n_unmapped > 0:
-            print(f"    WARNING: {n_unmapped} atoms had unmapped labels (set to -1)")
+    from collections import Counter
+    counts = Counter(new_index[new_index >= 0])
+    n_classes = len(counts)
+    total = (new_index >= 0).sum()
+    print(f"\n  Class merging breakdown: scheme='{scheme_name}'  "
+            f"({len(IDX_TO_CARBON_ENV)} to {n_classes} classes)")
+    
+    # Get the scheme to show original classes
+    scheme = get_scheme(scheme_name)
+    for new_idx in sorted(counts.keys()):
+        merged_name = merged_names[new_idx]
+        pct = 100 * counts[new_idx] / total
+        print(f"{new_idx:>3}: {merged_name:<25} {counts[new_idx]:>5} ({pct:>5.1f}%)")
+        
+        # Show the original classes that compose this merged class
+        orig_names = list(scheme.values())[new_idx]
+        orig_counts = {}
+        for orig_name in orig_names:
+            orig_idx = CARBON_ENV_TO_IDX[orig_name]
+            # Count how many times this original index appears in remapped data
+            orig_mask = original_index == orig_idx
+            orig_counts[orig_name.removeprefix('C_')] = orig_mask.sum()
+        
+        # Print original classes and their counts (indented)
+        for orig_name, orig_count in orig_counts.items():
+            if orig_count > 0:
+                print(f"       -- {orig_name:<22} {orig_count:>5}")
+        print()
 
     return df
 

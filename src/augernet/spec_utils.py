@@ -4,6 +4,8 @@ import os, argparse, shutil, string, pathlib
 import numpy as np
 import warnings
 
+from sklearn.preprocessing import normalize
+
 # Suppress RDKit deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
@@ -36,7 +38,7 @@ def gaussian1D(yo, xo, x, d):
 
 
 def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5, 
-                         energy_min=200.0, energy_max=270.0, n_points=1401):
+                         energy_min=200.0, energy_max=270.0, n_points=1401, normalize=False):
     """
     Fit discrete spectrum peaks (energy-intensity pairs) to a continuous grid
     using Gaussian broadening.
@@ -78,13 +80,10 @@ def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5,
     # Convolve each peak with Gaussian
     for energy_peak, intensity_peak in zip(energy_peaks, intensity_peaks):
         intensity_grid += gaussian1D(intensity_peak, energy_peak, energy_grid, sigma)
-    
-    # Normalize to [0, 1]
-#     max_intensity = intensity_grid.max()
-#     if max_intensity > 0:
-#         intensity_grid = intensity_grid / max_intensity
-#     else:
-#         print(f"Warning: max_intensity is {max_intensity} (<=0), spectrum may be invalid")
+
+    if normalize:
+        max_intensity = intensity_grid.max()
+        intensity_grid = intensity_grid / max_intensity
     
     return energy_grid, intensity_grid
 
@@ -245,10 +244,6 @@ def extract_spectra(
                 raise ValueError("empty triplet spectrum")
 
             # ---- sort by increasing energy before normalization ----
-            # Raw QC output is NOT energy-ordered.  Sorting creates a
-            # canonical ordering so the same energy region always maps to
-            # the same index range in the flattened target vector.
-            # this suprisingly made it worse
             sing_spec_arr = sing_spec_arr[sing_spec_arr[:, 0].argsort()]
             trip_spec_arr = trip_spec_arr[trip_spec_arr[:, 0].argsort()]
 
