@@ -85,11 +85,6 @@ CARBON_ENVIRONMENT_PATTERNS = OrderedDict([
     ('C_methine', '[CHX4]'),                             # -CH<
     ('C_quaternary', '[CX4H0]'),                         # >C< (no H)
     
-    # Fallback categories
-   # ('C_sp3', '[CX4]'),                                  # Any sp3 carbon
-    #('C_sp2', '[CX3]'),                                  # Any sp2 carbon
-    #('C_sp', '[CX2]'),                                   # Any sp carbon
-   # ('C_unknown', '[#6]'),                               # Any carbon (catch-all)
 ])
 
 # Create category name to index mapping
@@ -109,8 +104,6 @@ NUM_CARBON_CATEGORIES = len(CARBON_ENVIRONMENT_PATTERNS)
 #   - Triple/double bond patterns (60-62)
 #   - Generic aromatic fallback (50)
 #   - Specific aliphatic by H-count (40-43)
-#   - Generic hybridization fallbacks (10-12)
-#   - Catch-all (0)
 CARBON_ENV_PRIORITY = {
     # Carbonyl-containing: very specific (multiple heavy atoms in pattern)
     'C_carboxylic_acid':  106,
