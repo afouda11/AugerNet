@@ -27,107 +27,91 @@ import pandas as pd
 
 from augernet.carbon_environment import CARBON_ENV_TO_IDX, IDX_TO_CARBON_ENV
 from augernet.class_merging import (
+    MERGING_SCHEMES,
     get_merged_class_names,
     get_merged_idx_to_name,
 )
 
 # ------------------------------------------------------------------------------
-#  Group definitions (heteroatom-based hue families, colorblind-friendly)
+#  Visual aesthetics per group (hue families, colorblind-friendly).
+#
+#  Class membership is NOT duplicated here -- it is pulled from MERGING_SCHEMES
+#  in class_merging.py so both stay in sync automatically.
+#
+#  For ENV_GROUPS  : keys match 'heteroatom' scheme group names.
+#  For MERGED_GROUPS: keys match 'chemical' scheme group names, grouped into
+#                    the same hue families.
 # ------------------------------------------------------------------------------
 
-ENV_GROUPS: Dict[str, dict] = {
-    'carbonyl': {
-        'envs': [
-            'C_carboxylic_acid', 'C_carboxylate', 'C_ester_carbonyl',
-            'C_amide_carbonyl', 'C_ketone', 'C_aldehyde',
-            'C_CO2', 'C_ketene',
-        ],
-        'base_hue': 270,   # purple
-        'sat': 0.70,
-        'marker': 's',
-    },
-    'oxygen_single': {
-        'envs': [
-            'C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_phenol',
-            'C_enol', 'C_aryl_ether',
-        ],
-        'base_hue': 210,   # blue
-        'sat': 0.65,
-        'marker': '^',
-    },
-    'nitrogen': {
-        'envs': [
-            'C_nitrile', 'C_imine', 'C_amine', 'C_aryl_amine',
-            'C_aryl_nitro', 'C_arom_N', 'C_arom_O_N',
-            'C_isocyanate', 'C_carbodiimide', 'C_ketenimine',
-        ],
-        'base_hue': 150,   # teal / green
-        'sat': 0.65,
-        'marker': 'D',
-    },
-    'halogen': {
-        'envs': ['C_fluorinated', 'C_aryl_halide', 'C_acyl_halide'],
-        'base_hue': 20,    # orange
-        'sat': 0.80,
-        'marker': 'P',
-    },
-    'aromatic': {
-        'envs': ['C_aromatic', 'C_arom_O'],
-        'base_hue': 330,   # pink / magenta
-        'sat': 0.60,
-        'marker': 'o',
-    },
-    'unsaturated': {
-        'envs': ['C_alkyne', 'C_allene', 'C_vinyl'],
-        'base_hue': 50,    # yellow / gold
-        'sat': 0.75,
-        'marker': 'v',
-    },
-    'aliphatic': {
-        'envs': ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary'],
-        'base_hue': 0,     # grey (sat=0)
-        'sat': 0.0,
-        'marker': 'X',
-    },
+# heteroatom group name -> visual style
+_HETEROATOM_AESTHETICS: Dict[str, dict] = {
+    'carbonyl':      {'base_hue': 270, 'sat': 0.70, 'marker': 's'},   # purple
+    'oxygen_single': {'base_hue': 210, 'sat': 0.65, 'marker': '^'},   # blue
+    'nitrogen':      {'base_hue': 150, 'sat': 0.65, 'marker': 'D'},   # teal
+    'halogen':       {'base_hue':  20, 'sat': 0.80, 'marker': 'P'},   # orange
+    'aromatic':      {'base_hue': 330, 'sat': 0.60, 'marker': 'o'},   # pink
+    'unsaturated':   {'base_hue':  50, 'sat': 0.75, 'marker': 'v'},   # gold
+    'aliphatic':     {'base_hue':   0, 'sat': 0.00, 'marker': 'X'},   # grey
 }
 
-# Merged-class -> group mapping (for the 'chemical' scheme)
-# Keys are merged class names (as returned by get_merged_class_names).
-# If a merged class doesn't appear here it falls back to generic colour.
-
-MERGED_GROUPS: Dict[str, dict] = {
-    'carbonyl': {
-        'envs': ['carbonyl', 'amide_carbonyl', 'acyl_fluoride'],
-        'base_hue': 270, 'sat': 0.70, 'marker': 's',
-    },
-    'oxygen_single': {
-        'envs': ['C_O_single', 'enol'],
-        'base_hue': 210, 'sat': 0.65, 'marker': '^',
-    },
-    'nitrogen': {
-        'envs': [
-            'nitrile', 'imine', 'C_N_single', 'cumulated_N',
-            'isocyanate', 'cumulated_O',
-        ],
-        'base_hue': 150, 'sat': 0.65, 'marker': 'D',
-    },
-    'halogen': {
-        'envs': ['fluorinated', 'aryl_F'],
-        'base_hue': 20, 'sat': 0.80, 'marker': 'P',
-    },
-    'aromatic': {
-        'envs': ['arom_N', 'arom_O', 'arom_O_N', 'aryl_N', 'aryl_O'],
-        'base_hue': 330, 'sat': 0.60, 'marker': 'o',
-    },
-    'unsaturated': {
-        'envs': [],
-        'base_hue': 50, 'sat': 0.75, 'marker': 'v',
-    },
-    'aliphatic': {
-        'envs': ['hydrocarbon'],
-        'base_hue': 0, 'sat': 0.0, 'marker': 'X',
-    },
+# chemical group name -> which heteroatom hue family it belongs to
+_CHEMICAL_GROUP_FAMILY: Dict[str, str] = {
+    'carbonyl':         'carbonyl',
+    'amide_carbonyl':   'carbonyl',
+    'cumulated_O':      'carbonyl',
+    'C_O_single':       'oxygen_single',
+    'aryl_O':           'oxygen_single',
+    'nitrile':          'nitrogen',
+    'imine':            'nitrogen',
+    'C_N_single':       'nitrogen',
+    'cumulated_N':      'nitrogen',
+    'isocyanate':       'nitrogen',
+    'aryl_N':           'nitrogen',
+    'alkyl_fluorinated':'halogen',
+    'aryl_F':           'halogen',
+    'heteroaromatic':   'aromatic',
+    'hydrocarbon':      'aliphatic',
 }
+
+
+def _build_env_groups_from_scheme(
+    scheme_name: str,
+    aesthetics: Dict[str, dict],
+    family_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, dict]:
+    """
+    Build an ENV_GROUPS-style dict by pulling class lists from a merging scheme
+    and attaching visual metadata from *aesthetics*.
+
+    Parameters
+    ----------
+    scheme_name : str
+        Key into MERGING_SCHEMES ('heteroatom' or 'chemical').
+    aesthetics : dict
+        {group_name: {base_hue, sat, marker}} for the canonical hue families.
+    family_map : dict, optional
+        {merged_group_name: hue_family_name}.  Required when scheme group names
+        differ from aesthetics keys (i.e. for 'chemical').
+    """
+    scheme = MERGING_SCHEMES[scheme_name]
+    groups: Dict[str, dict] = {}
+    for group_name, orig_names in scheme.items():
+        family = family_map[group_name] if family_map else group_name
+        style = aesthetics.get(family, {'base_hue': 0, 'sat': 0.5, 'marker': 'o'})
+        groups[group_name] = {
+            'envs': list(orig_names),
+            **style,
+        }
+    return groups
+
+
+# Derived at module load -- single source of truth for class membership.
+ENV_GROUPS: Dict[str, dict] = _build_env_groups_from_scheme(
+    'heteroatom', _HETEROATOM_AESTHETICS
+)
+MERGED_GROUPS: Dict[str, dict] = _build_env_groups_from_scheme(
+    'chemical', _HETEROATOM_AESTHETICS, family_map=_CHEMICAL_GROUP_FAMILY
+)
 
 
 # ------------------------------------------------------------------------------
@@ -142,7 +126,11 @@ def _hsl_to_rgb(h: float, s: float, l: float) -> Tuple[float, float, float]:
 def _build_palette(
     groups: Dict[str, dict],
 ) -> Tuple[Dict[str, tuple], Dict[str, str]]:
-    """Build name -> RGBA and name -> marker dicts from a group definition."""
+    """Build name -> RGBA and name -> marker dicts from a group definition.
+
+    Keys are the individual env names listed in each group's 'envs'.
+    Used for the original 36-class (no merging) case.
+    """
     colors: Dict[str, tuple] = {}
     markers: Dict[str, str] = {}
     for grp in groups.values():
@@ -159,9 +147,41 @@ def _build_palette(
     return colors, markers
 
 
-# Pre-compute at module load
+def _build_merged_palette(
+    groups: Dict[str, dict],
+) -> Tuple[Dict[str, tuple], Dict[str, str]]:
+    """Build group_name -> RGBA and group_name -> marker dicts.
+
+    Keys are the group names themselves (i.e. the merged class labels).
+    Used when a merging scheme is active.
+    """
+    colors: Dict[str, tuple] = {}
+    markers: Dict[str, str] = {}
+    for group_name, grp in groups.items():
+        hue, sat, marker = grp['base_hue'], grp['sat'], grp['marker']
+        r, g, b = _hsl_to_rgb(hue, sat, 0.55)
+        colors[group_name] = (r, g, b, 1.0)
+        markers[group_name] = marker
+    return colors, markers
+
+
+# Pre-compute palettes at module load -- one entry per scheme.
+# 'none' / None  -> original 36-class palette (keys are C_* env names)
+# any scheme     -> palette keyed by merged group names for that scheme
+
 _ORIG_COLORS, _ORIG_MARKERS = _build_palette(ENV_GROUPS)
-_MERGED_COLORS, _MERGED_MARKERS = _build_palette(MERGED_GROUPS)
+
+# Build one palette per named scheme so any merged_scheme value works.
+_SCHEME_COLORS: Dict[str, Dict[str, tuple]] = {}
+_SCHEME_MARKERS: Dict[str, Dict[str, str]] = {}
+
+for _scheme_name, _scheme_groups in [
+    ('heteroatom', ENV_GROUPS),
+    ('chemical',   MERGED_GROUPS),
+]:
+    _c, _m = _build_merged_palette(_scheme_groups)
+    _SCHEME_COLORS[_scheme_name] = _c
+    _SCHEME_MARKERS[_scheme_name] = _m
 
 _FALLBACK_COLOR = (0.5, 0.5, 0.5, 1.0)
 _FALLBACK_MARKER = 'o'
@@ -185,13 +205,15 @@ def _idx_to_name(idx: int, merged_scheme: Optional[str]) -> str:
 
 def _name_to_color(name: str, merged_scheme: Optional[str]) -> tuple:
     if merged_scheme and merged_scheme != 'none':
-        return _MERGED_COLORS.get(name, _FALLBACK_COLOR)
+        palette = _SCHEME_COLORS.get(merged_scheme, {})
+        return palette.get(name, _FALLBACK_COLOR)
     return _ORIG_COLORS.get(name, _FALLBACK_COLOR)
 
 
 def _name_to_marker(name: str, merged_scheme: Optional[str]) -> str:
     if merged_scheme and merged_scheme != 'none':
-        return _MERGED_MARKERS.get(name, _FALLBACK_MARKER)
+        palette = _SCHEME_MARKERS.get(merged_scheme, {})
+        return palette.get(name, _FALLBACK_MARKER)
     return _ORIG_MARKERS.get(name, _FALLBACK_MARKER)
 
 
@@ -246,6 +268,23 @@ def get_ordered_unique_envs(
     return ordered, labels
 
 
+def get_env_family(env_name: str, merged_scheme: Optional[str] = None) -> str:
+    """Return the hue-family group name for an env name.
+
+    For 'chemical': multiple merged classes map to a shared hue family.
+    For 'heteroatom': each merged label is already its own family.
+    For None/'none': look up which ENV_GROUPS group the C_* name belongs to.
+    """
+    if merged_scheme == 'chemical':
+        return _CHEMICAL_GROUP_FAMILY.get(env_name, env_name)
+    if merged_scheme == 'heteroatom':
+        return env_name
+    for grp_name, grp in ENV_GROUPS.items():
+        if env_name in grp['envs']:
+            return grp_name
+    return env_name
+
+
 def get_group_ordered_envs(
     active_envs,
     merged_scheme: Optional[str] = None,
@@ -273,6 +312,38 @@ def get_group_ordered_envs(
     for idx in sorted(active):
         if idx not in ordered:
             ordered.append(idx)
+    return ordered
+
+
+def get_group_ordered_envs_str(
+    active_envs,
+    merged_scheme: Optional[str] = None,
+) -> List[str]:
+    """
+    Return environment names ordered by group so similar hues are adjacent
+    in legends. Works directly with string labels.
+    """
+    active = set(active_envs)
+    groups = MERGED_GROUPS if (merged_scheme and merged_scheme != 'none') else ENV_GROUPS
+
+    ordered: List[str] = []
+
+    if merged_scheme and merged_scheme != 'none':
+        # Labels are the group names themselves -- iterate group keys directly.
+        for group_name in groups:
+            if group_name in active and group_name not in ordered:
+                ordered.append(group_name)
+    else:
+        # Labels are original C_* names -- iterate envs within each group.
+        for grp in groups.values():
+            for env_name in grp['envs']:
+                if env_name in active and env_name not in ordered:
+                    ordered.append(env_name)
+
+    # Append any remaining not covered by groups
+    for env_name in sorted(active):
+        if env_name not in ordered:
+            ordered.append(env_name)
     return ordered
 
 

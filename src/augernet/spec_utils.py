@@ -9,75 +9,17 @@ from sklearn.preprocessing import normalize
 # Suppress RDKit deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-
-# =============================================================================
-# GAUSSIAN FITTING FOR SPECTRA (combined singlet + triplet)
-# =============================================================================
-
 def gaussian1D(yo, xo, x, d):
-    """
-    Gaussian function (unnormalized).
-    
-    Parameters
-    ----------
-    yo : float
-        Peak height (intensity)
-    xo : float
-        Peak center (energy)
-    x : np.ndarray
-        Energy grid
-    d : float
-        Gaussian sigma (FWHM-related parameter)
-        
-    Returns
-    -------
-    np.ndarray
-        Gaussian curve values
-    """
     return yo * np.exp(-1.0 * ((x - xo) ** 2) / (2.0 * (d ** 2)))
 
 
 def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5, 
                          energy_min=200.0, energy_max=270.0, n_points=1401, normalize=False):
-    """
-    Fit discrete spectrum peaks (energy-intensity pairs) to a continuous grid
-    using Gaussian broadening.
     
-    This mimics experimental spectra where each transition is broadened by
-    instrumental resolution (typically ~1.5 eV FWHM).
-    
-    Parameters
-    ----------
-    energy_peaks : np.ndarray
-        Energy values of spectral peaks, shape (n_peaks,)
-    intensity_peaks : np.ndarray
-        Intensity values of spectral peaks, shape (n_peaks,)
-    fwhm : float, default=1.5
-        Full-width-at-half-maximum of Gaussian broadening in eV
-    energy_min : float, default=200.0
-        Minimum energy for the output grid (eV)
-    energy_max : float, default=270.0
-        Maximum energy for the output grid (eV)
-    n_points : int, default=1401
-        Number of points in the output grid (1 point per 0.05 eV)
-        
-    Returns
-    -------
-    energy_grid : np.ndarray
-        Energy values of the fitted spectrum, shape (n_points,)
-    intensity_grid : np.ndarray
-        Fitted (smoothed) intensity values, shape (n_points,)
-    """
-    # Create energy grid
     energy_grid = np.linspace(energy_min, energy_max, n_points)
-    
-    # Convert FWHM to sigma: FWHM = 2.355 * sigma
-    sigma = fwhm / 2.355
-    
-    # Initialize fitted spectrum
+    sigma = fwhm / 2.355 
     intensity_grid = np.zeros(n_points, dtype=np.float32)
     
-    # Convolve each peak with Gaussian
     for energy_peak, intensity_peak in zip(energy_peaks, intensity_peaks):
         intensity_grid += gaussian1D(intensity_peak, energy_peak, energy_grid, sigma)
 
@@ -86,7 +28,6 @@ def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5,
         intensity_grid = intensity_grid / max_intensity
     
     return energy_grid, intensity_grid
-
 
 def get_maxI_maxE(
     data_type: str,
@@ -176,29 +117,16 @@ def extract_spectra(
     maxI: float,
     max_spec_len: int
     ):
-    """
-    Load singlet and triplet spectra for every carbon in *mol_id*,
-    using _out_map.txt file to correctly map spectrum indices
-    to atom positions in the XYZ file.
-    
-    The mapping file contains:
-    - Column 1: Carbon index (c1, c2, c3, ...) or 0 for non-carbon atoms
-    - Column 2: Binding energy or -1.0 for non-carbon atoms
-    - Row order: Same as atoms in XYZ file (and thus same as node features order)
-    
-    Returns
-    -------
-    spec_out  : list[np.ndarray]
-        Per-atom node labels (zero-padded spectra for carbons, zeros for non-carbons).
-    spec_len : int
-        Actual spectrum lengths before padding.
-    """
-    
+
+    # returns uniftted spectra of shape [n_atoms, max_spec_len, 2]
+    # for raw data from both singlet and triplet spectra
+    # assigns the indexing from openmolcas files to the right atoms in xyz via the
+    # _out_map.txt files
+
     sing_spec_out = []
     trip_spec_out = []
     
     # ---- Load mapping from node_features_mapped.txt or cebe_mapped.txt ----
-    # Try node_features_mapped.txt first (calc data naming)
     mapped_file = os.path.join(mol_dir, f"{mol_name}_out_map.txt")
     mapped_data = np.loadtxt(mapped_file)
     
@@ -242,7 +170,7 @@ def extract_spectra(
             trip_spec_arr = np.loadtxt(trip_spec_path)
             if trip_spec_arr.size == 0 :
                 raise ValueError("empty triplet spectrum")
-
+    
             # ---- sort by increasing energy before normalization ----
             sing_spec_arr = sing_spec_arr[sing_spec_arr[:, 0].argsort()]
             trip_spec_arr = trip_spec_arr[trip_spec_arr[:, 0].argsort()]

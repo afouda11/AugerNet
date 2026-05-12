@@ -188,11 +188,14 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     )
     if pred_type == 'AUGER':
         loop_kwargs['spectrum_type'] = spectrum_type
+    if pred_type == 'AUGER' and task_type == 'single' and spectrum_type == 'stick':
+        loop_kwargs['uw'] = hp.get('uw', False)
     if task_type == 'multi':
-        loop_kwargs['mt_warmup_epochs']  = hp.get('mt_warmup_epochs', 10)
+        loop_kwargs['mt_warmup_epochs']   = hp.get('mt_warmup_epochs', 10)
         loop_kwargs['mt_log_grad_cosine'] = hp.get('mt_log_grad_cosine', False)
-        loop_kwargs['mt_finetune_auger'] = hp.get('mt_finetune_auger', False)
+        loop_kwargs['mt_finetune_auger']  = hp.get('mt_finetune_auger', False)
         loop_kwargs['mt_finetune_epochs'] = hp.get('mt_finetune_epochs', 50)
+        loop_kwargs['lambda_alpha']       = hp.get('alpha_lambda', 0.0)
 
     train_results = gtu.train_loop(train_data, model, device, **loop_kwargs)
     model.eval()
@@ -389,27 +392,35 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
     After this call every element in *sing_data* has a new attribute
     ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
     """
-    max_spec_len = cfg.max_spec_len
     maxE = auger_norm_stats['maxE']
+    maxI = auger_norm_stats['maxI']
 
     for data in calc_data:
         n_atoms = data.x.size(0)
-        s_y = data.sing_y.view(n_atoms, 2*max_spec_len).numpy()
-        t_y = data.trip_y.view(n_atoms, 2*max_spec_len).numpy()
-        fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
+        s_y = data.sing_y
+        t_y = data.trip_y
+        E_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
+        I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
 
-        for ai in data.node_mask.nonzero(as_tuple=True)[0].tolist():
-            # Un-normalise energies and concatenate singlet + triplet sticks
-            e = np.concatenate([s_y[ai, :max_spec_len] * maxE,
-                                t_y[ai, :max_spec_len] * maxE])
-            inten = np.concatenate([s_y[ai, max_spec_len:],
-                                    t_y[ai, max_spec_len:]])
-            _, fitted[ai] = fit_spectrum_to_grid(
-                e, inten, fwhm=cfg.fwhm,
+        for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
+            # use maxE to un-normalize grid for fitting and later alpha loss constraint
+            s_e = s_y[c, :, 0] * maxE
+            s_i = s_y[c, :, 1]
+            t_e = t_y[c, :, 0] * maxE
+            t_i = t_y[c, :, 1]
+
+            energy_stick = np.concatenate([s_e, t_e])
+            intensity_stick = np.concatenate([s_i, t_i])
+
+            E_fitted[c], I_fitted[c] = fit_spectrum_to_grid(
+                energy_stick, intensity_stick, fwhm=cfg.fwhm,
                 energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points,
+                n_points=cfg.n_points, normalize=False
             )
-        data.y_fitted = torch.tensor(fitted, dtype=torch.float32)
+
+        data.y_fitted = torch.tensor(I_fitted, dtype=torch.float32)
+        data.e_fitted = torch.tensor(E_fitted, dtype=torch.float32)
+
     print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
           f"fwhm={cfg.fwhm})")
 
@@ -483,7 +494,6 @@ def load_data(cfg) -> Dict[str, Any]:
 
         print(f"  Loaded {len(calc_data)} molecules ({spec_type})")
         if spec_type == 'stick':
-            print(f"  Assembling features {cfg.feature_keys}")
             assemble_dataset(calc_data, feature_keys)
             print(f"  x.shape[1]={calc_data[0].x.size(1)}")
 
@@ -495,11 +505,10 @@ def load_data(cfg) -> Dict[str, Any]:
             }
         else:  # fitted — build y_fitted on-the-fly from stick data
             _attach_y_fitted(calc_data, auger_norm_stats, cfg)
-            print(f"  Assembling features {cfg.feature_keys}")
             assemble_dataset(calc_data, feature_keys)
-            print(f"  x.shape[1]={calc_data[0].x.size(1)}, "
-                  f"y_fitted.shape={calc_data[0].y_fitted.shape}")
-            # Note sing_calc_data is both singlet and triplet
+            print(f"  x.shape[1]={calc_data[0].x.size(1)}\n"
+                  f"  y_fitted.shape={calc_data[0].y_fitted.shape} (fitted intensity)\n"
+                  f"  e_fitted.shape={calc_data[0].e_fitted.shape} (fitted energy)")
             return {
                     'calc_data': calc_data,
                     'assembled_feature_keys': cfg.feature_keys,
@@ -810,7 +819,13 @@ def _load_model_from_path(
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    missing, unexpected = model.load_state_dict(
+        torch.load(model_path, map_location=device), strict=False
+    )
+    if missing:
+        print(f"  [load] Missing keys (will use init values): {missing}")
+    if unexpected:
+        print(f"  [load] Unexpected keys (ignored): {unexpected}")
     model = model.to(device)
     model.eval()
 
@@ -1347,7 +1362,7 @@ def _predict_auger_stick(sing_model, trip_model, device, data_list, mol_names,
             # s_vec shape: (2*max_spec_len,) = [energies_norm, intensities]
             e_s = s_vec[:max_spec_len] * maxE
             i_s = s_vec[max_spec_len:]
-            # add ke_shift to align calculated → experimental frame
+            # add ke_shift to align calculated to experimental frame
             e_s += cfg.ke_shift_calc
             _, broadened = fit_spectrum_to_grid(
                 e_s, i_s, fwhm=cfg.fwhm,

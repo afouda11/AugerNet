@@ -685,7 +685,7 @@ def build_graphs(data_type,
         # without round-trip precision loss through normalize/denormalize.
         true_cebe = torch.tensor(
             [float(v) if v != -1 else -1.0 for v in cebe],
-            dtype=torch.float64,
+            dtype=torch.float32,
         )
 
         if data_type in ['calc_cebe', 'exp_cebe']: 
@@ -714,11 +714,11 @@ def build_graphs(data_type,
             #singlet
             sing_spec_out_array = np.array(sing_spec_out)
             sing_y = torch.from_numpy(sing_spec_out_array).float()
-            sing_mask_rows = sing_y.abs().sum(dim=-1) > 0
+            sing_mask_rows = (sing_y.abs().sum(dim=-1) > 0).float()
             #triplet
             trip_spec_out_array = np.array(trip_spec_out)
             trip_y = torch.from_numpy(trip_spec_out_array).float()
-            trip_mask_rows = trip_y.abs().sum(dim=-1) > 0
+            trip_mask_rows = (trip_y.abs().sum(dim=-1) > 0).float()
 
             data = Data(
                 x=x, edge_index=edge_index, edge_attr=edge_attr,
@@ -738,6 +738,8 @@ def build_graphs(data_type,
                 mol_name=mol_name,
                 carbon_env_labels=carbon_env_labels,
                 carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
+                cebe_norm_stats=torch.tensor([mean, std], dtype=torch.float),
+                auger_norm_stats=torch.tensor([maxE, maxI], dtype=torch.float)
             )
 
         # Store all features as separate attributes

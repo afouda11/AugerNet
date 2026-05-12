@@ -386,6 +386,7 @@ class MPNN(nn.Module):
         self.spectrum_dim = spectrum_dim
         self.dropout = dropout
         self.task_type = task_type
+        self.log_var = nn.Parameter(torch.zeros(2))
 
         # Multi-task adapters and uncertainty weights (only for pred_type == 'AUGER')
         if task_type == 'multi' and pred_type == 'AUGER':
@@ -393,7 +394,8 @@ class MPNN(nn.Module):
             self.adapter_auger = nn.Linear(emb_dim, emb_dim)
             # Learnable log-variance for uncertainty weighting (Kendall et al. 2018)
             # log_var[0] for CEBE task and log_var[1] for Auger task
-            self.log_var = nn.Parameter(torch.zeros(2))
+            #self.log_var = nn.Parameter(torch.zeros(2))
+            #self.awl = AutomaticWeightedLoss(num=3)   # CEBE, Auger, alpha
             # CEBE scalar prediction head (shared encoder -> adapter -> scalar)
             self.lin_pred = nn.Linear(emb_dim, 1)
 
@@ -480,7 +482,20 @@ class MPNN(nn.Module):
 
         return out
 
-def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='stick'):
+class AutomaticWeightedLoss(nn.Module):
+    """Liebel & Körner (2018) automatically weighted multi-task loss.
+        Prevents negative loss, from https://github.com/Mikoto10032/AutomaticWeightedLoss."""
+    def __init__(self, num=2):
+        super().__init__()
+        self.params = nn.Parameter(torch.ones(num))
+
+    def forward(self, *losses):
+        total = 0.0
+        for i, L in enumerate(losses):
+            total = total + 0.5 / (self.params[i] ** 2) * L + torch.log(1 + self.params[i] ** 2)
+        return total
+
+def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='stick', lambda_alpha=0.001, uw=False):
     """One pass over data_loader without gradient to compute mean loss.
 
     Args:
@@ -505,6 +520,23 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                     out_sel = auger_out[idx]
                     y_sel = data.y_fitted[idx]
                     loss_auger = F.mse_loss(out_sel, y_sel)
+
+                    #auger paramter alpha loss
+                    # convert cebe_out back to un-normalized molecular be
+                    cebe_mean  = data.cebe_norm_stats[0]
+                    cebe_std   = data.cebe_norm_stats[1]
+                    pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
+                    pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                    true_molbe = data.true_cebe[idx].float()
+                    # get e grid and calculate pred and true centroid
+                    e_grid = data.e_fitted[idx]
+                    Ek_pred = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
+                    E_k_true = (y_sel * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                    # calculate modified auger paramter alpha and respective loss
+                    alpha_pred = Ek_pred + pred_molbe
+                    alpha_true = E_k_true + true_molbe 
+                    loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+
                 else:
                     out_e = auger_out[0][idx]
                     out_i = auger_out[1][idx]
@@ -514,10 +546,32 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                     loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
                     loss_auger = loss_e + loss_i
 
+                    maxE = data.auger_norm_stats[0]
+                    # un-normalize energies
+                    out_e_eV   = out_e * maxE
+                    true_e_eV  = y_sel[:, :, 0] * maxE
+
+                    safe_pred_i = out_i * mask
+                    safe_true_i = y_sel[:, :, 1] * mask
+                    Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
+                    Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
+
+                    cebe_mean  = data.cebe_norm_stats[0]
+                    cebe_std   = data.cebe_norm_stats[1]
+                    pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
+                    pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                    true_molbe = data.true_cebe[idx].float()
+
+                    alpha_pred = Ek_pred + pred_molbe
+                    alpha_true = Ek_true + true_molbe
+                    loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+
                 # Uncertainty-weighted combined loss
                 lv = model.log_var
                 loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                        torch.exp(-lv[1]) * loss_auger + lv[1])
+                        torch.exp(-lv[1]) * loss_auger + lv[1] +
+                        lambda_alpha * loss_alpha)
+                #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
             elif pred_type == "CEBE":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
                 loss = F.mse_loss(out[idx], data.cebe_y[idx])
@@ -538,7 +592,12 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                     mask = data.mask_bin[idx]
                     loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
                     loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    loss = loss_e + loss_i
+                    lv = model.log_var
+                    if uw == True:
+                        loss = (torch.exp(-lv[0]) * loss_e + lv[0] +
+                                torch.exp(-lv[1]) * loss_i + lv[1])
+                    else:
+                        loss = loss_e + loss_i
 
             total_loss += loss.item()
             n_batches  += 1
@@ -587,7 +646,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7,
                 spectrum_type='stick', scheduler_type='cosine',
                 task_type='single', mt_warmup_epochs=10, mt_log_grad_cosine=False,
-                mt_finetune_auger=False, mt_finetune_epochs=50, split_seed = 42):
+                mt_finetune_auger=False, mt_finetune_epochs=50, split_seed = 42, lambda_alpha=0.001, uw=False):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
 
@@ -711,6 +770,23 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         out_sel = auger_out[idx]
                         y_sel = data.y_fitted[idx]
                         loss_auger = F.mse_loss(out_sel, y_sel)
+
+                        #auger paramter alpha loss
+                        # convert cebe_out back to un-normalized molecular be
+                        cebe_mean  = data.cebe_norm_stats[0]
+                        cebe_std   = data.cebe_norm_stats[1]
+                        pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
+                        pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                        true_molbe = data.true_cebe[idx].float()
+                        # get e grid and calculate pred and true centroid
+                        e_grid = data.e_fitted[idx]
+                        Ek_pred = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
+                        E_k_true = (y_sel * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                        # calculate modified auger paramter alpha and respective loss
+                        alpha_pred = Ek_pred + pred_molbe
+                        alpha_true = E_k_true + true_molbe 
+                        loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+
                     else:
                         out_e = auger_out[0][idx]
                         out_i = auger_out[1][idx]
@@ -722,10 +798,33 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
                         loss_auger = loss_e + loss_i
 
+                        maxE = data.auger_norm_stats[0]
+                        # un-normalize energies
+                        out_e_eV   = out_e * maxE
+                        true_e_eV  = y_sel[:, :, 0] * maxE
+
+                        safe_pred_i = out_i * mask
+                        safe_true_i = y_sel[:, :, 1] * mask
+                        Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
+                        Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
+
+                        cebe_mean  = data.cebe_norm_stats[0]
+                        cebe_std   = data.cebe_norm_stats[1]
+                        pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
+                        pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                        true_molbe = data.true_cebe[idx].float()
+
+                        alpha_pred = Ek_pred + pred_molbe
+                        alpha_true = Ek_true + true_molbe
+                        loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+
+
                     # Uncertainty-weighted combined loss
                     lv = model.log_var
                     loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                            torch.exp(-lv[1]) * loss_auger + lv[1])
+                            torch.exp(-lv[1]) * loss_auger + lv[1] +
+                            lambda_alpha * loss_alpha)
+                    #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
                     if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
                         print(f"  [multi] Switching to joint UW training at epoch {epoch}")
             elif pred_type == "CEBE": 
@@ -758,7 +857,12 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         print(f"DEBUG AUGER: y_sel.shape={y_sel.shape}, mask.shape={mask.shape}")
                     loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
                     loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    loss = loss_e + loss_i
+                    lv = model.log_var
+                    if uw == True:
+                        loss = (torch.exp(-lv[0]) * loss_e + lv[0] +
+                                torch.exp(-lv[1]) * loss_i + lv[1])
+                    else:
+                        loss = loss_e + loss_i
 
             loss.backward()
 
@@ -777,7 +881,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
             n_batches    += 1
 
         train_loss = running_loss / n_batches
-        val_loss   = eval_mpnn(val_loader, model, device, layer_type, pred_type, spectrum_type=spectrum_type)
+        val_loss   = eval_mpnn(val_loader, model, device, layer_type, pred_type, spectrum_type=spectrum_type, lambda_alpha=lambda_alpha, uw=uw)
         train_results.append([epoch, train_loss, val_loss])
 
         # CosineAnnealingWarmup steps per epoch
