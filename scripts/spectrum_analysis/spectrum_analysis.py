@@ -3,13 +3,18 @@ import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 from pathlib import Path
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 # need to activate augernet conda env for script to work
 # requires augernet class merging and spectral fitting routines
 from augernet import DATA_PROCESSED_DIR
 import augernet.class_merging as cm
 import augernet.spec_utils as su 
+import env_vis
 
 CALC_PKL = Path(DATA_PROCESSED_DIR) / "cnn_auger_calc.pkl"
 EVAL_PKL = Path(DATA_PROCESSED_DIR) / "cnn_auger_eval.pkl"
@@ -103,6 +108,138 @@ def plot_mean_env_spectra(df: pd.DataFrame, suffix: str):
     fig.tight_layout()
     fig.savefig(SPEC_OUTPUT_DIR / f"multi_panel_mean_spectra{suffix}.png", dpi=300, bbox_inches="tight")
 
+def plot_pca_lda(
+        df: pd.DataFrame,
+        merged_scheme: str | None,
+        output_dir: str,
+        axis_font: int = 38,
+    ):
+
+    env_counts = df['carbon_env_label'].value_counts()
+    #print(env_counts)
+    ordered_envs = env_counts.index.tolist()
+
+    color_map = {env: env_vis._name_to_color(env, merged_scheme) for env in ordered_envs}
+    marker_map = {env: env_vis._name_to_marker(env, merged_scheme) for env in ordered_envs}
+    legend_envs = env_vis.get_group_ordered_envs_str(set(ordered_envs), merged_scheme)
+
+    #use sklearn to get spectrum matrix
+    spectra = np.stack(df['fitted_intensity'].values)
+    #performs mean and std normalization
+    scaler = StandardScaler()
+    spectra_scaled = scaler.fit_transform(spectra) # fitted scalars are stored internally, for use again
+    env_labels = df['carbon_env_label'].values
+
+    env_label_to_idx = {label: idx for idx, label in enumerate(ordered_envs)}
+    env_labels_numeric = np.array([env_label_to_idx[label] for label in env_labels])
+
+    # PCA
+    n_comp = min(50, *spectra.shape)
+    pca = PCA(n_components=n_comp)
+    pca_scores = pca.fit_transform(spectra_scaled)
+    vr = pca.explained_variance_ratio_
+
+    # LDA
+    #max (num_classes -1)
+    n_lda = min(2, len(ordered_envs) - 1)
+    lda = LinearDiscriminantAnalysis(n_components=n_lda)
+    # LDA supervised, uses labels
+    lda_scores = lda.fit_transform(spectra_scaled, env_labels)
+    lda_vr = lda.explained_variance_ratio_
+
+    fig = plt.figure(figsize=(36, 20))
+    gs_main = GridSpec(
+            1, 2, width_ratios=[2.0, 0.25], wspace=0.02,
+            left=0.06, right=0.98, top=0.96, bottom=0.08,
+    )
+    gs_scatter = gs_main[0, 0].subgridspec(1, 2, wspace=0.15)
+    gs_leg = gs_main[0, 1].subgridspec(1, 1)  
+
+    # -- PCA --
+    ax_pca = fig.add_subplot(gs_scatter[0, 0])
+    for env_idx in ordered_envs:
+        mask = env_labels == env_idx
+        if not mask.any():
+            continue
+        ax_pca.scatter(
+            pca_scores[mask, 0], pca_scores[mask, 1],
+            c=[color_map[env_idx]], marker=marker_map[env_idx],
+            alpha=0.4, s=160, edgecolors='none',
+        )
+    ax_pca.set_xlabel(f'PC1 ({vr[0]*100:.1f}%)', fontsize=axis_font, fontweight='bold')
+    ax_pca.set_ylabel(f'PC2 ({vr[1]*100:.1f}%)', fontsize=axis_font, fontweight='bold')
+    ax_pca.grid(True, alpha=0.3)
+    ax_pca.tick_params(labelsize=axis_font)
+
+    # -- LDA --
+    ax_lda = fig.add_subplot(gs_scatter[0, 1])
+    for env_idx in ordered_envs:
+        mask = env_labels == env_idx
+        if not mask.any():
+            continue
+        if n_lda >= 2:
+            ax_lda.scatter(
+                lda_scores[mask, 0], lda_scores[mask, 1],
+                c=[color_map[env_idx]], marker=marker_map[env_idx],
+                alpha=0.4, s=160, edgecolors='none',
+            )
+        else:
+            ax_lda.scatter(
+                lda_scores[mask, 0], np.zeros(mask.sum()),
+                c=[color_map[env_idx]], marker=marker_map[env_idx],
+                alpha=0.4, s=160, edgecolors='none',
+            )
+    if n_lda >= 2:
+        ax_lda.set_xlabel(f'LD1 ({lda_vr[0]*100:.1f}%)', fontsize=axis_font, fontweight='bold')
+        ax_lda.set_ylabel(f'LD2 ({lda_vr[1]*100:.1f}%)', fontsize=axis_font, fontweight='bold')
+    else:
+        ax_lda.set_xlabel(f'LD1 ({lda_vr[0]*100:.1f}%)', fontsize=axis_font, fontweight='bold')
+    ax_lda.grid(True, alpha=0.3)
+    ax_lda.tick_params(labelsize=axis_font)
+
+    # -- Legend -- grouped by chemical family with section headers --
+    ax_l = fig.add_subplot(gs_leg[0, 0])
+    ax_l.axis('off')
+
+    # Build group membership lookup so we can insert headers at group boundaries.
+    # Map each env name -> its hue family group (works for all schemes)
+    env_to_group = {e: env_vis.get_env_family(e, merged_scheme) for e in legend_envs}
+
+    handles, labels = [], []
+    current_group = None
+    blank = plt.scatter([], [], s=0, alpha=0)   # invisible placeholder
+
+    for e in legend_envs:
+        if e not in color_map:
+            continue
+        grp = env_to_group.get(e, '')
+        if grp != current_group:
+            current_group = grp
+            # Insert a blank spacer between groups
+            if handles:  # skip spacer before the first group
+                handles.append(blank)
+                labels.append('')
+        handles.append(
+            plt.scatter([], [], c=[color_map[e]], marker=marker_map[e],
+                        s=140, edgecolors='none', alpha=0.8)
+        )
+        labels.append(f'  {env_vis.format_env_label(e)}')
+
+    leg = ax_l.legend(
+        handles, labels, loc='center left', bbox_to_anchor=(0, 0.5),
+        fontsize=axis_font - 10, ncol=1, framealpha=0.95, edgecolor='black',
+        markerscale=2, handlelength=1.5,
+    )
+
+    stem = 'pca_scatter'
+    if merged_scheme and merged_scheme != 'none':
+        stem += f'_{merged_scheme}'
+    for ext in ('png', 'pdf'):
+        path = Path(output_dir) / f'{stem}.{ext}'
+        fig.savefig(path, dpi=300 if ext == 'png' else None, bbox_inches='tight')
+        print(f"  Saved: {path}")
+    plt.close(fig)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -135,6 +272,8 @@ def main():
     fit_spectra(eval_df)
 
     plot_mean_env_spectra(calc_df, suffix)
+
+    plot_pca_lda(calc_df, merge, str(SPEC_OUTPUT_DIR))
 
 if __name__ == "__main__":
     main()

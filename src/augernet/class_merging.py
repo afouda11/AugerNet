@@ -10,7 +10,7 @@ chemically similar environments.
 Three schemes are available:
 
   'none'          -- No merging (original 36 classes, ~33 active)
-  'chemical'  -- 36 -> 17 classes, chosen for chemical similarity and well defined shapes
+  'chemical'  -- 36 -> 16 classes, chosen for chemical similarity and well defined shapes
 
 Usage:
     from augernet.class_merging import apply_label_merging, get_merged_class_names
@@ -50,13 +50,10 @@ _ORIG_NAMES = list(CARBON_ENVIRONMENT_PATTERNS.keys())
 MERGING_SCHEMES: Dict[str, OrderedDict] = {}
 
 # ------------------------------------------------------------------------------
-#  CHEMICAL (36 -> 17)  
+#  CHEMICAL (36 -> 16)  
 # ------------------------------------------------------------------------------
 MERGING_SCHEMES['chemical'] = OrderedDict([
     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-    #('arom_N',              ['C_arom_N']),
-    #('arom_O',              ['C_arom_O']),
-    #('arom_O_N',            ['C_arom_O_N']),
     ('aryl_N',              ['C_aryl_amine', 'C_aryl_nitro']),
     ('aryl_O',              ['C_phenol', 'C_aryl_ether']),
     ('aryl_F',              ['C_aryl_fluoride']),
@@ -75,6 +72,26 @@ MERGING_SCHEMES['chemical'] = OrderedDict([
     ('isocyanate',          ['C_isocyanate']),
 ])
 
+MERGING_SCHEMES['heteroatom'] = OrderedDict([
+    # C=O containing (8 classes)
+    ('carbonyl',        ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_amide_carbonyl',
+                         'C_carboxylic_acid', 'C_carboxylate', 'C_CO2', 'C_ketene']),
+    # C-O single bond / O-substituted (6 classes)
+    ('oxygen_single',   ['C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_phenol',
+                         'C_enol', 'C_aryl_ether']),
+    # N-containing: all kinds (10 classes)
+    ('nitrogen',        ['C_nitrile', 'C_imine', 'C_amine', 'C_aryl_amine',
+                         'C_aryl_nitro', 'C_arom_N', 'C_arom_O_N',
+                         'C_isocyanate', 'C_carbodiimide', 'C_ketenimine']),
+    # Fluorinated (3 classes)
+    ('halogen',         ['C_fluorinated', 'C_aryl_fluoride', 'C_acyl_fluoride']),
+    # Pure aromatic ring carbons (no N, no heteroatom in ring) (2 classes)
+    ('aromatic',        ['C_aromatic', 'C_arom_O']),
+    # Pure hydrocarbon: saturated (4 classes)
+    ('aliphatic',       ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary']),
+    # Pure hydrocarbon: unsaturated non-aromatic (3 classes)
+    ('unsaturated',     ['C_alkyne', 'C_allene', 'C_vinyl']),
+])
 
 # =============================================================================
 #  PUBLIC API

@@ -49,6 +49,10 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     # multi-task
     'mt_warmup_epochs', 'mt_finetune_auger', 'mt_finetune_epochs',
     'mt_log_grad_cosine',
+    'alpha_lambda',
+    # single-task stick uncertainty weighting
+    'uw',
+
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,11 +129,13 @@ class AugerNetConfig:
     # ── Auger GNN specific (auger-gnn) ─────────────────────────────────────────
     spectrum_type: str = 'stick'                # stick | fitted
     task_type: str = 'single'                   # single (just auger) | multi (auger + cebe)
+    uw: bool = False                             # uncertainty-weighted loss for single-task stick
     # multi-task hyper-params (only used when task_type == 'multi')
     mt_warmup_epochs: int = 10                  # epochs of CEBE-only warmup before joint training
     mt_finetune_auger: bool = False             # after joint training, fine-tune on Auger loss only
     mt_finetune_epochs: int = 50                # epochs of Auger-only fine-tune (if mt_finetune_auger)
     mt_log_grad_cosine: bool = False            # log cosine similarity of task gradients each epoch
+    alpha_lambda: float = 0.0                    # weight for Auger parameter in loss
 
     # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
@@ -230,7 +236,8 @@ class AugerNetConfig:
             if self.model == 'auger-gnn':
                 if self.task_type == 'multi':
                     ft_tag = f'_ft{self.mt_finetune_epochs}' if self.mt_finetune_auger else ''
-                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}'
+                    alpha_lambda_str = str(self.alpha_lambda).replace('.', 'pt')
+                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_a{alpha_lambda_str}'
                 else:
                     task_tag = ''
                 if self.spectrum_type == 'fitted':
@@ -240,8 +247,9 @@ class AugerNetConfig:
                         f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                     )
                 if self.spectrum_type == 'stick':
+                    uw_tag = '_uw' if (self.task_type == 'single' and self.uw) else ''
                     self.model_id = (
-                        f"auger_gnn_{self.spectrum_type}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                        f"auger_gnn_{self.spectrum_type}{task_tag}{uw_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
                         f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                     )
             if self.model == 'auger-cnn':
