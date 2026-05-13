@@ -49,6 +49,45 @@ _ORIG_NAMES = list(CARBON_ENVIRONMENT_PATTERNS.keys())
 
 MERGING_SCHEMES: Dict[str, OrderedDict] = {}
 
+MERGING_SCHEMES['heteroaromatic_only'] = OrderedDict([
+    ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
+    # everything else: identity map, one-to-one
+    ('carboxylic_acid',     ['C_carboxylic_acid']),
+    ('carboxylate',         ['C_carboxylate']),
+    ('ester_carbonyl',      ['C_ester_carbonyl']),
+    ('amide_carbonyl',      ['C_amide_carbonyl']),
+    ('acyl_fluoride',       ['C_acyl_fluoride']),
+    ('ketone',              ['C_ketone']),
+    ('aldehyde',            ['C_aldehyde']),
+    ('nitrile',             ['C_nitrile']),
+    ('imine',               ['C_imine']),
+    ('ether',               ['C_ether']),
+    ('alcohol',             ['C_alcohol']),
+    ('ester_alkyl',         ['C_ester_alkyl']),
+    ('fluorinated',         ['C_fluorinated']),
+    ('amine',               ['C_amine']),
+    ('alkyne',              ['C_alkyne']),
+    ('CO2',                 ['C_CO2']),
+    ('isocyanate',          ['C_isocyanate']),
+    ('carbodiimide',        ['C_carbodiimide']),
+    ('ketene',              ['C_ketene']),
+    ('ketenimine',          ['C_ketenimine']),
+    ('allene',              ['C_allene']),
+    ('enol',                ['C_enol']),
+    ('vinyl',               ['C_vinyl']),
+    ('phenol',              ['C_phenol']),
+    ('aryl_ether',          ['C_aryl_ether']),
+    ('aryl_amine',          ['C_aryl_amine']),
+    ('aryl_fluoride',       ['C_aryl_fluoride']),
+    ('aryl_nitro',          ['C_aryl_nitro']),
+    ('aromatic',            ['C_aromatic']),
+    ('methyl',              ['C_methyl']),
+    ('methylene',           ['C_methylene']),
+    ('methine',             ['C_methine']),
+    ('quaternary',          ['C_quaternary']),
+])
+
+
 # ------------------------------------------------------------------------------
 #  CHEMICAL (36 -> 16)  
 # ------------------------------------------------------------------------------

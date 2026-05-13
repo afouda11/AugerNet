@@ -112,6 +112,28 @@ class CarbonDataset(Dataset):
             std = df['delta_be'].std() + 1e-8
             self._delta_be_norm = ((df['delta_be'] - mu) / std).values
 
+        # -- mol_size (total heavy atoms) z-score normalisation --
+        if 'smiles' in self.df.columns:
+            from rdkit import Chem
+            mol_to_natoms: dict = {}
+            first_row = self.df.drop_duplicates('mol_name').set_index('mol_name')
+            for name in first_row.index:
+                smi = first_row.loc[name, 'smiles']
+                rdmol = Chem.MolFromSmiles(str(smi)) if smi else None
+                mol_to_natoms[name] = rdmol.GetNumAtoms() if rdmol is not None else 0
+            raw_sizes = np.array(
+                [mol_to_natoms.get(n, 0) for n in self.df['mol_name']], dtype=np.float32
+            )
+        else:
+            # fallback: count carbons per molecule from the df itself
+            mol_size_map = self.df.groupby('mol_name').size().to_dict()
+            raw_sizes = np.array(
+                [mol_size_map[n] for n in self.df['mol_name']], dtype=np.float32
+            )
+        mu_s = raw_sizes.mean()
+        std_s = raw_sizes.std() + 1e-8
+        self._mol_size_norm = (raw_sizes - mu_s) / std_s
+
         print(f"CarbonDataset: {n_atoms} atoms, "
               f"augment={include_augmentation}")
 
@@ -126,13 +148,14 @@ class CarbonDataset(Dataset):
         spectrum = torch.from_numpy(self._spectra[idx].copy())
 
         dbe = float(self._delta_be_norm[idx])
+        mol_size = float(self._mol_size_norm[idx])
         # Optional delta_be augmentation (prepend to spectrum)
         if self.include_augmentation:
             spectrum = torch.cat([torch.tensor([dbe]), spectrum])
 
         label = torch.tensor(row['carbon_env_index'], dtype=torch.long)
 
-        return spectrum, dbe, label
+        return spectrum, dbe, mol_size, label
 
     # -------------------------------------------------------------------
     def get_class_weights_and_counts(self, num_classes: int) -> Tuple[torch.Tensor, Dict[int, int]]:
@@ -157,10 +180,12 @@ class CarbonDataset(Dataset):
         counts = {i: raw_counts.get(i, 0) for i in range(num_classes)}
 
         weights = torch.zeros(num_classes, dtype=torch.float32)
+        weights = weights.clamp(max=5.0)
         total_samples = len(self.df)
         for class_idx, count in raw_counts.items():
             if 0 <= class_idx < num_classes:
-                weights[class_idx] = total_samples / (num_classes * count)
+                #weights[class_idx] = total_samples / (num_classes * count)
+                weights[class_idx] = (total_samples /count) ** 0.5
         active_mask = weights > 0
         if active_mask.sum() > 0:
             weights[active_mask] = weights[active_mask] / weights[active_mask].mean()
