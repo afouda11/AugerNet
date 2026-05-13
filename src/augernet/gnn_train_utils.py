@@ -528,10 +528,15 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                     pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
                     pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
                     true_molbe = data.true_cebe[idx].float()
-                    # get e grid and calculate pred and true centroid
+                    # get e grid and find energy at peak intensity
                     e_grid = data.e_fitted[idx]
-                    Ek_pred = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
-                    E_k_true = (y_sel * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                    # centroid: Ek = (intensity * energy).sum() / intensity.sum()
+#                     Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
+#                     E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                    # argmax: energy at peak intensity
+                    _n = torch.arange(out_sel.size(0), device=out_sel.device)
+                    Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
+                    E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
                     # calculate modified auger paramter alpha and respective loss
                     alpha_pred = Ek_pred + pred_molbe
                     alpha_true = E_k_true + true_molbe 
@@ -553,8 +558,13 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
 
                     safe_pred_i = out_i * mask
                     safe_true_i = y_sel[:, :, 1] * mask
-                    Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
-                    Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
+                    # centroid: Ek = (intensity * energy).sum() / intensity.sum()
+#                     Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
+#                     Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
+                    # argmax: energy at peak intensity (within mask)
+                    _n = torch.arange(out_e_eV.size(0), device=out_e_eV.device)
+                    Ek_pred = out_e_eV[_n,  safe_pred_i.argmax(dim=-1)]
+                    Ek_true = true_e_eV[_n, safe_true_i.argmax(dim=-1)]
 
                     cebe_mean  = data.cebe_norm_stats[0]
                     cebe_std   = data.cebe_norm_stats[1]
@@ -778,10 +788,15 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
                         pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
                         true_molbe = data.true_cebe[idx].float()
-                        # get e grid and calculate pred and true centroid
+                        # get e grid and find energy at peak intensity
                         e_grid = data.e_fitted[idx]
-                        Ek_pred = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
-                        E_k_true = (y_sel * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                        # centroid: Ek = (intensity * energy).sum() / intensity.sum()
+#                         Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
+#                         E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                        # argmax: energy at peak intensity
+                        _n = torch.arange(out_sel.size(0), device=out_sel.device)
+                        Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
+                        E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
                         # calculate modified auger paramter alpha and respective loss
                         alpha_pred = Ek_pred + pred_molbe
                         alpha_true = E_k_true + true_molbe 
@@ -805,8 +820,13 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
                         safe_pred_i = out_i * mask
                         safe_true_i = y_sel[:, :, 1] * mask
-                        Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
-                        Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
+                        # centroid: Ek = (intensity * energy).sum() / intensity.sum()
+#                         Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
+#                         Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
+                        # argmax: energy at peak intensity (within mask)
+                        _n = torch.arange(out_e_eV.size(0), device=out_e_eV.device)
+                        Ek_pred = out_e_eV[_n,  safe_pred_i.argmax(dim=-1)]
+                        Ek_true = true_e_eV[_n, safe_true_i.argmax(dim=-1)]
 
                         cebe_mean  = data.cebe_norm_stats[0]
                         cebe_std   = data.cebe_norm_stats[1]

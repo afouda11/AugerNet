@@ -199,14 +199,14 @@ def _per_class_accuracy(df: pd.DataFrame, row_indices: List[int],
     preds, labels = [], []
     with torch.no_grad():
         for batch in loader:
-            spectra, delta_be, y = batch
+            spectra, delta_be, mol_size, y = batch
             spectra = spectra.to(device, dtype=torch.float32)
             delta_be = delta_be.to(device, dtype=torch.float32)
+            mol_size = mol_size.to(device, dtype=torch.float32)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            if delta_be.dim() == 1:
-                delta_be = delta_be.unsqueeze(1)
-            logits = model(spectra, delta_be)
+            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            logits = model(spectra, film_cond)
             preds.append(logits.argmax(dim=1).cpu().numpy())
             labels.append(y.numpy())
     preds  = np.concatenate(preds)  if preds  else np.array([], dtype=int)
@@ -377,6 +377,7 @@ def train_single_run(data: Dict[str, Any],
     normalize_intensity = _g('normalize_intensity', True)
     label_smoothing     = _g('label_smoothing', 0.1)
     noise_std           = _g('augment_noise_std', 0.0)
+    film_inputs         = _g('film_inputs', 'both')
 
     # New: splitting params
     split_method   = _g('split_method', 'random')
@@ -453,7 +454,7 @@ def train_single_run(data: Dict[str, Any],
 
     # ── Model ─────────────────────────────────────────────────────────────
     input_length = _get_input_length(cfg, use_augmented=cebe_augment)
-    model = ctu.AugerCNN1D_FiLMd(input_length, num_classes)
+    model = ctu.AugerCNN1D_FiLMd(input_length, num_classes, film_inputs=film_inputs)
     if verbose:
         n_params = sum(p.numel() for p in model.parameters())
         print(f"  Input length: {input_length}  |  Parameters: {n_params:,}")
@@ -546,6 +547,7 @@ def train_single_run(data: Dict[str, Any],
     # ── Results ───────────────────────────────────────────────────────────
     best_val_loss   = min(history['val_loss'])
     best_val_acc    = max(history['val_acc'])
+    best_val_f1     = max(history['val_f1'])
     final_train_acc = history['train_acc'][-1]
     final_val_acc   = history['val_acc'][-1]
     n_epochs_run    = len(history['train_loss'])
@@ -559,6 +561,7 @@ def train_single_run(data: Dict[str, Any],
         print(f"  Final Val:     {final_val_acc:.2f}%")
         print(f"  Best Val Loss: {best_val_loss:.4f}")
         print(f"  Best Val Acc:  {best_val_acc:.2f}%")
+        print(f"  Best Val F1:   {best_val_f1:.4f}")
         if test_results is not None:
             print(f"  Test Acc:      "
                   f"{test_results.get('accuracy', 0)*100:.2f}%  "
@@ -571,6 +574,7 @@ def train_single_run(data: Dict[str, Any],
         'best_val_loss': best_val_loss,
         'combined_val_loss': best_val_loss,
         'best_val_acc': best_val_acc,
+        'best_val_f1': best_val_f1,
         'final_train_acc': final_train_acc,
         'final_val_acc': final_val_acc,
         'n_epochs': n_epochs_run,
@@ -595,7 +599,8 @@ def _load_model_from_path(model_path, data, cfg, *, architecture=None,
 
     device = ctu.get_device(device_str, verbose=True)
     num_classes = _resolve_num_classes(cfg, merge_scheme_override=ms)
-    model = ctu.AugerCNN1D_FiLMd(input_length, num_classes, arch)
+    film_inputs = getattr(cfg, 'film_inputs', 'both')
+    model = ctu.AugerCNN1D_FiLMd(input_length, num_classes, film_inputs=film_inputs)
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")

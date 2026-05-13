@@ -43,7 +43,7 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'n_points', 'fwhm', 'ke_shift_calc',
     # CNN-specific
     'architecture', 'use_augmented', 'merge_scheme',
-    'label_smoothing', 'augment_noise_std',
+    'label_smoothing', 'augment_noise_std', 'film_inputs',
     # splitting
     'n_folds', 'split_method',
     # multi-task
@@ -144,6 +144,7 @@ class AugerNetConfig:
     augment_noise_std: float = 0.0   # online Gaussian noise std added during training (0 = off)
     normalize_intensity: bool = True
     cebe_augment: bool = True        # prepend z-score normalised delta_be to spectrum
+    film_inputs: str = 'both'        # FiLM conditioning: 'none' | 'be' | 'mol_size' | 'both'
 
     # param search
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)

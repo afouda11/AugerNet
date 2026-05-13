@@ -93,16 +93,17 @@ class FiLMLayer(nn.Module):
         return gamma.unsqueeze(-1) * x + beta.unsqueeze(-1)
 
 class FiLMGenerator(nn.Module):
-    """ Maps a scalar z norm'd delta CEBE to gamma and beta parameters for every FiLM layer 
-        in FiLM'd network
+    """ Maps z-score normalised conditioning inputs to gamma and beta parameters
+        for every FiLM layer in the FiLM'd network.
+        film_dim: 1 (be only or mol_size only) or 2 (both)
     """
-    def __init__(self, channels_per_layer: list, hidden_dim: int = 64):
+    def __init__(self, channels_per_layer: list, hidden_dim: int = 64, film_dim: int = 2):
         super().__init__()
         #one gamma and one beta per channel, per FiLM layer
         total = 2 * sum(channels_per_layer)
         self.channels_per_layer = channels_per_layer
         self.mlp = nn.Sequential(
-            nn.Linear(1, hidden_dim), nn.ReLU(),
+            nn.Linear(film_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, total),
         )
@@ -110,18 +111,16 @@ class FiLMGenerator(nn.Module):
         nn.init.zeros_(self.mlp[-1].weight)
         nn.init.zeros_(self.mlp[-1].bias)
 
-    def forward(self, delta_be: torch.tensor):
-        if delta_be.dim() == 1:
-            delta_be = delta_be.unsqueeze(1)
-
-        out = self.mlp(delta_be)
-        # split into (gamm_i, beta_i) pairs per layer
+    def forward(self, film_cond: torch.Tensor):
+        # film_cond: (B, 2) = [delta_be_norm, mol_size_norm]
+        out = self.mlp(film_cond)
+        # split into (gamma_i, beta_i) pairs per layer
         sizes = []
         for c in self.channels_per_layer:
             sizes.extend([c, c])
-        parts = torch.split(out, sizes, dim=1)  
+        parts = torch.split(out, sizes, dim=1)
         # gamma = 1 + delta (so identity init means gamma == 1)
-        return [(1.0+ parts[2*i], parts[2*i +1])
+        return [(1.0 + parts[2*i], parts[2*i + 1])
                 for i in range(len(self.channels_per_layer))]
 
 class AugerCNN1D_FiLMd(nn.Module):
@@ -133,11 +132,19 @@ class AugerCNN1D_FiLMd(nn.Module):
         sequential_kernel_size=(15,15),
         sequential_filters=(12,12),
         conv_dropout=0.2,
-        pool_kernel=2,
+        pool_kernel=32,
         pool_stride=2,
-        film_hidden=64
+        film_hidden=64,
+        film_inputs='both',   # 'none' | 'be' | 'mol_size' | 'both'
     ):
         super().__init__()
+
+        # FiLM conditioning mode
+        _valid = ('none', 'be', 'mol_size', 'both')
+        if film_inputs not in _valid:
+            raise ValueError(f"film_inputs must be one of {_valid}, got '{film_inputs}'")
+        self.film_inputs = film_inputs
+        film_dim = {'none': 0, 'be': 1, 'mol_size': 1, 'both': 2}[film_inputs]
 
         self.parallel_convs = nn.ModuleList([
             nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
@@ -154,46 +161,66 @@ class AugerCNN1D_FiLMd(nn.Module):
         # first try modulating after parallel convs and after each seq conv
         film_channel_counts = [concat_channels, sequential_filters[0], sequential_filters[1]]
 
-        self.film_generator = FiLMGenerator(film_channel_counts, hidden_dim=film_hidden)
-
-        self.film_layers = nn.ModuleList([FiLMLayer() for _ in film_channel_counts])
+        if film_dim > 0:
+            self.film_generator = FiLMGenerator(film_channel_counts, hidden_dim=film_hidden, film_dim=film_dim)
+            self.film_layers = nn.ModuleList([FiLMLayer() for _ in film_channel_counts])
+        else:
+            self.film_generator = None
+            self.film_layers = None
 
         self.conv_dropout = nn.Dropout(conv_dropout)
-        self.pool = nn.AvgPool1d(kernel_size=pool_kernel, stride=pool_stride)
-        pooled_length = (input_length - pool_kernel) // pool_stride + 1
-        flat_size = sequential_filters[1] * pooled_length
+        self.pool = nn.AdaptiveAvgPool1d(pool_kernel)
+        # AdaptiveAvgPool1d always outputs exactly pool_kernel time-steps
+        flat_size = sequential_filters[1] * pool_kernel
         self.fc = nn.Linear(flat_size, num_classes)
 
-    def forward(self, x: torch.Tensor, delta_be: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, film_cond: torch.Tensor) -> torch.Tensor:
 
-        # x: (B, 1, spec) 
-        # delta_be (B, 1) 
-        
-        film = self.film_generator(delta_be) 
+        # x: (B, 1, spec)
+        # film_cond: (B, 2) = [delta_be_norm, mol_size_norm]  (always passed full)
+        # Select the conditioning columns based on film_inputs config:
+        if self.film_inputs == 'none':
+            cond = None
+        elif self.film_inputs == 'be':
+            cond = film_cond[:, 0:1]   # (B, 1)
+        elif self.film_inputs == 'mol_size':
+            cond = film_cond[:, 1:2]   # (B, 1)
+        else:  # 'both'
+            cond = film_cond           # (B, 2)
+
+        film = self.film_generator(cond) if cond is not None else None
 
         # parallel branches -> ReLU -> concat -> FiLM -> dropout
         parallel_outs = [F.relu(conv(x)) for conv in self.parallel_convs]
         x = torch.cat(parallel_outs, dim=1)
-        g, b = film[0]
-        x = self.film_layers[0](x, g, b)
+        if film is not None:
+            g, b = film[0]
+            x = self.film_layers[0](x, g, b)
         x = self.conv_dropout(x)
 
         # seqconv1 -> FiLM -> RelU -> dropout
         x = self.seqconv1(x)
-        g, b = film[1]
-        x = self.film_layers[1](x, g, b)
+        if film is not None:
+            g, b = film[1]
+            x = self.film_layers[1](x, g, b)
         x = F.relu(x)
         x = self.conv_dropout(x)
 
         # seqconv2 -> FiLM -> RelU -> dropout
         x = self.seqconv2(x)
-        g, b = film[2]
-        x = self.film_layers[2](x, g, b)
+        if film is not None:
+            g, b = film[2]
+            x = self.film_layers[2](x, g, b)
         x = F.relu(x)
         x = self.conv_dropout(x)
 
         # pool, flatten, classify
-        x = self.pool(x)
+        # AdaptiveAvgPool1d is not supported on MPS when input is not
+        # evenly divisible by output size, so fall back to CPU for this op.
+        if x.device.type == 'mps':
+            x = self.pool(x.cpu()).to(x.device)
+        else:
+            x = self.pool(x)
         x = torch.flatten(x, start_dim=1)
         x = self.fc(x)
 
@@ -306,7 +333,7 @@ class CNNTrainer:
             print(f"  Using CrossEntropyLoss with no class weights"
                   f"{f' + label_smoothing={label_smoothing}' if label_smoothing else ''}")
 
-        self.history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+        self.history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': [], 'val_f1': []}
         self.best_model_state = None
 
     def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
@@ -317,9 +344,10 @@ class CNNTrainer:
 #                 spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
 #                 labels = batch['label'].to(self.device, dtype=torch.long)
 #             else:
-            spectra, delta_be, labels = batch
+            spectra, delta_be, mol_size, labels = batch
             spectra = spectra.to(self.device, dtype=torch.float32)
             delta_be = delta_be.to(self.device, dtype=torch.float32)
+            mol_size = mol_size.to(self.device, dtype=torch.float32)
             labels = labels.to(self.device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
@@ -331,7 +359,8 @@ class CNNTrainer:
 
             self.optimizer.zero_grad()
 
-            logits = self.model(spectra, delta_be)
+            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            logits = self.model(spectra, film_cond)
             loss = self.criterion(logits, labels)
             _, predicted = logits.max(1)
             correct += predicted.eq(labels).sum().item()
@@ -348,28 +377,33 @@ class CNNTrainer:
             total += labels.size(0)
         return total_loss / len(train_loader), 100.0 * correct / total
 
-    def validate(self, val_loader: DataLoader) -> Tuple[float, float]:
+    def validate(self, val_loader: DataLoader) -> Tuple[float, float, float]:
         self.model.eval()
         total_loss, correct, total = 0.0, 0, 0
+        all_preds, all_labels = [], []
         with torch.no_grad():
             for batch in val_loader:
-#                 if isinstance(batch, dict):
-#                     spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
-#                     labels = batch['label'].to(self.device, dtype=torch.long)
-#                 else:
-                spectra, delta_be, labels = batch
+                spectra, delta_be, mol_size, labels = batch
                 spectra = spectra.to(self.device, dtype=torch.float32)
                 delta_be = delta_be.to(self.device, dtype=torch.float32)
+                mol_size = mol_size.to(self.device, dtype=torch.float32)
                 labels = labels.to(self.device, dtype=torch.long)
                 if spectra.dim() == 2:
                     spectra = spectra.unsqueeze(1)
-                logits = self.model(spectra, delta_be)
+                film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+                logits = self.model(spectra, film_cond)
                 loss = self.criterion(logits, labels)
                 total_loss += loss.item()
                 _, predicted = logits.max(1)
                 correct += predicted.eq(labels).sum().item()
                 total += labels.size(0)
-        return total_loss / len(val_loader), 100.0 * correct / total
+                all_preds.append(predicted.cpu().numpy())
+                all_labels.append(labels.cpu().numpy())
+        val_f1 = f1_score(
+            np.concatenate(all_labels), np.concatenate(all_preds),
+            average='macro', zero_division=0,
+        )
+        return total_loss / len(val_loader), 100.0 * correct / total, val_f1
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader,
             num_epochs: int = 100, verbose: bool = True) -> Dict[str, List[float]]:
@@ -387,12 +421,12 @@ class CNNTrainer:
             if verbose:
                 print(f"  Scheduler: OneCycleLR  (per-batch, {total_steps} total steps)")
 
-        best_val_loss = float('inf')
+        best_val_f1 = 0.0
         patience_counter = 0
 
         for epoch in range(num_epochs):
             train_loss, train_acc = self.train_epoch(train_loader)
-            val_loss, val_acc = self.validate(val_loader)
+            val_loss, val_acc, val_f1 = self.validate(val_loader)
 
             # Per-epoch LR step (CosineAnnealingLR)
             if not self.scheduler_per_batch and self.scheduler is not None:
@@ -402,14 +436,16 @@ class CNNTrainer:
             self.history['val_loss'].append(val_loss)
             self.history['train_acc'].append(train_acc)
             self.history['val_acc'].append(val_acc)
+            self.history['val_f1'].append(val_f1)
 
             if verbose:
                 print(f"Epoch {epoch+1:3d}/{num_epochs} | "
                       f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
-                      f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+                      f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | "
+                      f"Val F1: {val_f1:.4f}")
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
                 patience_counter = 0
                 self.best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
             else:
@@ -449,13 +485,15 @@ def evaluate_with_molecule_details(
 
     with torch.no_grad():
         for batch in loader:
-            spectra, delta_be, labels = batch
+            spectra, delta_be, mol_size, labels = batch
             spectra = spectra.to(device, dtype=torch.float32)
             delta_be = delta_be.to(device, dtype=torch.float32)
+            mol_size = mol_size.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            logits = model(spectra, delta_be)
+            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            logits = model(spectra, film_cond)
             probs = torch.softmax(logits, dim=1)
             pred = logits.argmax(dim=1)
             all_preds.append(pred.cpu().item())
@@ -470,36 +508,29 @@ def evaluate_with_molecule_details(
     f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
     f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
 
-    print("\n" + "=" * 130)
-    print(f"EVALUATION ({eval_type.upper()}) - {num_classes} CLASSES")
-    print("=" * 130)
+    print(f"\n== EVALUATION ({eval_type.upper()}) - {num_classes} CLASSES ==")
 
     df_reset = df.reset_index(drop=True)
     molecules = df_reset.groupby('mol_name')
     csv_records = []
 
+    # Compact per-molecule table: one header, one row per molecule
+    col_w = 38
+    print(f"\n  {'Molecule':<30} {'C':>4} {'ok':>4} {'wrong':>6}   Misclassified (true -> pred)")
+    print("  " + "-" * 110)
     for mol_name, mol_group_indices in molecules.groups.items():
         mol_group = df_reset.loc[mol_group_indices].sort_values('atom_idx')
-        print("\n" + "-" * 160)
-        print(f"Molecule: {mol_name}  |  Carbons: {len(mol_group)}")
-        print("-" * 160)
-
-        print(f"{'XYZ Idx':<10} {'True Category':<50} {'Pred Category':<50} "
-              f"{'Conf':<10} {'Status':<10}")
-        print("-" * 160)
+        n_carbon = len(mol_group)
+        wrong_items = []
         for idx in mol_group_indices:
             row = df_reset.iloc[idx]
-            atom_idx = int(row['atom_idx'])
+            atom_idx  = int(row['atom_idx'])
             true_label = int(row[label_col])
             pred_label = int(all_preds[idx])
             confidence = all_probs[idx][pred_label] * 100
-            # Use class_names list (works for both original and merged labels)
             true_name = class_names[true_label] if true_label < len(class_names) else f"class_{true_label}"
             pred_name = class_names[pred_label] if pred_label < len(class_names) else f"class_{pred_label}"
-            status = "CORRECT" if pred_label == true_label else "WRONG"
-            print(f"{atom_idx:<10} {true_name:<50} {pred_name:<50} "
-                  f"{confidence:>6.1f}%   {status}")
-            # Strip 'C_' prefix for cleaner CSV output
+            # Strip 'C_' prefix for CSV
             true_display = true_name.removeprefix('C_')
             pred_display = pred_name.removeprefix('C_')
             csv_records.append({
@@ -507,6 +538,13 @@ def evaluate_with_molecule_details(
                 'True Environment': true_display,
                 'CNN Prediction (Confidence %)': f"{pred_display} ({confidence:.1f}%)",
             })
+            if pred_label != true_label:
+                wrong_items.append(
+                    f"{true_name.removeprefix('C_')}->{pred_name.removeprefix('C_')}"
+                )
+        n_correct = n_carbon - len(wrong_items)
+        wrong_str = ', '.join(wrong_items) if wrong_items else 'all correct'
+        print(f"  {mol_name:<30} {n_carbon:>4} {n_correct:>4} {len(wrong_items):>6}   {wrong_str}")
 
     if output_dir:
         csv_df = pd.DataFrame(csv_records)
@@ -546,24 +584,15 @@ def evaluate_with_molecule_details(
         dedup_f1_macro = f1_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
         dedup_f1_weighted = f1_score(dedup_labels, dedup_preds, average='weighted', zero_division=0)
 
-    print("\n" + "=" * 160)
-    print("SUMMARY STATISTICS")
-    print("=" * 160)
+    print("\n== SUMMARY STATISTICS ==")
 
-    print(f"\n  Per-atom metrics (all {len(all_labels)} atoms):")
-    print(f"    Accuracy:    {accuracy*100:.1f}%  ({(all_preds == all_labels).sum()}/{len(all_labels)})")
-    print(f"    F1-Macro:    {f1_macro:.4f}")
-    print(f"    F1-Weighted: {f1_weighted:.4f}")
+    print(f"  Per-atom  ({len(all_labels)} atoms):  "
+          f"Acc={accuracy*100:.1f}%  F1-mac={f1_macro:.4f}  F1-wt={f1_weighted:.4f}")
+    print(f"  Deduped   ({len(dedup_labels)} pairs):  "
+          f"Acc={dedup_accuracy*100:.1f}%  F1-mac={dedup_f1_macro:.4f}  F1-wt={dedup_f1_weighted:.4f}")
 
-    print(f"\n  Deduplicated metrics ({len(dedup_labels)} unique environment–molecule pairs):")
-    print(f"    Accuracy:    {dedup_accuracy*100:.1f}%  ({(dedup_preds == dedup_labels).sum()}/{len(dedup_labels)})")
-    print(f"    F1-Macro:    {dedup_f1_macro:.4f}")
-    print(f"    F1-Weighted: {dedup_f1_weighted:.4f}")
-
-    print("=" * 160)
-
-    print("\nPer-Class Performance (deduplicated):")
-    print("-" * 100)
+    print("\n  Per-Class (deduplicated):")
+    print("  " + "-" * 70)
     for label in sorted(np.unique(dedup_labels)):
         mask = dedup_labels == label
         support = mask.sum()
