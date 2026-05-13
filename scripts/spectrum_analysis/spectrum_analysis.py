@@ -120,8 +120,22 @@ def plot_pca_lda(
     ordered_envs = env_counts.index.tolist()
 
     color_map = {env: env_vis._name_to_color(env, merged_scheme) for env in ordered_envs}
-    marker_map = {env: env_vis._name_to_marker(env, merged_scheme) for env in ordered_envs}
     legend_envs = env_vis.get_group_ordered_envs_str(set(ordered_envs), merged_scheme)
+
+    # Build marker_map so each env within a hue family gets a DIFFERENT shape.
+    # Iterate in legend order (group-sorted) so cycling is stable per family.
+    MARKER_CYCLE = ['o', 's', '^', 'D', 'v', 'P', 'X', '<', '>', 'p', 'h', '*', 'd', 'H']
+    marker_map: dict = {}
+    family_counter: dict = {}
+    for env in legend_envs:
+        family = env_vis.get_env_family(env, merged_scheme)
+        i = family_counter.get(family, 0)
+        marker_map[env] = MARKER_CYCLE[i % len(MARKER_CYCLE)]
+        family_counter[family] = i + 1
+    # Fallback for any env not surfaced by get_group_ordered_envs_str
+    for env in ordered_envs:
+        if env not in marker_map:
+            marker_map[env] = env_vis._name_to_marker(env, merged_scheme)
 
     #use sklearn to get spectrum matrix
     spectra = np.stack(df['fitted_intensity'].values)
@@ -196,7 +210,7 @@ def plot_pca_lda(
         ax_lda.set_xlabel(f'LD1 ({lda_vr[0]*100:.1f}%)', fontsize=axis_font, fontweight='bold')
     ax_lda.grid(True, alpha=0.3)
     ax_lda.tick_params(labelsize=axis_font)
-
+    ax_lda.set_ylim(-9.8, 5.2)
     # -- Legend -- grouped by chemical family with section headers --
     ax_l = fig.add_subplot(gs_leg[0, 0])
     ax_l.axis('off')
@@ -215,15 +229,12 @@ def plot_pca_lda(
         grp = env_to_group.get(e, '')
         if grp != current_group:
             current_group = grp
-            # Insert a blank spacer between groups
-            if handles:  # skip spacer before the first group
-                handles.append(blank)
-                labels.append('')
         handles.append(
             plt.scatter([], [], c=[color_map[e]], marker=marker_map[e],
                         s=140, edgecolors='none', alpha=0.8)
         )
-        labels.append(f'  {env_vis.format_env_label(e)}')
+        count = int(env_counts.get(e, 0))
+        labels.append(f'  {env_vis.format_env_label(e)} ({count})')
 
     leg = ax_l.legend(
         handles, labels, loc='center left', bbox_to_anchor=(0, 0.5),
