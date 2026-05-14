@@ -172,6 +172,7 @@ class AugerCNN1D_FiLMd(nn.Module):
         self.pool = nn.AdaptiveAvgPool1d(pool_kernel)
         # AdaptiveAvgPool1d always outputs exactly pool_kernel time-steps
         flat_size = sequential_filters[1] * pool_kernel
+        print(f"AugerCNN1D_FiLMd: film_inputs='{film_inputs}', film_dim={film_dim}, flat_size={flat_size}")
         self.fc = nn.Linear(flat_size, num_classes)
 
     def forward(self, x: torch.Tensor, film_cond: torch.Tensor) -> torch.Tensor:
