@@ -52,7 +52,8 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'alpha_lambda',
     # single-task stick uncertainty weighting
     'uw',
-
+    # gnn loss
+    'auger_loss', 'cebe_loss',
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ class AugerNetConfig:
     n_folds: int = 5
     train_fold: int = 3
     split_method: str = 'random'     # random | butina
-    
+ 
     # implemented for CNN only atm
     butina_cutoff: float = 0.65
     train_frac: float = 0.70
@@ -102,6 +103,10 @@ class AugerNetConfig:
 
     # regularisation
     dropout: float = 0.1              # dropout between message-passing layers
+
+    # gnn loss
+    auger_loss: str = 'mae' # mae or mse
+    cebe_loss: str = 'mse'
 
     # optimizer
     optimizer_type: str = 'adamw'
@@ -232,16 +237,17 @@ class AugerNetConfig:
         else:
             if self.model == 'cebe-gnn':
                 self.model_id = (
-                    f"cebe_gnn_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                    f"cebe_gnn_{self.cebe_loss}_{self.feature_keys}_{self.split_method}{self.n_folds}"
                     f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
                 )
             if self.model == 'auger-gnn':
                 if self.task_type == 'multi':
+                    loss_tag = f'_c{self.auger_loss}_a{self.auger_loss}'
                     ft_tag = f'_ft{self.mt_finetune_epochs}' if self.mt_finetune_auger else ''
                     alpha_lambda_str = str(self.alpha_lambda).replace('.', 'pt')
-                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_a{alpha_lambda_str}'
+                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_a{alpha_lambda_str}_l{loss_tag}'
                 else:
-                    task_tag = ''
+                    task_tag = f'_{self.auger_loss}'
                 if self.spectrum_type == 'fitted':
                     fwhm_str = str(self.fwhm).replace('.', 'pt')
                     self.model_id = (

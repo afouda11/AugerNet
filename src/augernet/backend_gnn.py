@@ -178,6 +178,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         num_epochs=hp['num_epochs'], batch_size=hp['batch_size'],
         max_lr=hp['learning_rate'],
         verbose=True, layer_type=hp['layer_type'], pred_type=pred_type,
+        cebe_loss=hp['cebe_loss'], 
         val_data_list=val_data, patience=hp['patience'],
         optimizer_type=hp['optimizer_type'], weight_decay=hp['weight_decay'],
         gradient_clip_norm=hp['gradient_clip_norm'],
@@ -188,6 +189,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     )
     if pred_type == 'AUGER':
         loop_kwargs['spectrum_type'] = spectrum_type
+        loop_kwargs['auger_loss'] = hp['auger_loss']
     if pred_type == 'AUGER' and task_type == 'single' and spectrum_type == 'stick':
         loop_kwargs['uw'] = hp.get('uw', False)
     if task_type == 'multi':
