@@ -592,7 +592,8 @@ def eval_mpnn(data_loader, model, device, layer_type, pred_type, spectrum_type='
                     out_sel = out[idx]
                     # Fitted: target is data.y_fitted (N, n_points), no mask needed
                     y_sel = data.y_fitted[idx]
-                    loss = F.mse_loss(out_sel, y_sel)
+                    #loss = F.mse_loss(out_sel, y_sel)
+                    loss = F.l1_loss(out_sel, y_sel)
                 else:
                     out_e = out[0][idx]
                     out_i = out[1][idx]
@@ -652,10 +653,11 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
 
 def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
-                pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", plot_results=False, val_data_list=None,
+                pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", val_data_list=None,
+                cebe_loss='mse', auger_loss='mae', alpha_loss='mse',
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7,
                 spectrum_type='stick', scheduler_type='cosine',
-                task_type='single', mt_warmup_epochs=10, mt_log_grad_cosine=False,
+                task_type='single', mt_warmup_epochs=10, 
                 mt_finetune_auger=False, mt_finetune_epochs=50, split_seed = 42, lambda_alpha=0.001, uw=False):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
@@ -676,7 +678,6 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         verbose: Whether to print training progress
         layer_type: Layer type (IN/EQ/PE)
         pred_type: Prediction type (CEBE/AUGER)
-        plot_results: Whether to plot training results
         val_data_list: Validation data (if None, will split from training data)
         optimizer_type: 'adam', 'adamw' (default: 'adamw')
         weight_decay: L2 regularization weight
@@ -691,6 +692,12 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
     seed(0)
     gen = torch.Generator().manual_seed(0)
+
+    # dict to toggle loss function options
+    _loss_fn = {'mse': F.mse_loss, 'mae': F.l1_loss}
+    cebe_loss_fn  = _loss_fn[cebe_loss]
+    auger_loss_fn = _loss_fn[auger_loss]
+    alpha_loss_fn = _loss_fn[alpha_loss]
 
     # If val_data_list is provided, use it directly; otherwise perform internal split
     if val_data_list is not None:
@@ -770,7 +777,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 cebe_out, auger_out = out
                 idx = data.node_mask.nonzero(as_tuple=True)[0]
                 # CEBE loss
-                loss_cebe = F.mse_loss(cebe_out[idx], data.cebe_y[idx])
+                loss_cebe = cebe_loss_fn(cebe_out[idx], data.cebe_y[idx])
                 if epoch < mt_warmup_epochs:
                     # Stage 1: CEBE-only warmup — stabilise encoder first
                     loss = loss_cebe
@@ -779,7 +786,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     if spectrum_type == 'fitted':
                         out_sel = auger_out[idx]
                         y_sel = data.y_fitted[idx]
-                        loss_auger = F.mse_loss(out_sel, y_sel)
+                        loss_auger = auger_loss_fn(out_sel, y_sel)
 
                         #auger paramter alpha loss
                         # convert cebe_out back to un-normalized molecular be
@@ -800,7 +807,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         # calculate modified auger paramter alpha and respective loss
                         alpha_pred = Ek_pred + pred_molbe
                         alpha_true = E_k_true + true_molbe 
-                        loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+                        loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
 
                     else:
                         out_e = auger_out[0][idx]
@@ -809,8 +816,10 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         #mask out zero padding
                         mask  = data.mask_bin[idx]
                         #spec_dim = model.spectrum_dim
-                        loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
-                        loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+#                         loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
+#                         loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                        loss_e = (auger_loss_fn(out_e-y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
+                        loss_i = (auger_loss_fn(out_i-y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
                         loss_auger = loss_e + loss_i
 
                         maxE = data.auger_norm_stats[0]
@@ -849,8 +858,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         print(f"  [multi] Switching to joint UW training at epoch {epoch}")
             elif pred_type == "CEBE": 
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
-                loss = F.mse_loss(out[idx], data.cebe_y[idx])
-                #loss = F.mse_loss(out, data.cebe_y)
+                loss = cebe_loss_fn(out[idx], data.cebe_y[idx])    
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
 
@@ -864,7 +872,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     y_sel = data.y_fitted[idx]
                     if epoch == 0 and n_batches == 0:
                         print(f"DEBUG AUGER: y_fitted_sel.shape={y_sel.shape}")
-                    loss = F.mse_loss(out_sel, y_sel)
+                    loss = auger_loss_fn(out_sel, y_sel)
                 else:
                     #tuple returned for stick spectra prediction
                     out_e = out[0][idx]
@@ -875,8 +883,8 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     if epoch == 0 and n_batches == 0:
                         print(f"DEBUG AUGER: data.y.shape={data.y.shape}, data.mask_bin.shape={data.mask_bin.shape}")
                         print(f"DEBUG AUGER: y_sel.shape={y_sel.shape}, mask.shape={mask.shape}")
-                    loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
+                    loss_e = (auger_loss_fn(out_e-y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
+                    loss_i = (auger_loss_fn(out_i-y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
                     lv = model.log_var
                     if uw == True:
                         loss = (torch.exp(-lv[0]) * loss_e + lv[0] +
@@ -886,9 +894,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
             loss.backward()
 
-            # ============================================================================
-            # GRADIENT CLIPPING - Prevent gradient explosion
-            # ============================================================================
+            # Gradient clipping to prevent gradient explosion
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
 
             optimizer.step()
