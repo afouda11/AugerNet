@@ -15,7 +15,7 @@ Usage:
     )
 
 Key differences between graph types:
-    - CEBE graphs: y = normalized (delta_be - mean) / std for binding energies
+    - CEBE graphs:  y = normalized (delta_be - mean) / std for binding energies
     - Auger graphs: y = flattened spectra [n_atoms, max_spec_len * 2]
     - Auger be_feature uses either molecular CEBE for carbons and atomic for others (be_feat = 'mol')
         or uses atomic reference values for all atoms (be_feat = 'atom')

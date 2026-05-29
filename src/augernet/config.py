@@ -53,7 +53,7 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     # single-task stick uncertainty weighting
     'uw',
     # gnn loss
-    'auger_loss', 'cebe_loss',
+    'auger_loss', 'cebe_loss', 'alpha_loss',
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,13 +80,9 @@ class AugerNetConfig:
     # k-fold
     n_folds: int = 5
     train_fold: int = 3
-    split_method: str = 'random'     # random | butina
- 
-    # implemented for CNN only atm
+    split_method: str = 'random'     # random | butina 
     butina_cutoff: float = 0.65
-    train_frac: float = 0.70
-    val_frac: float = 0.15
-    test_frac: float = 0.15
+
     # node features
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
 
@@ -132,16 +128,16 @@ class AugerNetConfig:
 
 
     # ── Auger GNN specific (auger-gnn) ─────────────────────────────────────────
-    spectrum_type: str = 'stick'                # stick | fitted
-    task_type: str = 'single'                   # single (just auger) | multi (auger + cebe)
+    spectrum_type: str = 'stick'                 # stick | fitted
+    task_type: str = 'single'                    # single (just auger) | multi (auger + cebe)
     uw: bool = False                             # uncertainty-weighted loss for single-task stick
     # multi-task hyper-params (only used when task_type == 'multi')
-    mt_warmup_epochs: int = 10                  # epochs of CEBE-only warmup before joint training
-    mt_finetune_auger: bool = False             # after joint training, fine-tune on Auger loss only
-    mt_finetune_epochs: int = 50                # epochs of Auger-only fine-tune (if mt_finetune_auger)
-    mt_log_grad_cosine: bool = False            # log cosine similarity of task gradients each epoch
+    mt_warmup_epochs: int = 10                   # epochs of CEBE-only warmup before joint training
+    mt_finetune_auger: bool = False              # after joint training, fine-tune on Auger loss only
+    mt_finetune_epochs: int = 50                 # epochs of Auger-only fine-tune (if mt_finetune_auger)
+    mt_log_grad_cosine: bool = False             # log cosine similarity of task gradients each epoch
     alpha_lambda: float = 0.0                    # weight for Auger parameter in loss
-
+    alpha_loss: str = 'mae'                      # mae or mse for Auger parameter loss in multi-task setting
     # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
     merge_scheme: str = 'none'       # class merging scheme
@@ -241,7 +237,7 @@ class AugerNetConfig:
                 )
             if self.model == 'auger-gnn':
                 if self.task_type == 'multi':
-                    loss_tag = f'_c{self.auger_loss}_a{self.auger_loss}'
+                    loss_tag = f'_a{self.auger_loss}_c{self.cebe_loss}_al{self.alpha_loss}'
                     ft_tag = f'_ft{self.mt_finetune_epochs}' if self.mt_finetune_auger else ''
                     alpha_lambda_str = str(self.alpha_lambda).replace('.', 'pt')
                     task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_a{alpha_lambda_str}_l{loss_tag}'

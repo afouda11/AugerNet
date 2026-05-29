@@ -189,15 +189,15 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     )
     if pred_type == 'AUGER':
         loop_kwargs['spectrum_type'] = spectrum_type
-        loop_kwargs['auger_loss'] = hp['auger_loss']
+        loop_kwargs['auger_loss'] = hp.get('auger_loss', 'mse')
     if pred_type == 'AUGER' and task_type == 'single' and spectrum_type == 'stick':
         loop_kwargs['uw'] = hp.get('uw', False)
     if task_type == 'multi':
         loop_kwargs['mt_warmup_epochs']   = hp.get('mt_warmup_epochs', 10)
-        loop_kwargs['mt_log_grad_cosine'] = hp.get('mt_log_grad_cosine', False)
         loop_kwargs['mt_finetune_auger']  = hp.get('mt_finetune_auger', False)
         loop_kwargs['mt_finetune_epochs'] = hp.get('mt_finetune_epochs', 50)
         loop_kwargs['lambda_alpha']       = hp.get('alpha_lambda', 0.0)
+        loop_kwargs['alpha_loss']         = hp.get('alpha_loss', 'mse')
 
     train_results = gtu.train_loop(train_data, model, device, **loop_kwargs)
     model.eval()
@@ -578,6 +578,7 @@ def train_single_run(
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Splitting (shared) ───────────────────────────────────────────────
+    
     calc_data = data['calc_data']
     train_idx, val_idx = _get_fold_split(
         calc_data, fold, n_folds,
@@ -684,23 +685,18 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
     """Train singlet + triplet GNN models on one fold."""
     import copy
     calc_data = data['calc_data']
-    spec_dim = cfg.max_spec_len
 
     # Build singlet and triplet views from the combined data objects.
-    # Shallow copies let us set d.y / d.mask_bin independently without
-    # touching the shared tensors in the original list.
     sing_calc = []
     trip_calc = []
     for d in calc_data:
         n_atoms = d.x.size(0)
         ds = copy.copy(d)
-        #ds.y = d.sing_y.view(n_atoms, spec_dim)
         ds.y = d.sing_y
         ds.mask_bin = d.sing_mask_bin
         sing_calc.append(ds)
 
         dt = copy.copy(d)
-        #dt.y = d.trip_y.view(n_atoms, spec_dim)
         dt.y = d.trip_y
         dt.mask_bin = d.trip_mask_bin
         trip_calc.append(dt)
@@ -930,19 +926,10 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             run_evaluation as _run_auger_eval,
         )
 
-        if isinstance(model_result, dict):
-            model_dict = model_result
-            device_a = model_result['device']
-            train_results = model_result.get('train_results', train_results)
-            model_id = model_result.get('model_id', cfg.model_id)
-        elif isinstance(model_result, tuple):
-            model_dict = {'model': model_result[0]}
-            device_a = model_result[1]
-            model_id = cfg.model_id
-        else:
-            model_dict = {'model': model_result}
-            device_a = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model_id = cfg.model_id
+        model_dict = model_result
+        device_a = model_result['device']
+        train_results = model_result.get('train_results', train_results)
+        model_id = model_result.get('model_id', cfg.model_id)
 
         auger_metrics = _run_auger_eval(
             model_dict, device_a,
@@ -950,6 +937,8 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             fold=fold, train_results=train_results,
             model_id=model_id, config_id=config_id,
             param_file_prefix=param_file_prefix,
+            train_calc_data=data['calc_data'],
+            test_calc_data=data['test_data'],
         )
 
         # ── Multi-task: also evaluate CEBE head on experimental CEBE data ──
@@ -980,18 +969,10 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
     # ── CEBE-GNN evaluation ──────────────────────────────────────────────
     from .evaluation_scripts.evaluate_cebe_model import run_evaluation as _run_eval
 
-    if isinstance(model_result, dict):
-        model = model_result['model']
-        device = model_result['device']
-        train_results = model_result.get('train_results', train_results)
-        model_id = model_result.get('model_id', cfg.model_id)
-    elif isinstance(model_result, tuple):
-        model, device = model_result
-        model_id = cfg.model_id
-    else:
-        model = model_result
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model_id = cfg.model_id
+    model = model_result['model']
+    device = model_result['device']
+    train_results = model_result.get('train_results', train_results)
+    model_id = model_result.get('model_id', cfg.model_id)
 
     split = exp_split if exp_split is not None else cfg.exp_split
 
