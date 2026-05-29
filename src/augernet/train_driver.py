@@ -27,6 +27,7 @@ import time
 import itertools
 import numpy as np
 from typing import Any, Dict, List
+from sklearn.model_selection import ShuffleSplit
 
 from augernet.config import AugerNetConfig
 
@@ -387,7 +388,6 @@ def run(cfg: AugerNetConfig):
 
     be = _get_backend(cfg)
 
-    # ── Modes that do NOT need the full training dataset ─────────────────
     if mode == 'predict':
         _run_predict(cfg)
         print("\n Predictions Complete.")
@@ -396,8 +396,47 @@ def run(cfg: AugerNetConfig):
     # ── Load data ────────────────────────────────────────────────────────
     data = be.load_data(cfg)
 
-    # ── Dispatch ─────────────────────────────────────────────────────────
-    result = None  # may be set by train/cv for unit tests
+    if cfg.model in ('auger-gnn', 'auger-cnn'):
+        # Calc hold-out: 50 randomly selected molecules for both GNN and CNN,
+        if cfg.model == 'auger-gnn':
+            calc_data = data['calc_data']
+            mol_order = [d.mol_name for d in calc_data]
+        else:  # auger-cnn
+            calc_mask = data['train_df']['source'] == 'calc'
+            mol_order = list(dict.fromkeys(
+                data['train_df'].loc[calc_mask, 'mol_name']
+            ))
+
+        test_splitter = ShuffleSplit(n_splits=1, test_size=50, random_state=0)
+        tr_arr, te_arr = next(test_splitter.split(mol_order))
+        test_mol_names = {mol_order[i] for i in te_arr}
+
+        print(f"\n  Calc hold-out: {len(test_mol_names)} molecules "
+              f"(ShuffleSplit random_state=0)")
+
+        if cfg.model == 'auger-gnn':
+            data['calc_data'] = [calc_data[i] for i in tr_arr]
+            data['test_data'] = [calc_data[i] for i in te_arr]
+            print(f"  GNN: {len(data['calc_data'])} train+val, "
+                  f"{len(data['test_data'])} test molecules")
+        else:
+            df = data['train_df']
+            is_calc_test = (df['source'] == 'calc') & df['mol_name'].isin(test_mol_names)
+            data['test_df']  = df[is_calc_test].reset_index(drop=True)
+            data['train_df'] = df[~is_calc_test].reset_index(drop=True)
+            if 'train_df_raw' in data:
+                raw = data['train_df_raw']
+                data['train_df_raw'] = raw[
+                    ~((raw['source'] == 'calc') & raw['mol_name'].isin(test_mol_names))
+                ].reset_index(drop=True)
+            n_holdout_mols = data['test_df']['mol_name'].nunique()
+            n_train_mols   = data['train_df'][
+                data['train_df']['source'] == 'calc']['mol_name'].nunique()
+            print(f"  CNN: {n_holdout_mols} hold-out mols "
+                  f"({len(data['test_df'])} carbons), "
+                  f"{n_train_mols} train+val calc mols remaining")
+
+    result = None  # Set by train/cv for unit tests
 
     if mode == 'cv':
         cv_summary = run_kfold_cv(data, cfg)

@@ -23,7 +23,7 @@ import torch
 import pandas as pd
 from typing import Any, Dict, List, Tuple
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, GroupKFold, train_test_split
 
 from augernet import cnn_train_utils as ctu
 from augernet import carbon_dataframe as cdf
@@ -172,9 +172,57 @@ def _three_way_split(carbon_df: pd.DataFrame,
     return train_rows, val_rows, test_rows
 
 
-# =============================================================================
-#  Per-environment summary helpers
-# =============================================================================
+def _cnn_fold_split(calc_mol_names, calc_df, fold, n_folds,
+                    split_method, random_seed, butina_cutoff=0.65,
+                    verbose=False):
+    """Compute train/val molecule-name lists for the CNN, mirroring
+    ``backend_gnn._get_fold_split`` exactly so both models use the same
+    fold boundaries.
+
+    Parameters
+    ----------
+    calc_mol_names : list[str]
+        Ordered unique calc molecule names (hold-out mols already excluded).
+    calc_df : pd.DataFrame
+        Carbon-atom rows for those molecules (used only for Butina SMILES).
+    fold : int
+        1-indexed fold number.
+    n_folds : int
+        Total number of folds (= ``cfg.n_folds``).
+    split_method : str
+        ``'random'`` (KFold) or ``'butina'`` (GroupKFold on Butina clusters).
+    random_seed : int
+        Passed directly to ``KFold(random_state=...)``.
+    butina_cutoff : float
+        Tanimoto distance threshold for Butina clustering.
+
+    Returns
+    -------
+    train_mol_names, val_mol_names : list[str]
+    """
+    n_molecules = len(calc_mol_names)
+    if split_method == 'random':
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
+        folds = list(kf.split(range(n_molecules)))
+    elif split_method == 'butina':
+        cluster_ids = _butina_cluster_ids_per_molecule(
+            calc_mol_names, calc_df, cutoff=butina_cutoff, verbose=verbose
+        )
+        gkf = GroupKFold(n_splits=n_folds)
+        folds = list(gkf.split(range(n_molecules), groups=cluster_ids))
+    else:
+        raise ValueError(f"Unknown split_method '{split_method}'. "
+                         f"Supported: 'random', 'butina'.")
+
+    train_idx, val_idx = folds[fold - 1]
+    train_mol_names = [calc_mol_names[i] for i in train_idx]
+    val_mol_names   = [calc_mol_names[i] for i in val_idx]
+
+    if verbose:
+        print(f"  CNN fold {fold}/{n_folds} ({split_method}, seed={random_seed}): "
+              f"{len(train_mol_names)} train, {len(val_mol_names)} val molecules")
+
+    return train_mol_names, val_mol_names
 
 def _per_class_counts(df: pd.DataFrame, row_indices: List[int],
                       class_names: List[str]) -> Dict[str, int]:
@@ -224,29 +272,47 @@ def _per_class_accuracy(df: pd.DataFrame, row_indices: List[int],
 def _print_environment_table(class_names: List[str],
                              counts: Dict[str, Dict[str, int]],
                              accs:   Dict[str, Dict[str, Tuple[int, int]]]):
-    """Print a single table: per-class counts and accuracies for each split."""
-    print("\n" + "=" * 100)
+    """Print a single table: per-class counts and accuracies for each split.
+
+    ``counts`` and ``accs`` are keyed by split name (e.g. ``'train'``,
+    ``'val'``, ``'holdout'``, ``'eval_auger'``).  Any subset of splits is
+    accepted — columns are generated dynamically.
+    """
+    split_names = list(counts.keys())  # preserves insertion order (Python 3.7+)
+    col_lbl = {s: s.replace('_', '-')[:9] for s in split_names}
+
+    # Dynamic column widths
+    n_col  = max(7, max(len(col_lbl[s]) + 2 for s in split_names))
+    a_col  = max(9, max(len(col_lbl[s]) + 4 for s in split_names))
+    row_w  = 22 + len(split_names) * (n_col + 1) + 3 + len(split_names) * (a_col + 1)
+    row_w  = max(row_w, 80)
+
+    print("\n" + "=" * row_w)
     print("PER-ENVIRONMENT BREAKDOWN (atoms per split, accuracy per split)")
-    print("=" * 100)
-    header = (f"  {'environment':<22} "
-              f"{'train n':>8} {'val n':>7} {'test n':>7}   "
-              f"{'train acc':>10} {'val acc':>10} {'test acc':>10}")
-    print(header)
-    print("-" * 100)
+    print("=" * row_w)
+
+    hdr = f"  {'environment':<22}"
+    for s in split_names:
+        hdr += f" {(col_lbl[s]+' n'):>{n_col}}"
+    hdr += "  "
+    for s in split_names:
+        hdr += f" {(col_lbl[s]+' acc'):>{a_col}}"
+    print(hdr)
+    print("-" * row_w)
+
+    def fmt(stats_dict, name):
+        c, t = stats_dict.get(name, (0, 0))
+        return f"{(c/t*100):6.1f}%" if t > 0 else "      —"
+
     for name in class_names:
-        n_tr = counts['train'].get(name, 0)
-        n_va = counts['val'].get(name, 0)
-        n_te = counts['test'].get(name, 0)
-
-        def fmt(stats):
-            c, t = stats.get(name, (0, 0))
-            return f"{(c/t*100):8.1f}%" if t > 0 else "      —  "
-
-        print(f"  {name:<22} "
-              f"{n_tr:>8} {n_va:>7} {n_te:>7}   "
-              f"{fmt(accs['train']):>10} {fmt(accs['val']):>10} "
-              f"{fmt(accs['test']):>10}")
-    print("=" * 100)
+        row = f"  {name:<22}"
+        for s in split_names:
+            row += f" {counts[s].get(name, 0):>{n_col}}"
+        row += "  "
+        for s in split_names:
+            row += f" {fmt(accs[s], name):>{a_col}}"
+        print(row)
+    print("=" * row_w)
 
 
 # =============================================================================
@@ -429,22 +495,48 @@ def train_single_run(data: Dict[str, Any],
         print(f"  Split fracs:   {train_frac:.2f} / {val_frac:.2f} / {test_frac:.2f}")
         print(f"{'=' * 70}")
 
-    # ── Build the dataset once over the entire combined df ────────────────
-    dataset = cdf.CarbonDataset(
-        df,
+    # ── Separate calc training pool from eval_auger molecules ────────────
+    # After train_driver's hold-out filtering, data['train_df'] contains:
+    #   source=='calc'  non-holdout calc molecules  (for train/val)
+    #   source=='eval'  eval_auger molecules         (evaluation only)
+    calc_df = df[df['source'] == 'calc'].reset_index(drop=True)
+    eval_df = df[df['source'] == 'eval'].reset_index(drop=True)
+
+    calc_mol_names = list(dict.fromkeys(calc_df['mol_name']))
+
+    # ── GNN-consistent fold split (mirrors backend_gnn._get_fold_split) ──
+    train_mol_names, val_mol_names = _cnn_fold_split(
+        calc_mol_names, calc_df, fold, n_folds,
+        split_method, random_seed, butina_cutoff=butina_cutoff, verbose=verbose,
+    )
+    train_mol_set = set(train_mol_names)
+    val_mol_set   = set(val_mol_names)
+
+    train_idx = calc_df.index[calc_df['mol_name'].isin(train_mol_set)].tolist()
+    val_idx   = calc_df.index[calc_df['mol_name'].isin(val_mol_set)].tolist()
+
+    train_df_subset = calc_df.iloc[train_idx].reset_index(drop=True)
+    # calc z norm stats for film args, by not defining nom_stats in CarbonDataset call 
+    train_ds = cdf.CarbonDataset(
+        train_df_subset,
         include_augmentation=cebe_augment,
         normalize_intensity=normalize_intensity,
         broadening_fwhm=broadening_fwhm,
         energy_min=energy_min, energy_max=energy_max,
         n_points=n_spectrum_points,
     )
+    # get z norm stats from train data to apply across data
+    norm_stats = train_ds.norm_stats
 
-    # ── 3-way molecule-level split ────────────────────────────────────────
-    train_idx, val_idx, test_idx = _three_way_split(
-        df,
-        train_frac=train_frac, val_frac=val_frac, test_frac=test_frac,
-        split_method=split_method, random_seed=split_seed,
-        butina_cutoff=butina_cutoff, verbose=verbose,
+    # ── Build dataset on calc pool only ──────────────────────────────────
+    dataset = cdf.CarbonDataset(
+        calc_df,
+        include_augmentation=cebe_augment,
+        normalize_intensity=normalize_intensity,
+        broadening_fwhm=broadening_fwhm,
+        energy_min=energy_min, energy_max=energy_max,
+        n_points=n_spectrum_points,
+        norm_stats=norm_stats,
     )
 
     train_loader = DataLoader(Subset(dataset, train_idx),
@@ -460,16 +552,7 @@ def train_single_run(data: Dict[str, Any],
         print(f"  Input length: {input_length}  |  Parameters: {n_params:,}")
 
     # ── Class weights + trainer (weights from train split only!) ─────────
-    train_df_subset = df.iloc[train_idx].reset_index(drop=True)
-    train_dataset_for_weights = cdf.CarbonDataset(
-        train_df_subset,
-        include_augmentation=cebe_augment,
-        normalize_intensity=normalize_intensity,
-        broadening_fwhm=broadening_fwhm,
-        energy_min=energy_min, energy_max=energy_max,
-        n_points=n_spectrum_points,
-    )
-    class_weights, _ = train_dataset_for_weights.get_class_weights_and_counts(
+    class_weights, _ = train_ds.get_class_weights_and_counts(
         num_classes=num_classes
     )
 
@@ -505,44 +588,86 @@ def train_single_run(data: Dict[str, Any],
     if os.path.exists(generic_plot):
         os.replace(generic_plot, fold_plot)
 
-    # ── Per-split per-environment summary ─────────────────────────────────
-    if verbose:
-        counts = {
-            'train': _per_class_counts(df, train_idx, class_names),
-            'val':   _per_class_counts(df, val_idx,   class_names),
-            'test':  _per_class_counts(df, test_idx,  class_names),
-        }
-        accs_train, _, _ = _per_class_accuracy(df, train_idx, dataset, model,
-                                               device, class_names)
-        accs_val,   _, _ = _per_class_accuracy(df, val_idx,   dataset, model,
-                                               device, class_names)
-        accs_test, test_preds, test_labels = _per_class_accuracy(
-            df, test_idx, dataset, model, device, class_names
-        )
-        accs = {'train': accs_train, 'val': accs_val, 'test': accs_test}
-        _print_environment_table(class_names, counts, accs)
-
-        # ── Per-molecule test evaluation (rich CSV + summary) ─────────────
-        test_df = df.iloc[test_idx].reset_index(drop=True)
-        test_dataset = cdf.CarbonDataset(
-            test_df,
-            include_augmentation=cebe_augment,
+    # ── Per-split per-environment summary + hold-out + eval_auger eval ───
+    def _build_eval_dataset(eval_df_sub, norm_stats):
+        return cdf.CarbonDataset(
+            eval_df_sub,
+            include_augmentation=False,
             normalize_intensity=normalize_intensity,
             broadening_fwhm=broadening_fwhm,
             energy_min=energy_min, energy_max=energy_max,
             n_points=n_spectrum_points,
+            norm_stats=norm_stats
         )
-        test_results = ctu.evaluate_with_molecule_details(
-            df=test_df, model=model, device=device,
-            dataset=test_dataset,
+
+    # Calc hold-out (data['test_df'], removed from training by train_driver)
+    holdout_df_raw = data.get('test_df')
+    if holdout_df_raw is not None and len(holdout_df_raw) > 0:
+        holdout_df = holdout_df_raw.copy()
+        if merge_scheme != 'none':
+            holdout_df = apply_label_merging(holdout_df, merge_scheme)
+            holdout_df = holdout_df[holdout_df['carbon_env_index'] >= 0].reset_index(drop=True)
+        else:
+            holdout_df = holdout_df.reset_index(drop=True)
+        holdout_idx = list(range(len(holdout_df)))
+        holdout_dataset = _build_eval_dataset(holdout_df, norm_stats)
+        accs_holdout, _, _ = _per_class_accuracy(
+            holdout_df, holdout_idx, holdout_dataset, model, device, class_names)
+        holdout_results = ctu.evaluate_with_molecule_details(
+            df=holdout_df, model=model, device=device,
+            dataset=holdout_dataset,
             output_dir=output_dir,
-            eval_type='test',
+            eval_type='calc_holdout',
             csv_suffix=f'_fold{fold}',
             class_names_override=class_names,
             num_classes_override=num_classes,
         )
     else:
-        test_results = None
+        holdout_df = pd.DataFrame()
+        holdout_idx = []
+        accs_holdout = {n: (0, 0) for n in class_names}
+        holdout_results = None
+
+    # Eval_auger molecules (source='eval', never in train/val)
+    if len(eval_df) > 0:
+        eval_auger_idx = list(range(len(eval_df)))
+        eval_auger_dataset = _build_eval_dataset(eval_df, norm_stats)
+        accs_eval, _, _ = _per_class_accuracy(
+            eval_df, eval_auger_idx, eval_auger_dataset, model, device, class_names)
+        eval_auger_results = ctu.evaluate_with_molecule_details(
+            df=eval_df, model=model, device=device,
+            dataset=eval_auger_dataset,
+            output_dir=output_dir,
+            eval_type='eval_auger',
+            csv_suffix=f'_fold{fold}',
+            class_names_override=class_names,
+            num_classes_override=num_classes,
+        )
+    else:
+        eval_auger_idx = []
+        accs_eval = {n: (0, 0) for n in class_names}
+        eval_auger_results = None
+
+    if verbose:
+        counts = {
+            'train':    _per_class_counts(calc_df, train_idx,   class_names),
+            'val':      _per_class_counts(calc_df, val_idx,     class_names),
+            'holdout':  _per_class_counts(holdout_df, holdout_idx, class_names)
+                        if len(holdout_df) > 0 else {n: 0 for n in class_names},
+            'eval-aug': _per_class_counts(eval_df, eval_auger_idx, class_names)
+                        if len(eval_df) > 0 else {n: 0 for n in class_names},
+        }
+        accs_train, _, _ = _per_class_accuracy(
+            calc_df, train_idx, dataset, model, device, class_names)
+        accs_val, _, _   = _per_class_accuracy(
+            calc_df, val_idx,   dataset, model, device, class_names)
+        accs = {
+            'train':    accs_train,
+            'val':      accs_val,
+            'holdout':  accs_holdout,
+            'eval-aug': accs_eval,
+        }
+        _print_environment_table(class_names, counts, accs)
 
     # ── Results ───────────────────────────────────────────────────────────
     best_val_loss   = min(history['val_loss'])
@@ -562,10 +687,16 @@ def train_single_run(data: Dict[str, Any],
         print(f"  Best Val Loss: {best_val_loss:.4f}")
         print(f"  Best Val Acc:  {best_val_acc:.2f}%")
         print(f"  Best Val F1:   {best_val_f1:.4f}")
-        if test_results is not None:
-            print(f"  Test Acc:      "
-                  f"{test_results.get('accuracy', 0)*100:.2f}%  "
-                  f"(F1-macro={test_results.get('f1_macro', 0):.4f})")
+        if holdout_results is not None:
+            print(f"  Calc holdout:  "
+                  f"{holdout_results.get('accuracy', 0)*100:.2f}% acc  "
+                  f"F1-macro={holdout_results.get('f1_macro', 0):.4f}  "
+                  f"({holdout_df['mol_name'].nunique()} mols)")
+        if eval_auger_results is not None:
+            print(f"  Eval-auger:    "
+                  f"{eval_auger_results.get('accuracy', 0)*100:.2f}% acc  "
+                  f"F1-macro={eval_auger_results.get('f1_macro', 0):.4f}  "
+                  f"({eval_df['mol_name'].nunique()} mols)")
 
     return {
         'model': model,
@@ -579,10 +710,10 @@ def train_single_run(data: Dict[str, Any],
         'final_val_acc': final_val_acc,
         'n_epochs': n_epochs_run,
         'model_path': model_path,
-        'test_results': test_results,
+        'holdout_results': holdout_results,      # calc hold-out (GNN-consistent)
+        'eval_auger_results': eval_auger_results, # eval_auger (experimental)
         'train_idx': train_idx,
-        'val_idx': val_idx,
-        'test_idx': test_idx,
+        'val_idx':   val_idx,
     }
 
 
@@ -626,21 +757,39 @@ def load_saved_model(save_paths, data, cfg):
 
 def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                    train_results=None, **_extra):
-    """The test split is now evaluated inside ``train_single_run``.
+    """Surface the hold-out and eval_auger results captured in train_single_run."""
+    holdout_results     = model_result.get('holdout_results')
+    eval_auger_results  = model_result.get('eval_auger_results')
 
-    This stub is preserved so train_driver doesn't error out; it simply
-    surfaces the test results already attached to ``model_result``.
-    """
-    test_results = model_result.get('test_results')
-    if test_results is None:
-        print("\n(No held-out test results were captured during training; "
-              "skipping run_evaluation.)")
-        return {}
-    print(f"\nTest-split metrics from fold {fold}:")
-    print(f"  Accuracy:    {test_results.get('accuracy', 0)*100:.2f}%")
-    print(f"  F1-macro:    {test_results.get('f1_macro', 0):.4f}")
-    print(f"  F1-weighted: {test_results.get('f1_weighted', 0):.4f}")
-    return test_results
+    print(f"\n{'=' * 70}")
+    print(f"CNN EVALUATION SUMMARY  (fold {fold})")
+    print(f"{'=' * 70}")
+
+    def _print_block(label, res):
+        if res is None:
+            print(f"\n  {label}: (no results)")
+            return
+        print(f"\n  {label}:")
+        print(f"    Accuracy:    {res.get('accuracy', 0)*100:.2f}%")
+        print(f"    F1-macro:    {res.get('f1_macro',    0):.4f}")
+        print(f"    F1-weighted: {res.get('f1_weighted', 0):.4f}")
+        if res.get('per_class'):
+            print(f"    {'Class':<22} {'N':>6} {'Correct':>9} {'Acc':>8}")
+            print(f"    {'-'*50}")
+            for cls, info in res['per_class'].items():
+                n   = info.get('n_total', 0)
+                cor = info.get('n_correct', 0)
+                acc = f"{cor/n*100:.1f}%" if n > 0 else '—'
+                print(f"    {cls:<22} {n:>6} {cor:>9} {acc:>8}")
+
+    _print_block('Calc hold-out (GNN-consistent, 50 molecules)', holdout_results)
+    _print_block('Eval-auger (experimental spectra)', eval_auger_results)
+    print(f"\n{'=' * 70}")
+
+    return {
+        'holdout':    holdout_results,
+        'eval_auger': eval_auger_results,
+    }
 
 
 # =============================================================================
