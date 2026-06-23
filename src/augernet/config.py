@@ -68,6 +68,12 @@ class AugerNetConfig:
     model: str = 'cebe-gnn'          # cebe-gnn | auger-gnn | cnn
     mode:  str = 'train'              # cv | train | param | evaluate | predict
 
+    # Data file names for train (+ hold out test) and evalulation data:
+    # As defulat model is cebe-gnn, use cebe study data files as default
+    # Files must be located in AugerNet/data/processed
+    train_data_file: str = 'gnn_calc_cebe_data.pt'
+    eval_data_file: str = 'gnn_exp_cebe_data.pt'
+
     # Evaluation on exp.evaluation data
     run_evaluation: bool = True
     # 113 mols in exp cebe data split into: 
