@@ -453,12 +453,12 @@ def load_data(cfg) -> Dict[str, Any]:
     # ── CEBE-GNN ─────────────────────────────────────────────────────────
     if cfg.model == 'cebe-gnn':
 
-        ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_cebe_data.pt')
+        ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.train_data_file)
         calc_data = [ds[i] for i in range(len(ds))]
         print(f"  Loaded calculated data: {len(calc_data)} molecules")
 
         # Experimental data — load all, then split
-        exp_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_exp_cebe_data.pt')
+        exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.eval_data_file)
         exp_data_all = [exp_ds[i] for i in range(len(exp_ds))]
         exp_val, exp_eval = _split_exp_data(exp_data_all, cfg)
 
@@ -488,7 +488,7 @@ def load_data(cfg) -> Dict[str, Any]:
         spec_type = cfg.spectrum_type
 
         # Singlet and triplet are always loaded
-        ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_calc_auger_data.pt')
+        ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.train_data_file)
         calc_data = [ds[i] for i in range(len(ds))]
 
         auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
@@ -950,7 +950,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                     run_evaluation as _run_cebe_eval,
                 )
                 # Load and assemble experimental CEBE data on-the-fly
-                exp_ds = gtu.LoadDataset(DATA_DIR, file_name='gnn_exp_cebe_data.pt')
+                exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.eval_data_file)
                 exp_data_mt = [exp_ds[i] for i in range(len(exp_ds))]
                 assemble_dataset(exp_data_mt, cfg.feature_keys_parsed)
                 _run_cebe_eval(
