@@ -411,14 +411,15 @@ def run(cfg: AugerNetConfig):
         tr_arr, te_arr = next(test_splitter.split(mol_order))
         test_mol_names = {mol_order[i] for i in te_arr}
 
-        print(f"\n  Calc hold-out: {len(test_mol_names)} molecules "
-              f"(ShuffleSplit random_state=0)")
-
         if cfg.model == 'auger-gnn':
             data['calc_data'] = [calc_data[i] for i in tr_arr]
             data['test_data'] = [calc_data[i] for i in te_arr]
-            print(f"  GNN: {len(data['calc_data'])} train+val, "
-                  f"{len(data['test_data'])} test molecules")
+
+            print(f"\nGNN:\n  {len(data['calc_data'])} train+val mol, " 
+                    f"{sum(s == 'C' for d in data['calc_data'] for s in d.atom_symbols)} carbons\n")
+
+            print(f"  {len(data['test_data'])} calc test hold-mol (ShuffleSplit random_state=0), " 
+                    f"{sum(s == 'C' for d in data['test_data'] for s in d.atom_symbols)} carbons\n")
         else:
             df = data['train_df']
             is_calc_test = (df['source'] == 'calc') & df['mol_name'].isin(test_mol_names)
