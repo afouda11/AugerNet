@@ -690,7 +690,6 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
     sing_calc = []
     trip_calc = []
     for d in calc_data:
-        n_atoms = d.x.size(0)
         ds = copy.copy(d)
         ds.y = d.sing_y
         ds.mask_bin = d.sing_mask_bin
@@ -752,7 +751,6 @@ def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
 # ── Auger fitted training (single combined model) ────────────────────────────
 
 def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
-
                         device, hp, fold, verbose, cfg):
     """Train a single fitted-spectrum GNN on one fold."""
     calc_data = data['calc_data']
@@ -907,7 +905,7 @@ def load_saved_model(save_paths, data, cfg):
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Evaluation
-# ─────────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────────
 
 def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                    train_results=None, config_id=None, param_file_prefix=None,
