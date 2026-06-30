@@ -337,16 +337,16 @@ def _load_exp_split_names(split):
 
 
 def _split_exp_data(exp_data_all, cfg):
-    """Partition experimental data according to ``cfg.exp_split``.
+    """Partition experimental data according to ``cfg.cebe_exp_split``.
 
     Returns ``(exp_val_data, exp_eval_data)``.  Depending on the mode:
 
-    - ``'all'``  — both lists contain all 113 molecules (legacy behaviour)
+    - ``'all'``  — both lists contain all 113 molecules 
     - ``'val'``  — val = 63 validation, eval = empty
     - ``'eval'`` — val = empty, eval = 50 evaluation
     - ``'both'`` — val = 63, eval = 50  (run evaluation on each separately)
     """
-    split = cfg.exp_split
+    split = cfg.cebe_exp_split
 
     if split == 'all':
         return exp_data_all, exp_data_all
@@ -458,11 +458,11 @@ def load_data(cfg) -> Dict[str, Any]:
         print(f"  Loaded calculated data: {len(calc_data)} molecules")
 
         # Experimental data — load all, then split
-        exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.eval_data_file)
+        exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.cebe_eval_data_file)
         exp_data_all = [exp_ds[i] for i in range(len(exp_ds))]
         exp_val, exp_eval = _split_exp_data(exp_data_all, cfg)
 
-        exp_split = cfg.exp_split
+        exp_split = cfg.cebe_exp_split
         if exp_split == 'all':
             print(f"  Exp split: all ({len(exp_data_all)} molecules)")
         else:
@@ -948,7 +948,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                     run_evaluation as _run_cebe_eval,
                 )
                 # Load and assemble experimental CEBE data on-the-fly
-                exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.eval_data_file)
+                exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.cebe_eval_data_file)
                 exp_data_mt = [exp_ds[i] for i in range(len(exp_ds))]
                 assemble_dataset(exp_data_mt, cfg.feature_keys_parsed)
                 _run_cebe_eval(
@@ -972,7 +972,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
     train_results = model_result.get('train_results', train_results)
     model_id = model_result.get('model_id', cfg.model_id)
 
-    split = exp_split if exp_split is not None else cfg.exp_split
+    split = exp_split if exp_split is not None else cfg.cebe_exp_split
 
     def _call(exp_data, suffix=''):
         pfx = param_file_prefix
