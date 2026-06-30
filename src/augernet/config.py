@@ -42,7 +42,7 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'spectrum_type', 'max_spec_len', 'max_ke', 'min_ke',
     'n_points', 'fwhm', 'ke_shift_calc',
     # CNN-specific
-    'architecture', 'use_augmented', 'merge_scheme',
+    'architecture', 'cebe_augment', 'merge_scheme',
     'label_smoothing', 'augment_noise_std', 'film_inputs',
     # splitting
     'n_folds', 'split_method',

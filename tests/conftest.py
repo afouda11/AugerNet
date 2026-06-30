@@ -96,13 +96,12 @@ def real_mol_graph():
 
     skipatom_dir = os.path.join(DATA_RAW_DIR, "skipatom")
     all_encoders = _initialize_all_atom_encoders(skipatom_dir)
-    category_feature = np.array([1, 0, 0])
 
     mol, xyz_symbols, pos, smiles = _mol_from_xyz_order(XYZ_PATH, labeled_atoms=False)
     cebe = np.loadtxt(CEBE_PATH)
 
-    node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
-        _build_node_and_edge_features(mol, all_encoders, category_feature, cebe)
+    node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices, carbon_env_labels = \
+        _build_node_and_edge_features(mol, all_encoders, cebe)
 
     node_mask = [0.0 if v == -1 else 1.0 for v in cebe]
 
@@ -117,7 +116,8 @@ def real_mol_graph():
         atom_symbols=xyz_symbols,
         smiles=smiles,
         mol_name=MOL_NAME,
-        carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+        carbon_env_labels=carbon_env_labels,
+        carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
     )
     for attr_name, tensor in node_features.items():
         setattr(data, attr_name, tensor)

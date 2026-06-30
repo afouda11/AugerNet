@@ -1084,9 +1084,6 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
 
     feature_keys = cfg.feature_keys_parsed
 
-    # Category feature: choose CEBE category for node features
-    category_feature = np.array([1, 0, 0])
-
     print("  Building molecular graphs...")
     data_list = []
     for xyz_file, mol_name in zip(xyz_files, mol_names):
@@ -1097,9 +1094,9 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
         n_atoms = mol.GetNumAtoms()
         dummy_cebe = np.full(n_atoms, -1.0)
 
-        node_features, x, edge_index, edge_attr, atomic_be, _ = \
+        node_features, x, edge_index, edge_attr, atomic_be, _, _ = \
             _build_node_and_edge_features(
-                mol, all_encoders, category_feature, dummy_cebe)
+                mol, all_encoders, dummy_cebe)
 
         d = Data(
             x=x, edge_index=edge_index, edge_attr=edge_attr,

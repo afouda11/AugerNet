@@ -87,8 +87,10 @@ class TestBuildNodeEdgeFeatures:
         row_sums = real_mol_graph.edge_attr.sum(dim=1)
         assert (row_sums == 1.0).all()
 
-    def test_category_feature_shape(self, real_mol_graph):
-        assert real_mol_graph.x.shape == (N_ATOMS, 3)
+    def test_x_is_empty_placeholder(self, real_mol_graph):
+        # category_feature removed: x is an empty placeholder until
+        # feature_assembly populates it per feature_keys
+        assert real_mol_graph.x.shape == (N_ATOMS, 0)
 
     def test_pos_shape(self, real_mol_graph):
         assert real_mol_graph.pos.shape == (N_ATOMS, 3)
@@ -106,7 +108,7 @@ class TestBuildNodeEdgeFeatures:
         assert real_mol_graph.node_mask.sum().item() == N_CARBONS
 
     def test_carbon_env_labels_shape(self, real_mol_graph):
-        labels = real_mol_graph.carbon_env_labels
+        labels = real_mol_graph.carbon_env_indices
         assert labels.shape == (N_ATOMS,)
         # non-carbons should be -1
         non_c = [i for i in range(N_ATOMS) if i not in CARBON_INDICES]
@@ -218,8 +220,8 @@ class TestDataPreparation:
         data = assemble_node_features(
             real_mol_graph, feature_keys=[0, 3, 5], inplace=False
         )
-        # 3 (category) + 200 (skipatom) + 1 (atomic_be) + 1 (e_score) = 205
-        assert data.x.shape == (N_ATOMS, 205)
+        # 200 (skipatom) + 1 (atomic_be) + 1 (e_score) = 202
+        assert data.x.shape == (N_ATOMS, 202)
 
     def test_cebe_values_loaded_correctly(self):
         """CEBE output file has correct carbon values and -1 for non-carbons."""
