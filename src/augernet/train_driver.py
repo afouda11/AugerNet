@@ -27,7 +27,6 @@ import time
 import itertools
 import numpy as np
 from typing import Any, Dict, List
-from sklearn.model_selection import ShuffleSplit
 
 from augernet.config import AugerNetConfig
 
@@ -407,6 +406,7 @@ def run(cfg: AugerNetConfig):
                 data['train_df'].loc[calc_mask, 'mol_name']
             ))
 
+        from sklearn.model_selection import ShuffleSplit
         test_splitter = ShuffleSplit(n_splits=1, test_size=50, random_state=0)
         tr_arr, te_arr = next(test_splitter.split(mol_order))
         test_mol_names = {mol_order[i] for i in te_arr}
