@@ -27,10 +27,6 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from augernet import gnn_train_utils as gtu
-from augernet.feature_assembly import (
-    assemble_dataset, compute_feature_tag, describe_features,
-    parse_feature_keys,
-)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -38,6 +34,20 @@ from augernet.feature_assembly import (
 PRED_TYPE = 'CEBE'
 ATOM_SYMBOLS = ['H', 'C', 'N', 'O', 'F']
 
+# =============================================================================
+#  SPLIT CONFORMAL PREDICTION 
+#  For models based on exp-val loss, use only on exp-eval hold out
+# =============================================================================
+
+def conformal_quantile(residuals, alpha):
+
+    n = len(residuals)
+    k = int(np.ceil((n + 1) * (1 - alpha))) - 1
+    sorted_residuals = np.sort(residuals)
+    if k > n:
+        print(f"Split CP Warning: k={k} exceeds number of residuals n={n}. Returning infinity.")
+        return np.inf
+    return sorted_residuals[k]
 
 # =============================================================================
 #  LOAD MODEL
@@ -116,6 +126,7 @@ def run_evaluation(
     model_id: str = 'cebe',
     config_id: str = None,
     param_file_prefix: str = None,
+    alpha=0.1
 ):
     """
     Evaluate a CEBE model on experimental data.
@@ -158,6 +169,7 @@ def run_evaluation(
         Prefix prepended to all output filenames (e.g. the ``search_id``
         from a param search). Produces filenames like
         ``{param_file_prefix}_{model_id}_fold{fold}_{config_id}_<type>.<ext>``.
+    alpha: split conformal prediction confidence level (default: 0.1)
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(png_dir, exist_ok=True)
@@ -247,6 +259,12 @@ def run_evaluation(
     all_true_out = []
     molecule_results = {}
 
+    # for split-CP 
+    # (don't consider keto- and enol avobenzene as have approx exp CEBEs)
+    all_pred_out_no_avo = []
+    all_true_out_no_avo = []
+
+
     for i, data in enumerate(test_loader):
         data = data.to(device)
         with torch.no_grad():
@@ -295,6 +313,12 @@ def run_evaluation(
 
                 all_pred_out.append(pred_be_f)
                 all_true_out.append(true_be_f)
+
+                if mol_name not in ['ketoavobenzone', 'enolavobenzone']:
+                    all_pred_out_no_avo.append(pred_be_f)
+                    all_true_out_no_avo.append(true_be_f)
+                else:
+                    print(mol_name)
             else:
                 mol_atom_rows.append((sym, -1.0, -1.0, -1.0))
 
@@ -306,6 +330,13 @@ def run_evaluation(
             }
         molecule_results[mol_name]['true'] = [r[1] for r in mol_atom_rows if r[1] != -1.0]
         molecule_results[mol_name]['pred'] = [r[2] for r in mol_atom_rows if r[1] != -1.0]
+
+    # Compute split CP 
+    all_pred_arr_no_avo = np.array(all_pred_out_no_avo)
+    all_true_arr_no_avo = np.array(all_true_out_no_avo)
+    residuals_no_avo = np.abs(all_pred_arr_no_avo - all_true_arr_no_avo)
+    q_hat = conformal_quantile(residuals_no_avo, alpha)
+    confidence_level = (1 - alpha)*100
 
     # ------------------------------------------------------------------
     #  3) Save label_results file
@@ -404,6 +435,11 @@ def run_evaluation(
     print(f"  R2 Score:  {r2:.4f}")
     print(f"  MAE:       {mae:.4f} eV")
     print(f"  STD:       {std_res:.4f} eV")
+    print("=" * 80 + "\n")
+    print("Split Conformal prediction Result:\n")
+    print(f"For n={len(residuals_no_avo)} calib. samples and prob. error (alpha)=0.1:")
+    print(f"{confidence_level:.1f}% chance pred. within +/- {q_hat:.3f} eV")
+    print(f"Interval width = {2*q_hat:.3f} eV\n")
     print("=" * 80)
 
     return {'r2': r2, 'mae': mae, 'std': std_res}
