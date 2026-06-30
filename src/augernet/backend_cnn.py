@@ -378,7 +378,7 @@ def load_data(cfg) -> Dict[str, Any]:
 def _get_input_length(cfg, *, use_augmented=None) -> int:
     n_spec = getattr(cfg, 'n_points', 731)
     use_aug = use_augmented if use_augmented is not None \
-              else getattr(cfg, 'use_augmented', False)
+              else getattr(cfg, 'cebe_augment', False)
     return n_spec + (1 if use_aug else 0)
 
 
