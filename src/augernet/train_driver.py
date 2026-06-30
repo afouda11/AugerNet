@@ -27,6 +27,7 @@ import time
 import itertools
 import numpy as np
 from typing import Any, Dict, List
+from sklearn.model_selection import ShuffleSplit
 
 from augernet.config import AugerNetConfig
 
@@ -108,6 +109,21 @@ def _build_param_configs(param_grid: dict) -> List[dict]:
     values = [param_grid[k] for k in keys]
     return [dict(zip(keys, combo))
             for combo in itertools.product(*values)]
+
+
+def _cfg_with_overrides(cfg, overrides: dict):
+    """Return a shallow copy of *cfg* with per-config override fields applied.
+
+    Used by ``run_param_search`` to ensure that evaluation of each config
+    uses the same parameter values (e.g. ``fwhm``, ``n_points``) that were
+    used during training — not the base config values.
+    """
+    import copy
+    cfg_copy = copy.copy(cfg)
+    for k, v in overrides.items():
+        if hasattr(cfg_copy, k):
+            setattr(cfg_copy, k, v)
+    return cfg_copy
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,12 +276,15 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
             )
             elapsed = time.time() - t0
 
-            # Save loss curve and run evaluation for this fold
+            # Save loss curve and run evaluation for this fold.
+            # Build a per-config cfg copy so spectrum params (e.g. fwhm)
+            # used during evaluation match those used during training.
             eval_metrics = None
             if cfg.run_evaluation:
+                eval_cfg = _cfg_with_overrides(cfg, config)
                 eval_metrics = be.run_evaluation(
                     result, data, fold,
-                    output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
+                    output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=eval_cfg,
                     train_results=result.get('train_results'),
                     config_id=config_id,
                     param_file_prefix=search_id,
@@ -369,7 +388,6 @@ def run(cfg: AugerNetConfig):
 
     be = _get_backend(cfg)
 
-    # ── Modes that do NOT need the full training dataset ─────────────────
     if mode == 'predict':
         _run_predict(cfg)
         print("\n Predictions Complete.")
@@ -378,8 +396,48 @@ def run(cfg: AugerNetConfig):
     # ── Load data ────────────────────────────────────────────────────────
     data = be.load_data(cfg)
 
-    # ── Dispatch ─────────────────────────────────────────────────────────
-    result = None  # may be set by train/cv for unit tests
+    if cfg.model in ('auger-gnn', 'auger-cnn'):
+        # Calc hold-out: 50 randomly selected molecules for both GNN and CNN,
+        if cfg.model == 'auger-gnn':
+            calc_data = data['calc_data']
+            mol_order = [d.mol_name for d in calc_data]
+        else:  # auger-cnn
+            calc_mask = data['train_df']['source'] == 'calc'
+            mol_order = list(dict.fromkeys(
+                data['train_df'].loc[calc_mask, 'mol_name']
+            ))
+
+        test_splitter = ShuffleSplit(n_splits=1, test_size=50, random_state=0)
+        tr_arr, te_arr = next(test_splitter.split(mol_order))
+        test_mol_names = {mol_order[i] for i in te_arr}
+
+        if cfg.model == 'auger-gnn':
+            data['calc_data'] = [calc_data[i] for i in tr_arr]
+            data['test_data'] = [calc_data[i] for i in te_arr]
+
+            print(f"\nGNN:\n  {len(data['calc_data'])} train+val mol, " 
+                    f"{sum(s == 'C' for d in data['calc_data'] for s in d.atom_symbols)} carbons\n")
+
+            print(f"  {len(data['test_data'])} calc test hold-mol (ShuffleSplit random_state=0), " 
+                    f"{sum(s == 'C' for d in data['test_data'] for s in d.atom_symbols)} carbons\n")
+        else:
+            df = data['train_df']
+            is_calc_test = (df['source'] == 'calc') & df['mol_name'].isin(test_mol_names)
+            data['test_df']  = df[is_calc_test].reset_index(drop=True)
+            data['train_df'] = df[~is_calc_test].reset_index(drop=True)
+            if 'train_df_raw' in data:
+                raw = data['train_df_raw']
+                data['train_df_raw'] = raw[
+                    ~((raw['source'] == 'calc') & raw['mol_name'].isin(test_mol_names))
+                ].reset_index(drop=True)
+            n_holdout_mols = data['test_df']['mol_name'].nunique()
+            n_train_mols   = data['train_df'][
+                data['train_df']['source'] == 'calc']['mol_name'].nunique()
+            print(f"  CNN: {n_holdout_mols} hold-out mols "
+                  f"({len(data['test_df'])} carbons), "
+                  f"{n_train_mols} train+val calc mols remaining")
+
+    result = None  # Set by train/cv for unit tests
 
     if mode == 'cv':
         cv_summary = run_kfold_cv(data, cfg)
@@ -458,8 +516,36 @@ def _run_evaluate(data, cfg):
     if cfg.model == 'auger-cnn':
         # CNN backend: _load_model_from_path takes (path, data, cfg)
         model, device = be._load_model_from_path(model_path, data, cfg)
+        result = (model, device)
+
+    elif cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', 'stick') == 'stick':
+        # Stick mode requires both singlet and triplet models.
+        calc_data = data['calc_data']
+        load_kw = dict(
+            layer_type=cfg.layer_type,
+            hidden_channels=cfg.hidden_channels,
+            n_layers=cfg.n_layers,
+            dropout=cfg.dropout,
+            **be._model_load_kwargs(cfg),
+        )
+        sing_model, device = be._load_model_from_path(model_path, calc_data, **load_kw)
+        trip_model = None
+        trip_path = cfg.trip_model_path
+        if trip_path:
+            trip_path = os.path.abspath(trip_path)
+            if not os.path.isfile(trip_path):
+                raise FileNotFoundError(f"Triplet model file not found: {trip_path}")
+            print(f"  Loading triplet model from: {trip_path}")
+            trip_model, _ = be._load_model_from_path(trip_path, calc_data, **load_kw)
+        else:
+            print("  WARNING: No trip_model_path provided — evaluating singlet model only.")
+        result = {
+            'model': sing_model, 'device': device,
+            'sing_model': sing_model, 'trip_model': trip_model,
+        }
+
     else:
-        # GNN backend: _load_model_from_path takes (path, calc_data, **kwargs)
+        # GNN backend (cebe-gnn or auger-gnn fitted): single model file
         calc_data = data['calc_data']
         model, device = be._load_model_from_path(
             model_path, calc_data,
@@ -469,12 +555,13 @@ def _run_evaluate(data, cfg):
             dropout=cfg.dropout,
             **be._model_load_kwargs(cfg),
         )
+        result = (model, device)
 
     # Try to infer fold from filename (e.g. …_fold3.pth → 3)
     fold = _infer_fold_from_path(model_path)
 
     be.run_evaluation(
-        (model, device), data, fold,
+        result, data, fold,
         output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
     )
 

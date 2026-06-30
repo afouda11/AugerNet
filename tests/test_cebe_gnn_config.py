@@ -41,7 +41,7 @@ class TestCebeGnnConfigResolve:
     def test_model_id_default(self):
         cfg = AugerNetConfig()
         cfg.resolve()
-        assert cfg.model_id == "cebe_gnn_035_random5_EQ3_h64"
+        assert cfg.model_id == "cebe_gnn_mse_035_random5_EQ3_h64"
 
     def test_model_id_custom(self):
         cfg = AugerNetConfig(
@@ -49,7 +49,7 @@ class TestCebeGnnConfigResolve:
             layer_type="IN", n_layers=4, hidden_channels=128,
         )
         cfg.resolve()
-        assert cfg.model_id == "cebe_gnn_035_butina5_IN4_h128"
+        assert cfg.model_id == "cebe_gnn_mse_035_butina5_IN4_h128"
 
     def test_feature_keys_normalised(self):
         cfg = AugerNetConfig(feature_keys="530")
@@ -64,7 +64,7 @@ class TestCebeGnnConfigResolve:
     def test_norm_stats_file_set(self):
         cfg = AugerNetConfig(model="cebe-gnn")
         cfg.resolve()
-        assert "cebe_norm_stats.pt" in cfg.norm_stats_file
+        assert "cebe_norm_stats.pt" in cfg.cebe_norm_stats_file
 
 
 # -- resolve() param mode (requires torch) ------------------------------------
@@ -271,19 +271,19 @@ class TestBuildSavePaths:
     def test_train_fold1(self, cebe_cfg):
         paths = _build_save_paths(cebe_cfg, fold=1, save_dir="/tmp/models")
         assert paths == {
-            'model': "/tmp/models/cebe_gnn_035_random5_EQ3_h64_fold1.pth",
+            'model': "/tmp/models/cebe_gnn_mse_035_random5_EQ3_h64_fold1.pth",
         }
 
     def test_train_fold3(self, cebe_cfg):
         paths = _build_save_paths(cebe_cfg, fold=3, save_dir="/tmp/models")
         assert paths == {
-            'model': "/tmp/models/cebe_gnn_035_random5_EQ3_h64_fold3.pth",
+            'model': "/tmp/models/cebe_gnn_mse_035_random5_EQ3_h64_fold3.pth",
         }
 
     def test_train_fold5(self, cebe_cfg):
         paths = _build_save_paths(cebe_cfg, fold=5, save_dir="/tmp/models")
         assert paths == {
-            'model': "/tmp/models/cebe_gnn_035_random5_EQ3_h64_fold5.pth",
+            'model': "/tmp/models/cebe_gnn_mse_035_random5_EQ3_h64_fold5.pth",
         }
 
     # ── CV mode (multiple folds, same convention) ────────────────────────
@@ -294,7 +294,7 @@ class TestBuildSavePaths:
             paths = _build_save_paths(cebe_cfg, fold=fold,
                                       save_dir="/tmp/cv_models")
             expected = (
-                f"/tmp/cv_models/cebe_gnn_035_random5_EQ3_h64_fold{fold}.pth"
+                f"/tmp/cv_models/cebe_gnn_mse_035_random5_EQ3_h64_fold{fold}.pth"
             )
             assert paths == {'model': expected}
 
@@ -307,7 +307,7 @@ class TestBuildSavePaths:
         cfg.resolve()
         for fold in range(1, 6):
             paths = _build_save_paths(cfg, fold=fold, save_dir="/out/m")
-            expected = f"/out/m/cebe_gnn_035_butina5_IN4_h128_fold{fold}.pth"
+            expected = f"/out/m/cebe_gnn_mse_035_butina5_IN4_h128_fold{fold}.pth"
             assert paths == {'model': expected}
 
     # ── Param search (prefix + config_id) ────────────────────────────────
@@ -320,7 +320,7 @@ class TestBuildSavePaths:
         assert paths == {
             'model': (
                 "/tmp/models/"
-                "search_layer_type2_cebe_gnn_035_random5_EQ3_h64_fold3_cfg000.pth"
+                "search_layer_type2_cebe_gnn_mse_035_random5_EQ3_h64_fold3_cfg000.pth"
             ),
         }
 

@@ -57,8 +57,6 @@ def seed(seed_val=0):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-
-
 # =============================================================================
 # DEVICE UTILITIES
 # =============================================================================
@@ -89,128 +87,198 @@ def get_device(device_str: str = 'auto', verbose: bool = True) -> torch.device:
 # MODEL ARCHITECTURE
 # =============================================================================
 
-class AugerCNN1D(nn.Module):
-    """
-    Flexible 1D CNN for Auger spectra — architecture fully defined by a dict.
+class FiLMLayer(nn.Module):
+    """Feature-wise affine transform: y = gamma * x + beta"""
+    def forward(self, x, gamma, beta):
+        return gamma.unsqueeze(-1) * x + beta.unsqueeze(-1)
 
-    Parameters
-    ----------
-    input_length int  : Length of the input spectrum (+ optional extra features).
-    num_classes  int  :  Number of output classes.
-    architecture dict :
-        Keys:
-            conv_filters    list[int] : filters per conv block, e.g. [16, 32, 64]
-            conv_kernels    list[int] : kernel size per block,  e.g. [7, 5, 3]
-            pool_size       int       : max-pool kernel (default 4)
-            fc_hidden       list[int] : hidden FC layer sizes,  e.g. [128]
-            use_batch_norm  bool      : BatchNorm after each conv (default False)
-            dropout         float     : Dropout rate for fully-connected layers.
-            dropout_conv    float     : dropout after each conv block (default 0.0)
+class FiLMGenerator(nn.Module):
+    """ Maps z-score normalised conditioning inputs to gamma and beta parameters
+        for every FiLM layer in the FiLM'd network.
+        film_dim: 1 (be only or mol_size only) or 2 (both)
     """
+    def __init__(self, channels_per_layer: list, hidden_dim: int = 64, film_dim: int = 2):
+        super().__init__()
+        #one gamma and one beta per channel, per FiLM layer
+        total = 2 * sum(channels_per_layer)
+        self.channels_per_layer = channels_per_layer
+        self.mlp = nn.Sequential(
+            nn.Linear(film_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, total),
+        )
+        # zero last layer so gamma starts at 1 and beta 0, so CNN starts as un-FiLM'd
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
 
-    def __init__(self, input_length: int, num_classes: int,
-                 architecture: dict):
+    def forward(self, film_cond: torch.Tensor):
+        # film_cond: (B, 2) = [delta_be_norm, mol_size_norm]
+        out = self.mlp(film_cond)
+        # split into (gamma_i, beta_i) pairs per layer
+        sizes = []
+        for c in self.channels_per_layer:
+            sizes.extend([c, c])
+        parts = torch.split(out, sizes, dim=1)
+        # gamma = 1 + delta (so identity init means gamma == 1)
+        return [(1.0 + parts[2*i], parts[2*i + 1])
+                for i in range(len(self.channels_per_layer))]
+
+class AugerCNN1D_FiLMd(nn.Module):
+    def __init__(self,
+        input_length: int,
+        num_classes: int,
+        parallel_kernel_sizes=(5,10,15),
+        parallel_filters=(12,12,12),
+        sequential_kernel_size=(15,15),
+        sequential_filters=(12,12),
+        conv_dropout=0.2,
+        pool_kernel=32,
+        pool_stride=2,
+        film_hidden=64,
+        film_inputs='both',   # 'none' | 'be' | 'mol_size' | 'both'
+    ):
         super().__init__()
 
-        filters   = architecture['conv_filters']
-        kernels   = architecture['conv_kernels']
-        pool_size = architecture.get('pool_size', 4)
-        fc_hidden = architecture.get('fc_hidden', [64])
-        use_bn    = architecture.get('use_batch_norm', False)
-        dropout   = architecture.get('dropout', 0.2)
-        drop_conv = architecture.get('dropout_conv', 0.0)
+        # FiLM conditioning mode
+        _valid = ('none', 'be', 'mol_size', 'both')
+        if film_inputs not in _valid:
+            raise ValueError(f"film_inputs must be one of {_valid}, got '{film_inputs}'")
+        self.film_inputs = film_inputs
+        film_dim = {'none': 0, 'be': 1, 'mol_size': 1, 'both': 2}[film_inputs]
 
-        n_blocks = len(filters)
-        if len(kernels) != n_blocks:
-            raise ValueError(
-                f"conv_filters has {n_blocks} entries but "
-                f"conv_kernels has {len(kernels)}"
-            )
+        self.parallel_convs = nn.ModuleList([
+            nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
+                      stride=1, padding='same') for f, k in zip(parallel_filters, parallel_kernel_sizes)
+        ])
+        concat_channels = sum(parallel_filters)
 
-        self.architecture = architecture
+        self.seqconv1 = nn.Conv1d(in_channels=concat_channels, out_channels=sequential_filters[0], 
+                             kernel_size=sequential_kernel_size[0], stride=1, padding='same')
+        self.seqconv2 = nn.Conv1d(in_channels=sequential_filters[0], out_channels=sequential_filters[1], 
+                             kernel_size=sequential_kernel_size[1], stride=1, padding='same')
+        
+        # FiLM bits
+        # first try modulating after parallel convs and after each seq conv
+        film_channel_counts = [concat_channels, sequential_filters[0], sequential_filters[1]]
 
-        # ---- build conv blocks ------------------------------------------------
-        self.conv_blocks = nn.ModuleList()
-        in_ch = 1
-        for out_ch, ks in zip(filters, kernels):
-            block = nn.Sequential()
-            block.append(nn.Conv1d(in_ch, out_ch, kernel_size=ks, padding=ks // 2))
-            if use_bn:
-                block.append(nn.BatchNorm1d(out_ch))
-            block.append(nn.ReLU())
-            if drop_conv > 0:
-                block.append(nn.Dropout(drop_conv))
-            self.conv_blocks.append(block)
-            in_ch = out_ch
+        if film_dim > 0:
+            self.film_generator = FiLMGenerator(film_channel_counts, hidden_dim=film_hidden, film_dim=film_dim)
+            self.film_layers = nn.ModuleList([FiLMLayer() for _ in film_channel_counts])
+        else:
+            self.film_generator = None
+            self.film_layers = None
 
-        self.pool = nn.MaxPool1d(pool_size)
+        self.conv_dropout = nn.Dropout(conv_dropout)
+        self.pool = nn.AdaptiveAvgPool1d(pool_kernel)
+        # AdaptiveAvgPool1d always outputs exactly pool_kernel time-steps
+        flat_size = sequential_filters[1] * pool_kernel
+        print(f"AugerCNN1D_FiLMd: film_inputs='{film_inputs}', film_dim={film_dim}, flat_size={flat_size}")
+        self.fc = nn.Linear(flat_size, num_classes)
 
-        # ---- compute flattened size -------------------------------------------
-        conv_out_len = input_length
-        for _ in range(n_blocks):
-            conv_out_len = conv_out_len // pool_size
-        self.flat_size = filters[-1] * conv_out_len
+    def forward(self, x: torch.Tensor, film_cond: torch.Tensor) -> torch.Tensor:
 
-        # ---- build FC layers --------------------------------------------------
-        self.fc_layers = nn.ModuleList()
-        prev = self.flat_size
-        for h in fc_hidden:
-            self.fc_layers.append(nn.Linear(prev, h))
-            prev = h
-        self.fc_out = nn.Linear(prev, num_classes)
-        self.dropout_fc = nn.Dropout(dropout)
+        # x: (B, 1, spec)
+        # film_cond: (B, 2) = [delta_be_norm, mol_size_norm]  (always passed full)
+        # Select the conditioning columns based on film_inputs config:
+        if self.film_inputs == 'none':
+            cond = None
+        elif self.film_inputs == 'be':
+            cond = film_cond[:, 0:1]   # (B, 1)
+        elif self.film_inputs == 'mol_size':
+            cond = film_cond[:, 1:2]   # (B, 1)
+        else:  # 'both'
+            cond = film_cond           # (B, 2)
 
-        self._init_weights()
+        film = self.film_generator(cond) if cond is not None else None
 
-    # ------------------------------------------------------------------
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        # parallel branches -> ReLU -> concat -> FiLM -> dropout
+        parallel_outs = [F.relu(conv(x)) for conv in self.parallel_convs]
+        x = torch.cat(parallel_outs, dim=1)
+        if film is not None:
+            g, b = film[0]
+            x = self.film_layers[0](x, g, b)
+        x = self.conv_dropout(x)
 
-    # ------------------------------------------------------------------
-    def forward(self, x):
-        # x shape: (batch, 1, input_length)
-        for block in self.conv_blocks:
-            x = self.pool(block(x))
-        x = x.flatten(1)
+        # seqconv1 -> FiLM -> RelU -> dropout
+        x = self.seqconv1(x)
+        if film is not None:
+            g, b = film[1]
+            x = self.film_layers[1](x, g, b)
+        x = F.relu(x)
+        x = self.conv_dropout(x)
 
-        for fc in self.fc_layers:
-            x = self.dropout_fc(F.relu(fc(x)))
-        x = self.fc_out(x)
+        # seqconv2 -> FiLM -> RelU -> dropout
+        x = self.seqconv2(x)
+        if film is not None:
+            g, b = film[2]
+            x = self.film_layers[2](x, g, b)
+        x = F.relu(x)
+        x = self.conv_dropout(x)
+
+        # pool, flatten, classify
+        # AdaptiveAvgPool1d is not supported on MPS when input is not
+        # evenly divisible by output size, so fall back to CPU for this op.
+        if x.device.type == 'mps':
+            x = self.pool(x.cpu()).to(x.device)
+        else:
+            x = self.pool(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.fc(x)
+
         return x
 
-# =============================================================================
-# DATASET WRAPPER
-# =============================================================================
 
-class CarbonLabelDataset(Dataset):
-    """Wrapper dataset that provides carbon environment labels."""
+class AugerCNN1D(nn.Module):
+    def __init__(self,
+                 input_length: int, 
+                 num_classes: int,
+                 parralel_kernal_size: tuple = (5, 10, 15),
+                 parralel_filters: tuple = (12, 12, 12),
+                 sequential_kernel_size: tuple = (15, 15),
+                 sequential_filters: tuple = (12, 12),
+                 conv_dropout: float = 0.2,
+                 pool_kernel:         int = 2,
+                 pool_stride:         int = 2,
+                 ):
+        super().__init__()
+        self.parallel_convs = nn.ModuleList([
+            nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
+                      stride=1, padding='same') for f, k in zip(parralel_filters, parralel_kernal_size)
+        ])
 
-    def __init__(self, base_dataset: cdf.CarbonDataset, df: pd.DataFrame):
-        self.base_dataset = base_dataset
-        self.df = df.reset_index(drop=True)
+        concat_channels = sum(parralel_filters)
 
-    def __len__(self):
-        return len(self.base_dataset)
+        self.seqconv1 = nn.Conv1d(in_channels=concat_channels, out_channels=sequential_filters[0], 
+                             kernel_size=sequential_kernel_size[0], stride=1, padding='same')
+        self.seqconv2 = nn.Conv1d(in_channels=sequential_filters[0], out_channels=sequential_filters[1], 
+                             kernel_size=sequential_kernel_size[1], stride=1, padding='same')
 
-    def __getitem__(self, idx):
-        item = self.base_dataset[idx]
-        if isinstance(item, tuple):
-            spectrum, _ = item
-        else:
-            spectrum = item['spectrum']
-        label = self.df.iloc[idx]['carbon_env_label']
-        return spectrum, torch.LongTensor([label]).squeeze()
+        self.conv_dropout = nn.Dropout(conv_dropout)
+        self.pool = nn.AvgPool1d(kernel_size=pool_kernel, stride=pool_stride)
+        pooled_length = (input_length - pool_kernel) // pool_stride + 1
+        flat_size = sequential_filters[1] * pooled_length
+        self.fc = nn.Linear(flat_size, num_classes)
+
+        self.seq_block = nn.Sequential(
+            self.seqconv1,
+            nn.ReLU(),
+            self.conv_dropout,
+            self.seqconv2,
+            nn.ReLU(),
+            self.conv_dropout,
+            self.pool,
+            nn.Flatten(),
+            self.fc,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        parralel_outs = [F.relu(conv(x)) for conv in self.parallel_convs]
+        x = torch.cat(parralel_outs, dim=1)
+        x = self.conv_dropout(x)
+        x = self.seq_block(x)
+        return x
+
 
 
 # =============================================================================
@@ -224,10 +292,14 @@ class CNNTrainer:
                  learning_rate: float = 5e-4, weight_decay: float = 1e-4,
                  patience: int = 20, scheduler_type: str = 'cosine',
                  cosine_T_max: int = None,
-                 class_weights: torch.Tensor = None):
+                 class_weights: torch.Tensor = None,
+                 label_smoothing: float = 0.0,
+                 noise_std: float = 0.0):
+
         self.model = model.to(device)
         self.device = device
         self.patience = patience
+        self.noise_std = noise_std
         self.optimizer = torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
@@ -253,32 +325,43 @@ class CNNTrainer:
         if class_weights is not None:
             self.criterion = nn.CrossEntropyLoss(
                 weight=class_weights.to(device),
+                label_smoothing=label_smoothing,
             )
-            print(f"  Using CrossEntropyLoss with inverse-frequency class weights")
+            print(f"  Using CrossEntropyLoss with inverse-frequency class weights"
+                  f"{f' + label_smoothing={label_smoothing}' if label_smoothing else ''}")
         else:
-            self.criterion = nn.CrossEntropyLoss()
-            print(f"  Using CrossEntropyLoss with no class weights")
+            self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            print(f"  Using CrossEntropyLoss with no class weights"
+                  f"{f' + label_smoothing={label_smoothing}' if label_smoothing else ''}")
 
-        self.history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+        self.history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': [], 'val_f1': []}
         self.best_model_state = None
 
     def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
         self.model.train()
         total_loss, correct, total = 0.0, 0, 0
         for batch in train_loader:
-            if isinstance(batch, dict):
-                spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
-                labels = batch['label'].to(self.device, dtype=torch.long)
-            else:
-                spectra, labels = batch
-                spectra = spectra.to(self.device, dtype=torch.float32)
-                labels = labels.to(self.device, dtype=torch.long)
+#             if isinstance(batch, dict):
+#                 spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
+#                 labels = batch['label'].to(self.device, dtype=torch.long)
+#             else:
+            spectra, delta_be, mol_size, labels = batch
+            spectra = spectra.to(self.device, dtype=torch.float32)
+            delta_be = delta_be.to(self.device, dtype=torch.float32)
+            mol_size = mol_size.to(self.device, dtype=torch.float32)
+            labels = labels.to(self.device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
 
+            # Online augmentation: Gaussian noise (train only)
+            if self.noise_std > 0.0:
+                spectra = spectra + torch.randn_like(spectra) * self.noise_std
+                spectra = spectra.clamp(min=0.0)
+
             self.optimizer.zero_grad()
 
-            logits = self.model(spectra)
+            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            logits = self.model(spectra, film_cond)
             loss = self.criterion(logits, labels)
             _, predicted = logits.max(1)
             correct += predicted.eq(labels).sum().item()
@@ -295,27 +378,33 @@ class CNNTrainer:
             total += labels.size(0)
         return total_loss / len(train_loader), 100.0 * correct / total
 
-    def validate(self, val_loader: DataLoader) -> Tuple[float, float]:
+    def validate(self, val_loader: DataLoader) -> Tuple[float, float, float]:
         self.model.eval()
         total_loss, correct, total = 0.0, 0, 0
+        all_preds, all_labels = [], []
         with torch.no_grad():
             for batch in val_loader:
-                if isinstance(batch, dict):
-                    spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
-                    labels = batch['label'].to(self.device, dtype=torch.long)
-                else:
-                    spectra, labels = batch
-                    spectra = spectra.to(self.device, dtype=torch.float32)
-                    labels = labels.to(self.device, dtype=torch.long)
+                spectra, delta_be, mol_size, labels = batch
+                spectra = spectra.to(self.device, dtype=torch.float32)
+                delta_be = delta_be.to(self.device, dtype=torch.float32)
+                mol_size = mol_size.to(self.device, dtype=torch.float32)
+                labels = labels.to(self.device, dtype=torch.long)
                 if spectra.dim() == 2:
                     spectra = spectra.unsqueeze(1)
-                logits = self.model(spectra)
+                film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+                logits = self.model(spectra, film_cond)
                 loss = self.criterion(logits, labels)
                 total_loss += loss.item()
                 _, predicted = logits.max(1)
                 correct += predicted.eq(labels).sum().item()
                 total += labels.size(0)
-        return total_loss / len(val_loader), 100.0 * correct / total
+                all_preds.append(predicted.cpu().numpy())
+                all_labels.append(labels.cpu().numpy())
+        val_f1 = f1_score(
+            np.concatenate(all_labels), np.concatenate(all_preds),
+            average='macro', zero_division=0,
+        )
+        return total_loss / len(val_loader), 100.0 * correct / total, val_f1
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader,
             num_epochs: int = 100, verbose: bool = True) -> Dict[str, List[float]]:
@@ -333,12 +422,12 @@ class CNNTrainer:
             if verbose:
                 print(f"  Scheduler: OneCycleLR  (per-batch, {total_steps} total steps)")
 
-        best_val_loss = float('inf')
+        best_val_f1 = 0.0
         patience_counter = 0
 
         for epoch in range(num_epochs):
             train_loss, train_acc = self.train_epoch(train_loader)
-            val_loss, val_acc = self.validate(val_loader)
+            val_loss, val_acc, val_f1 = self.validate(val_loader)
 
             # Per-epoch LR step (CosineAnnealingLR)
             if not self.scheduler_per_batch and self.scheduler is not None:
@@ -348,14 +437,16 @@ class CNNTrainer:
             self.history['val_loss'].append(val_loss)
             self.history['train_acc'].append(train_acc)
             self.history['val_acc'].append(val_acc)
+            self.history['val_f1'].append(val_f1)
 
             if verbose:
                 print(f"Epoch {epoch+1:3d}/{num_epochs} | "
                       f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
-                      f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+                      f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | "
+                      f"Val F1: {val_f1:.4f}")
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
                 patience_counter = 0
                 self.best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
             else:
@@ -373,94 +464,6 @@ class CNNTrainer:
 
 
 # =============================================================================
-# CLASS WEIGHTS
-# =============================================================================
-
-def get_class_weights_and_counts(
-    df: pd.DataFrame,
-    num_classes: int = None,
-) -> Tuple[torch.Tensor, Dict[int, int]]:
-    """Compute inverse-frequency class weights and per-class counts.
-
-    Returns
-    -------
-    weights : torch.Tensor
-        Shape ``(n_classes,)``.  Inverse-frequency weights normalised so that
-        the active (non-zero) entries have unit mean.
-    counts : Dict[int, int]
-        ``{class_idx: sample_count}`` for every class index in
-        ``range(n_classes)``, with ``0`` for classes absent from *df*.
-    """
-    label_col = 'carbon_env_label'
-    n_classes = NUM_CARBON_CLASSES if num_classes is None else num_classes
-
-    raw_counts = df[label_col].value_counts().to_dict()
-    counts = {i: raw_counts.get(i, 0) for i in range(n_classes)}
-
-    weights = torch.zeros(n_classes, dtype=torch.float32)
-    total_samples = len(df)
-    for class_idx, count in raw_counts.items():
-        if 0 <= class_idx < n_classes:
-            weights[class_idx] = total_samples / (n_classes * count)
-    active_mask = weights > 0
-    if active_mask.sum() > 0:
-        weights[active_mask] = weights[active_mask] / weights[active_mask].mean()
-
-    return weights, counts
-
-
-# =============================================================================
-# DIAGNOSTICS
-# =============================================================================
-
-def diagnose_dataframe(df: pd.DataFrame) -> None:
-    """Run diagnostics on the carbon DataFrame."""
-    print("\n" + "=" * 70)
-    print("CARBON DATAFRAME DIAGNOSTICS")
-    print("=" * 70)
-    print(f"\nDataFrame shape: {df.shape}")
-    print(f"Total carbon atoms: {len(df)}")
-    print(f"Total molecules: {df['mol_name'].nunique()}")
-
-    class_dist = df['carbon_env_label'].value_counts().sort_index()
-    print(f"\nClass distribution ({len(class_dist)} active classes):")
-
-    print(f"\n  Unique classes: {len(class_dist)}")
-    print(f"  Min class count: {class_dist.min()}")
-    print(f"  Max class count: {class_dist.max()}")
-    print(f"  Imbalance ratio: {class_dist.max() / class_dist.min():.1f}x")
-
-    # Detect stick columns (new format: sing/trip separate; old: combined)
-    has_sing = 'sing_stick_energies' in df.columns
-    has_combined = 'stick_energies' in df.columns
-
-    if has_sing:
-        se = df['sing_stick_energies']
-        te = df['trip_stick_energies']
-        n_peaks = [len(s) + len(t) for s, t in zip(se, te)]
-        print(f"\nSpectrum type: STICK (sing+trip, broadened on-the-fly)")
-        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
-              f"mean={np.mean(n_peaks):.1f}")
-        all_e = np.concatenate([e for e in se if e is not None and len(e) > 0]
-                               + [e for e in te if e is not None and len(e) > 0])
-        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
-    elif has_combined:
-        n_peaks = [len(e) for e in df['stick_energies'].values if e is not None]
-        print(f"\nSpectrum type: STICK (combined, broadened on-the-fly)")
-        print(f"  Peaks per atom: min={min(n_peaks)}, max={max(n_peaks)}, "
-              f"mean={np.mean(n_peaks):.1f}")
-        all_e = np.concatenate([e for e in df['stick_energies'] if e is not None and len(e) > 0])
-        print(f"  Energy range: [{all_e.min():.1f}, {all_e.max():.1f}] eV")
-    elif 'spectrum_intensity_only' in df.columns:
-        spectra = np.stack(df['spectrum_intensity_only'].values)
-        print(f"\nSpectrum type: PRE-BROADENED")
-        print(f"  Shape: {spectra.shape}")
-        print(f"  Min: {spectra.min():.4f}, Max: {spectra.max():.4f}")
-
-    print("=" * 70)
-
-
-# =============================================================================
 # EVALUATION
 # =============================================================================
 
@@ -474,7 +477,7 @@ def evaluate_with_molecule_details(
     """Evaluate model with detailed molecule-by-molecule results and CSV output."""
     model.eval()
 
-    label_col = 'carbon_env_label'
+    label_col = 'carbon_env_index'
     class_names = class_names_override if class_names_override else CARBON_ENVIRONMENT_NAMES
     num_classes = num_classes_override if num_classes_override else NUM_CARBON_CLASSES
 
@@ -483,17 +486,15 @@ def evaluate_with_molecule_details(
 
     with torch.no_grad():
         for batch in loader:
-            if isinstance(batch, (tuple, list)):
-                spectra, labels = batch[0], batch[1]
-            elif isinstance(batch, dict):
-                spectra, labels = batch['spectrum'], batch['label']
-            else:
-                raise ValueError(f"Unknown batch type: {type(batch)}")
+            spectra, delta_be, mol_size, labels = batch
             spectra = spectra.to(device, dtype=torch.float32)
+            delta_be = delta_be.to(device, dtype=torch.float32)
+            mol_size = mol_size.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            logits = model(spectra)
+            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            logits = model(spectra, film_cond)
             probs = torch.softmax(logits, dim=1)
             pred = logits.argmax(dim=1)
             all_preds.append(pred.cpu().item())
@@ -508,37 +509,29 @@ def evaluate_with_molecule_details(
     f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
     f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
 
-    print("\n" + "=" * 130)
-    print(f"EVALUATION ({eval_type.upper()}) - {num_classes} CLASSES")
-    print("=" * 130)
+    print(f"\n== EVALUATION ({eval_type.upper()}) - {num_classes} CLASSES ==")
 
     df_reset = df.reset_index(drop=True)
     molecules = df_reset.groupby('mol_name')
     csv_records = []
 
+    # Compact per-molecule table: one header, one row per molecule
+    col_w = 38
+    print(f"\n  {'Molecule':<30} {'C':>4} {'ok':>4} {'wrong':>6}   Misclassified (true -> pred)")
+    print("  " + "-" * 110)
     for mol_name, mol_group_indices in molecules.groups.items():
         mol_group = df_reset.loc[mol_group_indices].sort_values('atom_idx')
-        print("\n" + "-" * 160)
-        print(f"Molecule: {mol_name}  |  Carbons: {len(mol_group)}")
-        print("-" * 160)
-
-        print(f"{'XYZ Idx':<10} {'True Category':<50} {'Pred Category':<50} "
-              f"{'Conf':<10} {'Status':<10}")
-        print("-" * 160)
+        n_carbon = len(mol_group)
+        wrong_items = []
         for idx in mol_group_indices:
             row = df_reset.iloc[idx]
-            atom_idx = int(row['atom_idx'])
+            atom_idx  = int(row['atom_idx'])
             true_label = int(row[label_col])
             pred_label = int(all_preds[idx])
             confidence = all_probs[idx][pred_label] * 100
-            # Use class_names list (works for both original and merged labels)
             true_name = class_names[true_label] if true_label < len(class_names) else f"class_{true_label}"
             pred_name = class_names[pred_label] if pred_label < len(class_names) else f"class_{pred_label}"
-            status = "CORRECT" if pred_label == true_label else "WRONG"
-            mark = "✓" if status == "CORRECT" else "✗"
-            print(f"{atom_idx:<10} {true_name:<50} {pred_name:<50} "
-                  f"{confidence:>6.1f}%   {mark} {status}")
-            # Strip 'C_' prefix for cleaner CSV output
+            # Strip 'C_' prefix for CSV
             true_display = true_name.removeprefix('C_')
             pred_display = pred_name.removeprefix('C_')
             csv_records.append({
@@ -546,6 +539,13 @@ def evaluate_with_molecule_details(
                 'True Environment': true_display,
                 'CNN Prediction (Confidence %)': f"{pred_display} ({confidence:.1f}%)",
             })
+            if pred_label != true_label:
+                wrong_items.append(
+                    f"{true_name.removeprefix('C_')}->{pred_name.removeprefix('C_')}"
+                )
+        n_correct = n_carbon - len(wrong_items)
+        wrong_str = ', '.join(wrong_items) if wrong_items else 'all correct'
+        print(f"  {mol_name:<30} {n_carbon:>4} {n_correct:>4} {len(wrong_items):>6}   {wrong_str}")
 
     if output_dir:
         csv_df = pd.DataFrame(csv_records)
@@ -553,7 +553,7 @@ def evaluate_with_molecule_details(
         #csv_df = csv_df.drop_duplicates().reset_index(drop=True)
         csv_path = Path(output_dir) / f"eval_{eval_type}{csv_suffix}.csv"
         csv_df.to_csv(csv_path, index=False)
-        print(f"\n✓ Saved evaluation CSV: {csv_path}")
+        print(f"\nSaved evaluation CSV: {csv_path}")
         print(f"  Rows: {len(csv_df)} (deduplicated from {len(csv_records)} atoms)")
 
     # ---- Deduplicated metrics -------------------------------------------------
@@ -585,24 +585,15 @@ def evaluate_with_molecule_details(
         dedup_f1_macro = f1_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
         dedup_f1_weighted = f1_score(dedup_labels, dedup_preds, average='weighted', zero_division=0)
 
-    print("\n" + "=" * 160)
-    print("SUMMARY STATISTICS")
-    print("=" * 160)
+    print("\n== SUMMARY STATISTICS ==")
 
-    print(f"\n  Per-atom metrics (all {len(all_labels)} atoms):")
-    print(f"    Accuracy:    {accuracy*100:.1f}%  ({(all_preds == all_labels).sum()}/{len(all_labels)})")
-    print(f"    F1-Macro:    {f1_macro:.4f}")
-    print(f"    F1-Weighted: {f1_weighted:.4f}")
+    print(f"  Per-atom  ({len(all_labels)} atoms):  "
+          f"Acc={accuracy*100:.1f}%  F1-mac={f1_macro:.4f}  F1-wt={f1_weighted:.4f}")
+    print(f"  Deduped   ({len(dedup_labels)} pairs):  "
+          f"Acc={dedup_accuracy*100:.1f}%  F1-mac={dedup_f1_macro:.4f}  F1-wt={dedup_f1_weighted:.4f}")
 
-    print(f"\n  Deduplicated metrics ({len(dedup_labels)} unique environment–molecule pairs):")
-    print(f"    Accuracy:    {dedup_accuracy*100:.1f}%  ({(dedup_preds == dedup_labels).sum()}/{len(dedup_labels)})")
-    print(f"    F1-Macro:    {dedup_f1_macro:.4f}")
-    print(f"    F1-Weighted: {dedup_f1_weighted:.4f}")
-
-    print("=" * 160)
-
-    print("\nPer-Class Performance (deduplicated):")
-    print("-" * 100)
+    print("\n  Per-Class (deduplicated):")
+    print("  " + "-" * 70)
     for label in sorted(np.unique(dedup_labels)):
         mask = dedup_labels == label
         support = mask.sum()
@@ -618,7 +609,6 @@ def evaluate_with_molecule_details(
         'predictions': all_preds, 'labels': all_labels, 'probabilities': all_probs,
         'dedup_predictions': dedup_preds, 'dedup_labels': dedup_labels,
     }
-
 
 # =============================================================================
 # PLOTTING UTILITIES
@@ -665,7 +655,7 @@ def plot_training_history(history: Dict[str, List[float]], output_dir: str) -> N
         plt.tight_layout()
         plot_path = Path(output_dir) / 'training_plots.png'
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        print(f"✓ Saved training plots: {plot_path}")
+        print(f"Saved training plots: {plot_path}")
         plt.close()
     except Exception as e:
-        print(f"⚠ Failed to save plots: {e}")
+        print(f"Failed to save plots: {e}")

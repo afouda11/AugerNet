@@ -15,7 +15,7 @@ Usage:
     )
 
 Key differences between graph types:
-    - CEBE graphs: y = normalized (delta_be - mean) / std for binding energies
+    - CEBE graphs:  y = normalized (delta_be - mean) / std for binding energies
     - Auger graphs: y = flattened spectra [n_atoms, max_spec_len * 2]
     - Auger be_feature uses either molecular CEBE for carbons and atomic for others (be_feat = 'mol')
         or uses atomic reference values for all atoms (be_feat = 'atom')
@@ -269,7 +269,7 @@ def _extract_edge_attributes(mol, edge_index_order):
 # NODE AND EDGE FEATURE BUILDING
 # =============================================================================
 
-def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_values):
+def _build_node_and_edge_features(mol, all_encoders, cebe_values):
     """
     Build node and edge features using the **feature-store** approach.
 
@@ -283,9 +283,6 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
     all_encoders : dict
         Output of ``initialize_all_atom_encoders()`` — maps encoder name
         to ``(encoder_fn, dim)`` tuple.
-    category_feature : array-like, optional
-        Category feature (e.g. [1,0,0] for CEBE, [0,1,0] for singlet Auger).
-        Stored directly in ``data.x``.
     cebe : np.ndarray
         CEBE values for the molecule, for mol_be feature for Auger spec only
 
@@ -296,8 +293,6 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
         ``skipatom_200``, ``skipatom_30``, ``onehot``,
         ``atomic_be``, ``mol_be``, ``e_score``, ``env_onehot``,
         ``morgan_fp``
-    x : torch.Tensor
-        Category feature only, shape (N, 3), or empty (N, 0) if no category.
     edge_index : torch.Tensor
     edge_attr : torch.Tensor
     atomic_be_tensor : torch.Tensor
@@ -364,7 +359,7 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
             e_score_list.append(0.0)
 
     # ── carbon environment one-hot ──
-    _, carbon_env_indices, env_onehot_np = ce.get_all_carbon_environment_labels(mol)
+    carbon_env_labels, carbon_env_indices, env_onehot_np = ce.get_all_carbon_environment_labels(mol)
 
     # ── assemble node_features dict ──
     node_features = {}
@@ -393,13 +388,6 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
     node_features['env_onehot'] = torch.tensor(
         env_onehot_np, dtype=torch.float)                 # (N, NUM_CARBON_CATEGORIES)
 
-    # ── category feature → data.x ──
-    if category_feature is not None:
-        cat_feat = np.tile(category_feature, (n_atoms, 1))
-        x = torch.tensor(cat_feat, dtype=torch.float)
-    else:
-        x = torch.zeros(n_atoms, 0, dtype=torch.float)
-
     # ── edge features ──
     adj_mat = rdmolops.GetAdjacencyMatrix(mol)
     edge_index_order = []
@@ -416,7 +404,9 @@ def _build_node_and_edge_features(mol, all_encoders, category_feature, cebe_valu
 
     atomic_be_tensor = torch.tensor(atomic_be_list, dtype=torch.float)
 
-    return node_features, x, edge_index, edge_attr, atomic_be_tensor, carbon_env_indices
+    x = torch.zeros(n_atoms, 0, dtype=torch.float)
+
+    return node_features, x, edge_index, edge_attr, atomic_be_tensor, carbon_env_indices, carbon_env_labels
 
 # =============================================================================
 # LOAD MOLECULE FROM XYZ 2 MOL WITH PRECISE ATOM ORDERING
@@ -582,15 +572,40 @@ def _compute_cebe_normalization_stats(cebe_dir, mol_list):
     
     return mean, std
 
+def _compute_auger_normalization_stats(data_type, auger_dir, mol_list, max_spec_len):
+
+    maxI_list = []
+    maxE_list = []
+
+    for mol_name in mol_list:
+
+        maxE, maxI = spec_utils.get_maxI_maxE(data_type, auger_dir, mol_name, max_spec_len) 
+        maxE_list.extend(maxE)   # [sing_max_ke, trip_max_ke]
+        maxI_list.extend(maxI)   # [sing_max, trip_max]
+
+    maxI_arr = np.array(maxI_list)   # shape (n_carbons_total, 2): col0=singlet, col1=triplet
+    maxE_arr = np.array(maxE_list)   # shape (n_carbons_total, 2): col0=singlet, col1=triplet (norm KE)
+    print(f"Intensity maximum across {maxI_arr.shape[0]} carbon atoms:")
+    print(f"  Singlet max: {maxI_arr[:, 0].max()}")
+    print(f"  Triplet max: {maxI_arr[:, 1].max()}")
+    print(f"  Intensity scale factor: {maxI_arr.max()}")
+
+    print(f"Kinet energy maximum across {maxE_arr.shape[0]} carbon atoms:")
+    print(f"  Singlet max: {maxE_arr[:, 0].max()}")
+    print(f"  Triplet max: {maxE_arr[:, 1].max()}")
+    print(f"  Energy scale factor: {maxE_arr.max()}")
+
+    return maxE_arr.max(), maxI_arr.max()
 
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
 
-def build_graphs(data_type, mol_file="mol_list.txt", 
-                 auger_spin=None, auger_max_ke=273,
+def build_graphs(data_type, 
+                 mol_file="mol_list.txt", 
                  auger_max_spec_len = 300,
-                 DEBUG=False):
+                 DEBUG=False
+                 ):
     """
     Process calculated CEBE data using the feature-store approach.
     
@@ -610,22 +625,29 @@ def build_graphs(data_type, mol_file="mol_list.txt",
     # Compute or load stats before loop over mol_list:
 
     # Calculate and save norm stats for calc data
-    if data_type in ['calc_cebe', 'exp_cebe']:
-        norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
-    elif data_type in ['calc_auger', 'eval_auger']:
-        norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'auger_cebe_norm_stats.pt')
+    cebe_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
 
-    if data_type in ['calc_cebe', 'calc_auger']:
+    if data_type in ['calc_cebe']:
         mean, std = _compute_cebe_normalization_stats(mol_dir, mol_list)
-        norm_stats = {'mean': float(mean), 'std': float(std)}
-        print("Normalization statistics:", norm_stats)
-        torch.save(norm_stats, norm_stats_path)
+        cebe_norm_stats = {'mean': float(mean), 'std': float(std)}
+        print("CEBE Normalization statistics:", cebe_norm_stats)
+        torch.save(cebe_norm_stats, cebe_norm_stats_path)
+    else: #use cebe calc norm throughout
+        cebe_norm_stats = torch.load(cebe_norm_stats_path, weights_only=False)
+        mean = cebe_norm_stats['mean']
+        std = cebe_norm_stats['std']
 
-    # Load norm stats  from calc data for exp eval and other predictions
-    if data_type in ['exp_cebe', 'eval_auger']:
-        norm_stats = torch.load(norm_stats_path, weights_only=False)
-        mean = norm_stats['mean']
-        std = norm_stats['std']
+    if data_type in ['calc_auger', 'eval_auger']:
+        auger_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'auger_norm_stats.pt')
+        if data_type == 'calc_auger':
+            maxE, maxI = _compute_auger_normalization_stats(data_type, mol_dir, mol_list, auger_max_spec_len)
+            auger_norm_stats = {'maxE': float(maxE), 'maxI': float(maxI)}
+            print("Auger Normalization statistics:", auger_norm_stats)
+            torch.save(auger_norm_stats, auger_norm_stats_path)
+        else:  # use auger calc norm throughout
+            auger_norm_stats = torch.load(auger_norm_stats_path, weights_only=False)
+            maxE = auger_norm_stats['maxE']
+            maxI = auger_norm_stats['maxI']
 
     data_list = []
 
@@ -640,48 +662,22 @@ def build_graphs(data_type, mol_file="mol_list.txt",
         cebe_path = f"{mol_dir}/{mol_name}_out.txt"
         cebe = np.loadtxt(cebe_path)
 
-        if data_type in ['calc_auger', 'eval_auger']:
-            spec_out, spec_len = spec_utils.extract_spectra(
-                                        data_type, mol_dir, mol_name, 
-                                        auger_spin, auger_max_ke, 
-                                        auger_max_spec_len) 
-
-        #Use to differentiate between cebe, auger sing, auger trip
-        if data_type in ['calc_cebe', 'exp_cebe']: 
-            category_feature=np.array([1, 0, 0])
-        if data_type in ['calc_auger', 'eval_auger']:
-            if auger_spin == 'singlet': 
-                category_feature=np.array([0, 1, 0])
-            if auger_spin == 'triplet': 
-                category_feature=np.array([0, 0, 1])
         #print("mol_name:", mol_name)
-        node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices = \
-            _build_node_and_edge_features(mol, all_encoders, category_feature, cebe)
-        #print(xyz_symbols)
-        #print(np.column_stack((node_features['atomic_be'], node_features['mol_be'])))
-        #print(" ")
+        node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices, carbon_env_labels = \
+            _build_node_and_edge_features(mol, all_encoders, cebe)
 
-        if data_type in ['calc_cebe', 'exp_cebe']:
-            # Build targets (same logic as v1)
-            out = []
-            for n, val in enumerate(cebe):
-                if val == -1:
-                    out.append(-1)
-                else:
-                    ref_e = atomic_be[n].item()
-                    dum = ref_e - val
-                    #Mean std normalized output, across the full calc dataset
-                    out.append((dum - mean) / std)
+        # Build targets (same logic as v1)
+        cebe_out = []
+        for n, val in enumerate(cebe):
+            if val == -1:
+                cebe_out.append(-1)
+            else:
+                ref_e = atomic_be[n].item()
+                dum = ref_e - val
+                #Mean std normalized output, across the full calc dataset
+                cebe_out.append((dum - mean) / std)
 
-            y = torch.FloatTensor(out)
-
-        if data_type in ['calc_auger', 'eval_auger']:
-            spec_out_array = np.array(spec_out)
-            y = torch.from_numpy(spec_out_array).float()
-            mask_rows = ~(y.abs().sum(dim=2) == 0)
-            mask_flat = mask_rows.repeat(1, 2).float()
-            y = y.transpose(1, 2).reshape(len(xyz_symbols), auger_max_spec_len * 2)
-
+        cebe_y = torch.FloatTensor(cebe_out)
 
         node_mask = [0. if n == -1 else 1. for n in cebe]
 
@@ -689,36 +685,61 @@ def build_graphs(data_type, mol_file="mol_list.txt",
         # without round-trip precision loss through normalize/denormalize.
         true_cebe = torch.tensor(
             [float(v) if v != -1 else -1.0 for v in cebe],
-            dtype=torch.float64,
+            dtype=torch.float32,
         )
 
         if data_type in ['calc_cebe', 'exp_cebe']: 
             data = Data(
                 x=x, edge_index=edge_index, edge_attr=edge_attr,
                 node_mask=torch.FloatTensor(node_mask),
-                y=y.view(-1, 1), 
+                cebe_y=cebe_y.view(-1, 1), 
                 pos=torch.tensor(pos, dtype=torch.float), 
                 atomic_be_eV=atomic_be,
                 atom_symbols=xyz_symbols, 
                 true_cebe=true_cebe,
                 smiles=smiles, 
                 mol_name=mol_name,
-                carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+                carbon_env_labels=carbon_env_labels,
+                carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
             )
+
         if data_type in ['calc_auger', 'eval_auger']:
+
+            sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len = \
+                                        spec_utils.extract_spectra(
+                                            data_type, mol_dir, mol_name, 
+                                            maxE, maxI, auger_max_spec_len
+                                        ) 
+
+            #singlet
+            sing_spec_out_array = np.array(sing_spec_out)
+            sing_y = torch.from_numpy(sing_spec_out_array).float()
+            sing_mask_rows = (sing_y.abs().sum(dim=-1) > 0).float()
+            #triplet
+            trip_spec_out_array = np.array(trip_spec_out)
+            trip_y = torch.from_numpy(trip_spec_out_array).float()
+            trip_mask_rows = (trip_y.abs().sum(dim=-1) > 0).float()
+
             data = Data(
                 x=x, edge_index=edge_index, edge_attr=edge_attr,
                 node_mask=torch.FloatTensor(node_mask),
-                y=y.view(-1, 1),
-                mask_bin=mask_flat,
-                spec_len=spec_len,
+                cebe_y=cebe_y.view(-1, 1),
+                sing_y=sing_y,
+                trip_y=trip_y,
+                sing_mask_bin=sing_mask_rows,
+                trip_mask_bin=trip_mask_rows,
+                sing_spec_len=sing_spec_len,
+                trip_spec_len=trip_spec_len,
                 pos=torch.tensor(pos, dtype=torch.float), 
                 atomic_be_eV=atomic_be,
                 true_cebe=true_cebe,
                 atom_symbols=xyz_symbols, 
                 smiles=smiles, 
                 mol_name=mol_name,
-                carbon_env_labels=torch.tensor(carbon_env_indices, dtype=torch.long),
+                carbon_env_labels=carbon_env_labels,
+                carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
+                cebe_norm_stats=torch.tensor([mean, std], dtype=torch.float),
+                auger_norm_stats=torch.tensor([maxE, maxI], dtype=torch.float)
             )
 
         # Store all features as separate attributes

@@ -85,11 +85,6 @@ CARBON_ENVIRONMENT_PATTERNS = OrderedDict([
     ('C_methine', '[CHX4]'),                             # -CH<
     ('C_quaternary', '[CX4H0]'),                         # >C< (no H)
     
-    # Fallback categories
-   # ('C_sp3', '[CX4]'),                                  # Any sp3 carbon
-    #('C_sp2', '[CX3]'),                                  # Any sp2 carbon
-    #('C_sp', '[CX2]'),                                   # Any sp carbon
-   # ('C_unknown', '[#6]'),                               # Any carbon (catch-all)
 ])
 
 # Create category name to index mapping
@@ -109,15 +104,13 @@ NUM_CARBON_CATEGORIES = len(CARBON_ENVIRONMENT_PATTERNS)
 #   - Triple/double bond patterns (60-62)
 #   - Generic aromatic fallback (50)
 #   - Specific aliphatic by H-count (40-43)
-#   - Generic hybridization fallbacks (10-12)
-#   - Catch-all (0)
 CARBON_ENV_PRIORITY = {
     # Carbonyl-containing: very specific (multiple heavy atoms in pattern)
     'C_carboxylic_acid':  106,
     'C_carboxylate':      105,
     'C_ester_carbonyl':   104,
     'C_amide_carbonyl':   103,
-    'C_acyl_fluoride':      102,
+    'C_acyl_fluoride':    102,
     'C_ketone':           101,
     'C_aldehyde':         100,
     
@@ -166,13 +159,6 @@ CARBON_ENV_PRIORITY = {
     'C_methine':          41,
     'C_quaternary':       40,
     
-    # Generic hybridization fallbacks
-    #'C_sp3':              12,
-    #'C_sp2':              11,
-    #'C_sp':               10,
-    
-    # Catch-all
-    #'C_unknown':           0,
 }
 
 
@@ -194,6 +180,7 @@ def _get_carbon_environment_label(mol: Chem.Mol, atom_idx: int) -> Tuple[str, in
     specific one (e.g., C_aryl_fluoride for aromatic C-F bonds).
 
     Returns ('non_carbon', -1) for non-carbon atoms.
+    Raises ValueError if a carbon atom matches no pattern in CARBON_ENVIRONMENT_PATTERNS.
     
     Parameters
     ----------
@@ -240,19 +227,28 @@ def _get_carbon_environment_label(mol: Chem.Mol, atom_idx: int) -> Tuple[str, in
     
     if best_name is not None:
         return (best_name, CARBON_ENV_TO_IDX[best_name])
-    
-    # Fallback: should never be reached since C_sp2/C_sp patterns catch all
-    # remaining carbons, but guard against edge cases.
-    # Return C_sp2 (idx 29) as a safe fallback since it's the broadest
-    # remaining pattern.
-    return ('C_sp2', CARBON_ENV_TO_IDX['C_sp2'])
+
+    # if no best_name, carbon atom matched no SMARTS pattern
+    # CARBON_ENVIRONMENT_PATTERNS needs new entry
+    atom = mol.GetAtomWithIdx(atom_idx)
+    smiles = Chem.MolToSmiles(mol)
+    raise ValueError(
+        f"Unidentified carbon environment at atom index {atom_idx}.\n"
+        f"  Element      : {atom.GetSymbol()}\n"
+        f"  Hybridization: {atom.GetHybridization()}\n"
+        f"  Num Hs       : {atom.GetTotalNumHs()}\n"
+        f"  In ring      : {atom.IsInRing()}\n"
+        f"  SMILES       : {smiles}\n"
+        f"Assess and add a new SMARTS pattern to CARBON_ENVIRONMENT_PATTERNS "
+        f"in carbon_environment.py."
+    )
 
 
 def get_all_carbon_environment_labels(mol: Chem.Mol) -> Tuple[List[str], List[int], np.ndarray]:
     """
     Get single-label carbon environment classification for all atoms in a molecule.
     
-    Each carbon is classified into exactly ONE category based on hierarchical SMARTS matching.
+    Each carbon is classified into only one category based on hierarchical SMARTS matching.
     Non-carbon atoms receive label index -1.
     
     Parameters
@@ -304,12 +300,10 @@ def analyze_carbon_environments(data_list, verbose=False):
         return
     
     # Collect all carbon environment labels (excluding non-carbons)
-    # Use node_mask to distinguish carbons with target values from
-    # structurally identified carbons that lack measurements.
     all_labels = []
     n_unmeasured = 0
     for data in data_list:
-        labels = data.carbon_env_labels.tolist()
+        labels = data.carbon_env_indices.tolist()
         mask   = data.node_mask.tolist() if hasattr(data, 'node_mask') else None
         for j, l in enumerate(labels):
             if l < 0:
@@ -324,12 +318,14 @@ def analyze_carbon_environments(data_list, verbose=False):
         return
     
     # Count occurrences
+    # store list of env indexes as a dict of the coutn of each index
     label_counts = Counter(all_labels)
     
-    # Get category names
+    # Get category names, build new dict from indicies and compare to labels 
     idx_to_name = {v: k for k, v in CARBON_ENV_TO_IDX.items()}
     
     # Sort by count descending
+    # pass dict count value (index 1 of tuple) to sort
     sorted_counts = sorted(label_counts.items(), key=lambda x: x[1], reverse=True)
     
     total_carbons = len(all_labels)
@@ -341,23 +337,8 @@ def analyze_carbon_environments(data_list, verbose=False):
           f"{len(data_list)} molecules{unmeasured_note}")
     
     # Compact table (top 10 + others)
-    top_n = 10 if not verbose else len(sorted_counts)
-    for idx, count in sorted_counts[:top_n]:
+    for idx, count in sorted_counts:
         category_name = idx_to_name[idx]
         percentage = 100.0 * count / total_carbons
         print(f"    {category_name:<25} {count:>5} ({percentage:>5.1f}%)")
     
-    if len(sorted_counts) > top_n:
-        other_count = sum(c for _, c in sorted_counts[top_n:])
-        print(f"    {'... others':<25} {other_count:>5} ({100.0*other_count/total_carbons:>5.1f}%)")
-    
-    if verbose:
-        # Diversity metrics
-        import math
-        max_count = sorted_counts[0][1]
-        min_count = sorted_counts[-1][1]
-        entropy = -sum((count / total_carbons) * math.log(count / total_carbons) 
-                       for _, count in sorted_counts)
-        max_entropy = math.log(unique_envs)
-        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
-        print(f"  Entropy: {normalized_entropy:.3f} ({'balanced' if normalized_entropy > 0.7 else 'skewed'})")
