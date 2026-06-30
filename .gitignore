@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Datafiles
+data/processed/cnn_auger_calc.pkl
+data/processed/cnn_auger_eval.pkl
+data/processed/gnn_calc_auger_sing_data.pt
+data/processed/gnn_calc_auger_trip_data.pt
+data/processed/gnn_calc_cebe_data.pt
+data/processed/gnn_eval_auger_sing_data.pt
+data/processed/gnn_eval_auger_trip_data.pt
+data/processed/gnn_exp_cebe_data.pt
+data/raw/calc_auger/
+data/raw/calc_cebe/
+data/raw/di-fluorobenzne_pngs/
+data/raw/eval_auger/
+data/raw/exp_cebe/
+data/raw/skipatom/
+data/processed/auger_cebe_norm_stats.pt
+data/processed/bak/
+data/processed/cebe_gnn_embeddings.pkl
+data/processed/gnn_calc_auger_data.pt
+data/processed/gnn_eval_auger_data.pt
+data/raw/._skipatom
+data/raw/bak/
+data/raw/calc_cebe.tar.gz
+data/raw/exp_cebe.tar.gz
+data/raw/skipatom_full/
+docs/Multi-task_schemes.docx
+om_db_scripts/
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+.github/workflows/disabled/
+.github/instructions/
+
+# projects
+projects
+scripts/spectrum_analysis
+# src old and bak files
+src/augernet/bak/
+tests_bak/
+
+# uv / pip
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Training outputs
+results/
+
+# Test sandbox (created by conftest.py, cleaned up after run)
+tests/augernet_tests_*/
+tests/bak/
+tests/test_mol/dsgdb9nsd_133427_auger*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env files
+.env
+*.env
+
