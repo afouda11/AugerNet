@@ -38,8 +38,8 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'warmup_epochs', 'min_lr',
     # scheduler
     'scheduler_type', 'pct_start',
-    # spectrum
-    'spectrum_type', 'max_spec_len', 'max_ke', 'min_ke',
+    # auger spectrum
+    'max_spec_len', 'max_ke', 'min_ke',
     'n_points', 'fwhm', 'ke_shift_calc',
     # CNN-specific
     'architecture', 'cebe_augment', 'merge_scheme',
@@ -50,8 +50,6 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'mt_warmup_epochs', 'mt_finetune_auger', 'mt_finetune_epochs',
     'mt_log_grad_cosine',
     'alpha_lambda',
-    # single-task stick uncertainty weighting
-    'uw',
     # gnn loss
     'auger_loss', 'cebe_loss', 'alpha_loss',
 })
@@ -142,9 +140,7 @@ class AugerNetConfig:
 
 
     # ── Auger GNN specific (auger-gnn) ─────────────────────────────────────────
-    spectrum_type: str = 'stick'                 # stick | fitted
     task_type: str = 'single'                    # single (just auger) | multi (auger + cebe)
-    uw: bool = False                             # uncertainty-weighted loss for single-task stick
     # multi-task hyper-params (only used when task_type == 'multi')
     mt_warmup_epochs: int = 10                   # epochs of CEBE-only warmup before joint training
     mt_finetune_auger: bool = False              # after joint training, fine-tune on Auger loss only
@@ -166,8 +162,6 @@ class AugerNetConfig:
     param_grid: Dict[str, List[Any]] = field(default_factory=dict)
     # evaluate + predict modes
     model_path: str = ''             # relative path to a saved .pth model file
-    # auger-gnn stick evaluate/predict: also need the triplet model
-    trip_model_path: str = ''        # relative path to saved triplet .pth (stick mode only)
     # predict mode
     predict_dir: str = ''            # directory of .xyz files for predict mode
 
@@ -224,11 +218,8 @@ class AugerNetConfig:
         # cebe-gnn: 
         # model_id = cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
 
-        # auger-gnn spectrum_type: fitted
-        # model_id = auger_gnn_{spectrum_type}{fwhm}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
-
-        # auger-gnn spectrum_type: stick (no fwhm in model_id)
-        # model_id = auger_gnn_{spectrum_type}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
+        # auger-gnn:
+        # model_id = auger_gnn_{fwhm}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
 
         # auger-cnn
         # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}_BE{use_augmented}_f{filters}_k{kernels}_p{pool}_h{hidden}
@@ -258,18 +249,11 @@ class AugerNetConfig:
                     task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_a{alpha_lambda_str}_l{loss_tag}'
                 else:
                     task_tag = f'_{self.auger_loss}'
-                if self.spectrum_type == 'fitted':
-                    fwhm_str = str(self.fwhm).replace('.', 'pt')
-                    self.model_id = (
-                        f"auger_gnn_{self.spectrum_type}{fwhm_str}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
-                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-                    )
-                if self.spectrum_type == 'stick':
-                    uw_tag = '_uw' if (self.task_type == 'single' and self.uw) else ''
-                    self.model_id = (
-                        f"auger_gnn_{self.spectrum_type}{task_tag}{uw_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
-                        f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
-                    )
+                fwhm_str = str(self.fwhm).replace('.', 'pt')
+                self.model_id = (
+                    f"auger_gnn_{fwhm_str}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                )
             if self.model == 'auger-cnn':
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
                 # Build filter and kernel strings from architecture

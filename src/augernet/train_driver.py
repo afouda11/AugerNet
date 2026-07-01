@@ -75,9 +75,7 @@ def _build_save_paths(
     -------
     dict
         Mapping of logical name to absolute path, e.g.::
-
-            {'model': '/path/to/cebe_gnn_…_fold1.pth'}          # cebe / fitted
-            {'singlet': '…', 'triplet': '…'}                    # auger stick
+            {'model': '/path/to/cebe_gnn_…_fold1.pth'}  
 
     Naming convention
     -----------------
@@ -94,8 +92,6 @@ def _build_save_paths(
             stem = f"{prefix}_{stem}"
         return os.path.join(save_dir, f"{stem}.pth")
 
-    if cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', None) == 'stick':
-        return {'singlet': _fname('singlet'), 'triplet': _fname('triplet')}
     return {'model': _fname()}
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -517,35 +513,8 @@ def _run_evaluate(data, cfg):
         # CNN backend: _load_model_from_path takes (path, data, cfg)
         model, device = be._load_model_from_path(model_path, data, cfg)
         result = (model, device)
-
-    elif cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', 'stick') == 'stick':
-        # Stick mode requires both singlet and triplet models.
-        calc_data = data['calc_data']
-        load_kw = dict(
-            layer_type=cfg.layer_type,
-            hidden_channels=cfg.hidden_channels,
-            n_layers=cfg.n_layers,
-            dropout=cfg.dropout,
-            **be._model_load_kwargs(cfg),
-        )
-        sing_model, device = be._load_model_from_path(model_path, calc_data, **load_kw)
-        trip_model = None
-        trip_path = cfg.trip_model_path
-        if trip_path:
-            trip_path = os.path.abspath(trip_path)
-            if not os.path.isfile(trip_path):
-                raise FileNotFoundError(f"Triplet model file not found: {trip_path}")
-            print(f"  Loading triplet model from: {trip_path}")
-            trip_model, _ = be._load_model_from_path(trip_path, calc_data, **load_kw)
-        else:
-            print("  WARNING: No trip_model_path provided — evaluating singlet model only.")
-        result = {
-            'model': sing_model, 'device': device,
-            'sing_model': sing_model, 'trip_model': trip_model,
-        }
-
     else:
-        # GNN backend (cebe-gnn or auger-gnn fitted): single model file
+        # GNN backend (cebe-gnn or auger-gnn): 
         calc_data = data['calc_data']
         model, device = be._load_model_from_path(
             model_path, calc_data,

@@ -307,8 +307,8 @@ class EquivariantMPNNLayer(MessagePassing):
 
 class MPNN(nn.Module):
     def __init__(self, num_layers=4, emb_dim=64, in_dim=11, edge_dim=4, out_dim=1,
-                layer_type="IN", pred_type="AUGER", spectrum_type='stick', spectrum_dim=300,
-                dropout=0.0, task_type='single'):
+                layer_type="IN", pred_type="AUGER", spectrum_dim=300, dropout=0.0, 
+                task_type='single'):
 
         """Message Passing Neural Network model for graph property prediction
 
@@ -322,12 +322,7 @@ class MPNN(nn.Module):
             in_dim: (int) - initial node feature dimension `d_n`
             edge_dim: (int) - edge feature dimension `d_e`
             out_dim: (int) - output dimension (CEBE only, fixed to 1)
-            spectrum_type: (str) - 'stick' or 'fitted'
-                stick:  two heads (energy + intensity), 
-                fitted: single intensity head to spectrum_dim 
             spectrum_dim: (int) - per-head output dimension
-                stick mode:  300  (energy 300 + intensity 300 = 600)
-                fitted mode: 731  (intensity only on common energy grid)
             dropout: (float) - dropout probability between message passing layers (0 = off)
         """
         super().__init__()
@@ -366,23 +361,8 @@ class MPNN(nn.Module):
                 nn.Linear(dec_mid, spectrum_dim),
                 nn.Softplus(beta=1.0),
             )
-            if spectrum_type == 'stick':
-                # Energy head: only used for stick spectra
-                self.dec_eng = nn.Sequential(
-                    nn.Linear(emb_dim, dec_mid),
-                    nn.LayerNorm(dec_mid),
-                    nn.Softplus(beta=2.0),
-                    nn.Dropout(p=0.10),
-                    nn.Linear(dec_mid, dec_mid),
-                    nn.Softplus(beta=2.0),
-                    nn.Dropout(p=0.05),
-                    nn.Linear(dec_mid, spectrum_dim),
-                    nn.Softplus(beta=1.0),
-                )
-
         self.layer_type = layer_type
         self.pred_type  = pred_type
-        self.spectrum_type = spectrum_type
         self.spectrum_dim = spectrum_dim
         self.dropout = dropout
         self.task_type = task_type
@@ -459,27 +439,10 @@ class MPNN(nn.Module):
                 h_cebe  = F.silu(self.adapter_cebe(h))
                 h_auger = F.silu(self.adapter_auger(h))
                 cebe_out = self.lin_pred(h_cebe)
-                if self.spectrum_type == 'fitted':
-                    # Fitted: intensity-only output on common energy grid
-                    auger_out = self.dec_int(h_auger)
-                else:
-                    # Stick: concatenate energy and intensity heads
-                    out_int = self.dec_int(h_auger)
-                    out_eng = self.dec_eng(h_auger)
-                    #auger_out = torch.cat([out_eng, out_int], dim=-1)
-                    auger_out = (out_eng, out_int)
+                auger_out = self.dec_int(h_auger)
                 return cebe_out, auger_out
             else:
-                if self.spectrum_type == 'fitted':
-                    # Fitted: intensity-only output on common energy grid
-                    out = self.dec_int(h)
-                else:
-                    # Stick: tuple of  energy and intensity heads
-                    out_int = self.dec_int(h)
-                    out_eng = self.dec_eng(h)
-                    #out = torch.cat([out_eng, out_int], dim=-1)
-                    out = (out_eng, out_int)
-
+                out = self.dec_int(h)
         return out
 
 class AutomaticWeightedLoss(nn.Module):
@@ -494,136 +457,6 @@ class AutomaticWeightedLoss(nn.Module):
         for i, L in enumerate(losses):
             total = total + 0.5 / (self.params[i] ** 2) * L + torch.log(1 + self.params[i] ** 2)
         return total
-
-def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
-                  task_type='single',
-                  spectrum_type='stick', 
-                  lambda_alpha=0.001, uw=False):
-    """One pass over data_loader without gradient to compute mean loss.
-
-    Args:
-        spectrum_type: 'stick' (600-dim energy+intensity) or 'fitted' (n_points intensity)
-    """
-
-    model.eval()
-    total_loss, n_batches = 0.0, 0
-    with torch.no_grad():
-        for data in data_loader:
-            data = data.to(device)
-            out = model(data)
-
-            if task_type == 'multi':
-                # Multi-task: out is (cebe_out, auger_out) tuple
-                cebe_out, auger_out = out
-                idx = data.node_mask.nonzero(as_tuple=True)[0]
-                # CEBE loss
-                loss_cebe = cebe_loss_fn(cebe_out[idx], data.cebe_y[idx])
-                # Auger loss
-                if spectrum_type == 'fitted':
-                    out_sel = auger_out[idx]
-                    y_sel = data.y_fitted[idx]
-                    #loss_auger = F.mse_loss(out_sel, y_sel)
-                    loss_auger = auger_loss_fn(out_sel, y_sel)
-
-                    #auger paramter alpha loss
-                    # convert cebe_out back to un-normalized molecular be
-                    cebe_mean  = data.cebe_norm_stats[0]
-                    cebe_std   = data.cebe_norm_stats[1]
-                    pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                    pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
-                    true_molbe = data.true_cebe[idx].float()
-                    # get e grid and find energy at peak intensity
-                    e_grid = data.e_fitted[idx]
-                    # centroid: Ek = (intensity * energy).sum() / intensity.sum()
-#                     Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
-#                     E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
-                    # argmax: energy at peak intensity
-                    _n = torch.arange(out_sel.size(0), device=out_sel.device)
-                    Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
-                    E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
-                    # calculate modified auger paramter alpha and respective loss
-                    alpha_pred = Ek_pred + pred_molbe
-                    alpha_true = E_k_true + true_molbe 
-                    #loss_alpha = F.mse_loss(alpha_pred, alpha_true)
-                    loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
-
-                else:
-                    out_e = auger_out[0][idx]
-                    out_i = auger_out[1][idx]
-                    y_sel = data.y[idx]
-                    mask  = data.mask_bin[idx]
-                    #loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    #loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    loss_e = (auger_loss_fn(out_e, y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    loss_i = (auger_loss_fn(out_i, y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    loss_auger = loss_e + loss_i
-
-                    maxE = data.auger_norm_stats[0]
-                    # un-normalize energies
-                    out_e_eV   = out_e * maxE
-                    true_e_eV  = y_sel[:, :, 0] * maxE
-
-                    safe_pred_i = out_i * mask
-                    safe_true_i = y_sel[:, :, 1] * mask
-                    # centroid: Ek = (intensity * energy).sum() / intensity.sum()
-#                     Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
-#                     Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
-                    # argmax: energy at peak intensity (within mask)
-                    _n = torch.arange(out_e_eV.size(0), device=out_e_eV.device)
-                    Ek_pred = out_e_eV[_n,  safe_pred_i.argmax(dim=-1)]
-                    Ek_true = true_e_eV[_n, safe_true_i.argmax(dim=-1)]
-
-                    cebe_mean  = data.cebe_norm_stats[0]
-                    cebe_std   = data.cebe_norm_stats[1]
-                    pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                    pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
-                    true_molbe = data.true_cebe[idx].float()
-
-                    alpha_pred = Ek_pred + pred_molbe
-                    alpha_true = Ek_true + true_molbe
-                    #loss_alpha = F.mse_loss(alpha_pred, alpha_true)
-                    loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
-
-                # Uncertainty-weighted combined loss
-                lv = model.log_var
-                loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                        torch.exp(-lv[1]) * loss_auger + lv[1] +
-                        lambda_alpha * loss_alpha)
-                #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
-            elif pred_type == "CEBE":
-                idx  = data.node_mask.nonzero(as_tuple=True)[0]
-                #loss = F.mse_loss(out[idx], data.cebe_y[idx])
-                loss = cebe_loss_fn(out[idx], data.cebe_y[idx])
-            elif pred_type == "AUGER":
-                idx  = data.node_mask.nonzero(as_tuple=True)[0]
-
-                if spectrum_type == 'fitted':
-                    out_sel = out[idx]
-                    # Fitted: target is data.y_fitted (N, n_points), no mask needed
-                    y_sel = data.y_fitted[idx]
-                    #loss = F.mse_loss(out_sel, y_sel)
-                    #loss = F.l1_loss(out_sel, y_sel)
-                    loss = auger_loss_fn(out_sel, y_sel)
-                else:
-                    out_e = out[0][idx]
-                    out_i = out[1][idx]
-                    # Stick: target is data.y (N, 2*spectrum_dim) with mask
-                    y_sel = data.y[idx]
-                    #mask out zero padding
-                    mask = data.mask_bin[idx]
-                    loss_e = (auger_loss_fn(out_e, y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    loss_i = (auger_loss_fn(out_i, y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    lv = model.log_var
-                    if uw == True:
-                        loss = (torch.exp(-lv[0]) * loss_e + lv[0] +
-                                torch.exp(-lv[1]) * loss_i + lv[1])
-                    else:
-                        loss = loss_e + loss_i
-
-            total_loss += loss.item()
-            n_batches  += 1
-    return total_loss / n_batches
-
 
 class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     """Cosine Annealing with Linear Warmup scheduler.
@@ -661,14 +494,82 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             lr_range = self.base_lrs[0] - self.min_lr
             return [self.min_lr + lr_range * cosine_decay for _ in self.base_lrs]
 
+def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_loss_fn, 
+                  alpha_loss_fn, task_type='single', lambda_alpha=0.001):
+    """
+        One pass over data_loader without gradient to compute mean loss.
+    """
+
+    model.eval()
+    total_loss, n_batches = 0.0, 0
+    with torch.no_grad():
+        for data in data_loader:
+            data = data.to(device)
+            out = model(data)
+
+            if task_type == 'multi':
+                # Multi-task: out is (cebe_out, auger_out) tuple
+                cebe_out, auger_out = out
+                idx = data.node_mask.nonzero(as_tuple=True)[0]
+                # CEBE loss
+                loss_cebe = cebe_loss_fn(cebe_out[idx], data.cebe_y[idx])
+                # Auger loss
+                out_sel = auger_out[idx]
+                y_sel = data.y_fitted[idx]
+                #loss_auger = F.mse_loss(out_sel, y_sel)
+                loss_auger = auger_loss_fn(out_sel, y_sel)
+
+                #auger paramter alpha loss
+                # convert cebe_out back to un-normalized molecular be
+                cebe_mean  = data.cebe_norm_stats[0]
+                cebe_std   = data.cebe_norm_stats[1]
+                pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
+                pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                true_molbe = data.true_cebe[idx].float()
+                # get e grid and find energy at peak intensity
+                e_grid = data.e_fitted[idx]
+                # centroid: Ek = (intensity * energy).sum() / intensity.sum()
+#                     Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
+#                     E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
+                # argmax: energy at peak intensity
+                _n = torch.arange(out_sel.size(0), device=out_sel.device)
+                Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
+                E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
+                # calculate modified auger paramter alpha and respective loss
+                alpha_pred = Ek_pred + pred_molbe
+                alpha_true = E_k_true + true_molbe 
+                #loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+                loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
+
+                # Uncertainty-weighted combined loss
+                lv = model.log_var
+                loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                        torch.exp(-lv[1]) * loss_auger + lv[1] +
+                        lambda_alpha * loss_alpha)
+                #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
+            elif task_type == 'single':
+                if pred_type == "CEBE":
+                    idx  = data.node_mask.nonzero(as_tuple=True)[0]
+                    loss = cebe_loss_fn(out[idx], data.cebe_y[idx])
+                elif pred_type == "AUGER":
+                    idx  = data.node_mask.nonzero(as_tuple=True)[0]
+
+                    out_sel = out[idx]
+                    y_sel = data.y_fitted[idx]
+                    loss = auger_loss_fn(out_sel, y_sel)
+
+            total_loss += loss.item()
+            n_batches  += 1
+    return total_loss / n_batches
+
+
 
 def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
                 pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", val_data_list=None,
-                cebe_loss='mse', auger_loss='mae', alpha_loss='mse',
-                patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7,
-                spectrum_type='stick', scheduler_type='cosine',
-                task_type='single', mt_warmup_epochs=10, 
-                mt_finetune_auger=False, mt_finetune_epochs=50, split_seed = 42, lambda_alpha=0.001, uw=False):
+                cebe_loss='mse', auger_loss='mae', alpha_loss='mse', patience=50, optimizer_type='adamw', 
+                weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine',
+                task_type='single', mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50, 
+                split_seed = 42, lambda_alpha=0.001):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
 
@@ -694,8 +595,6 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         gradient_clip_norm: Max gradient norm for clipping (default: 1.0)
         warmup_epochs: Number of epochs for warmup in cosine scheduler (default: 10)
         min_lr: Minimum learning rate for cosine scheduler (default: 1e-7)
-        spectrum_type: 'stick' (600-dim energy+intensity with mask) or
-                       'fitted' (n_points intensity on common grid, no mask)
         scheduler_type: 'cosine' (CosineAnnealingWarmup, per-epoch) or
                         'onecycle' (OneCycleLR, per-batch — original AUGER schedule)
     """
@@ -793,70 +692,30 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     loss = loss_cebe
                 else:
                     # Stage 2: joint training with uncertainty weighting
-                    if spectrum_type == 'fitted':
-                        out_sel = auger_out[idx]
-                        y_sel = data.y_fitted[idx]
-                        loss_auger = auger_loss_fn(out_sel, y_sel)
+                    out_sel = auger_out[idx]
+                    y_sel = data.y_fitted[idx]
+                    loss_auger = auger_loss_fn(out_sel, y_sel)
 
-                        #auger paramter alpha loss
-                        # convert cebe_out back to un-normalized molecular be
-                        cebe_mean  = data.cebe_norm_stats[0]
-                        cebe_std   = data.cebe_norm_stats[1]
-                        pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                        pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
-                        true_molbe = data.true_cebe[idx].float()
-                        # get e grid and find energy at peak intensity
-                        e_grid = data.e_fitted[idx]
-                        # centroid: Ek = (intensity * energy).sum() / intensity.sum()
+                    #auger paramter alpha loss
+                    # convert cebe_out back to un-normalized molecular be
+                    cebe_mean  = data.cebe_norm_stats[0]
+                    cebe_std   = data.cebe_norm_stats[1]
+                    pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
+                    pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                    true_molbe = data.true_cebe[idx].float()
+                    # get e grid and find energy at peak intensity
+                    e_grid = data.e_fitted[idx]
+                    # centroid: Ek = (intensity * energy).sum() / intensity.sum()
 #                         Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
 #                         E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
-                        # argmax: energy at peak intensity
-                        _n = torch.arange(out_sel.size(0), device=out_sel.device)
-                        Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
-                        E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
-                        # calculate modified auger paramter alpha and respective loss
-                        alpha_pred = Ek_pred + pred_molbe
-                        alpha_true = E_k_true + true_molbe 
-                        loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
-
-                    else:
-                        out_e = auger_out[0][idx]
-                        out_i = auger_out[1][idx]
-                        y_sel = data.y[idx]
-                        #mask out zero padding
-                        mask  = data.mask_bin[idx]
-                        #spec_dim = model.spectrum_dim
-#                         loss_e = ((out_e - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
-#                         loss_i = ((out_i - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
-                        loss_e = (auger_loss_fn(out_e, y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                        loss_i = (auger_loss_fn(out_i, y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                        loss_auger = loss_e + loss_i
-
-                        maxE = data.auger_norm_stats[0]
-                        # un-normalize energies
-                        out_e_eV   = out_e * maxE
-                        true_e_eV  = y_sel[:, :, 0] * maxE
-
-                        safe_pred_i = out_i * mask
-                        safe_true_i = y_sel[:, :, 1] * mask
-                        # centroid: Ek = (intensity * energy).sum() / intensity.sum()
-#                         Ek_pred = (out_e_eV  * safe_pred_i).sum(-1) / safe_pred_i.sum(-1).clamp(min=1e-8)
-#                         Ek_true = (true_e_eV * safe_true_i).sum(-1) / safe_true_i.sum(-1).clamp(min=1e-8)
-                        # argmax: energy at peak intensity (within mask)
-                        _n = torch.arange(out_e_eV.size(0), device=out_e_eV.device)
-                        Ek_pred = out_e_eV[_n,  safe_pred_i.argmax(dim=-1)]
-                        Ek_true = true_e_eV[_n, safe_true_i.argmax(dim=-1)]
-
-                        cebe_mean  = data.cebe_norm_stats[0]
-                        cebe_std   = data.cebe_norm_stats[1]
-                        pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                        pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
-                        true_molbe = data.true_cebe[idx].float()
-
-                        alpha_pred = Ek_pred + pred_molbe
-                        alpha_true = Ek_true + true_molbe
-                        loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
-
+                    # argmax: energy at peak intensity
+                    _n = torch.arange(out_sel.size(0), device=out_sel.device)
+                    Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
+                    E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
+                    # calculate modified auger paramter alpha and respective loss
+                    alpha_pred = Ek_pred + pred_molbe
+                    alpha_true = E_k_true + true_molbe 
+                    loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
 
                     # Uncertainty-weighted combined loss
                     lv = model.log_var
@@ -872,35 +731,16 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
             elif pred_type == "AUGER":
                 idx  = data.node_mask.nonzero(as_tuple=True)[0]
 
-                if spectrum_type == 'fitted':
-                    out_sel = out[idx]
-                    # DEBUG: Print shapes on first batch of first epoch
-                    if epoch == 0 and n_batches == 0:
-                        print(f"DEBUG AUGER ({spectrum_type}): idx.shape={idx.shape}")
-                        print(f"DEBUG AUGER: out_sel.shape={out_sel.shape}")
-                    # Fitted: target is data.y_fitted (N, n_points), no mask needed
-                    y_sel = data.y_fitted[idx]
-                    if epoch == 0 and n_batches == 0:
-                        print(f"DEBUG AUGER: y_fitted_sel.shape={y_sel.shape}")
-                    loss = auger_loss_fn(out_sel, y_sel)
-                else:
-                    #tuple returned for stick spectra prediction
-                    out_e = out[0][idx]
-                    out_i = out[1][idx]
-                    # Stick: target is data.y (N, spec_dim, 2) with binary mask (N, spec_dim)
-                    y_sel = data.y[idx]
-                    mask = data.mask_bin[idx]
-                    if epoch == 0 and n_batches == 0:
-                        print(f"DEBUG AUGER: data.y.shape={data.y.shape}, data.mask_bin.shape={data.mask_bin.shape}")
-                        print(f"DEBUG AUGER: y_sel.shape={y_sel.shape}, mask.shape={mask.shape}")
-                    loss_e = (auger_loss_fn(out_e, y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    loss_i = (auger_loss_fn(out_i, y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    lv = model.log_var
-                    if uw == True:
-                        loss = (torch.exp(-lv[0]) * loss_e + lv[0] +
-                                torch.exp(-lv[1]) * loss_i + lv[1])
-                    else:
-                        loss = loss_e + loss_i
+                out_sel = out[idx]
+                # DEBUG: Print shapes on first batch of first epoch
+                if epoch == 0 and n_batches == 0:
+                    print(f"DEBUG AUGER: idx.shape={idx.shape}")
+                    print(f"DEBUG AUGER: out_sel.shape={out_sel.shape}")
+                # Fitted: target is data.y_fitted (N, n_points), no mask needed
+                y_sel = data.y_fitted[idx]
+                if epoch == 0 and n_batches == 0:
+                    print(f"DEBUG AUGER: y_fitted_sel.shape={y_sel.shape}")
+                loss = auger_loss_fn(out_sel, y_sel)
 
             loss.backward()
 
@@ -920,8 +760,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
         val_loss   = validate_mpnn(val_loader, model, device, pred_type, 
                                    cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
-                                   task_type=task_type, spectrum_type=spectrum_type, 
-                                   lambda_alpha=lambda_alpha, uw=uw)
+                                   task_type=task_type, lambda_alpha=lambda_alpha)
         
         train_results.append([epoch, train_loss, val_loss])
 
@@ -970,21 +809,9 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 data = data.to(device)
                 _, auger_out = model(data)
                 idx = data.node_mask.nonzero(as_tuple=True)[0]
-                if spectrum_type == 'fitted':
-                    out_sel = auger_out[idx]
-                    y_sel = data.y_fitted[idx]
-                    loss = auger_loss_fn(out_sel, y_sel)
-                else:
-                    e_out, i_out = auger_out
-                    e_sel = e_out[idx]
-                    i_sel = i_out[idx]
-                    y_sel = data.y[idx]      # (n_carbons, spec_dim, 2)
-                    mask  = data.mask_bin[idx]  # (n_carbons, spec_dim)
-                    #loss_e = ((e_sel - y_sel[:, :, 0])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    #loss_i = ((i_sel - y_sel[:, :, 1])**2 * mask).sum() / mask.sum().clamp(min=1)
-                    loss_e = (auger_loss_fn(e_sel, y_sel[:, :, 0], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    loss_i = (auger_loss_fn(i_sel, y_sel[:, :, 1], reduction='none') * mask).sum() / mask.sum().clamp(min=1)
-                    loss = loss_e + loss_i
+                out_sel = auger_out[idx]
+                y_sel = data.y_fitted[idx]
+                loss = auger_loss_fn(out_sel, y_sel)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
@@ -995,8 +822,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
             ft_val   = validate_mpnn(val_loader, model, device, pred_type, 
                                      cebe_loss_fn, auger_loss_fn, alpha_loss_fn, 
-                                     task_type=task_type, spectrum_type=spectrum_type,
-                                     lambda_alpha=lambda_alpha, uw=uw)
+                                     task_type=task_type, lambda_alpha=lambda_alpha)
             
             train_results.append([num_epochs + ft_epoch, ft_train, ft_val])
             if verbose:
@@ -1031,14 +857,6 @@ def permute_graph(data, perm):
     adj = adj[:, perm, :]
     adj = adj[:, :, perm]
     data.edge_index = dense_to_sparse(adj)[0]
-
-    # Note:
-    # (1) While we originally defined the permutation matrix P as only having
-    #     entries 0 and 1, its implementation via `perm` uses indexing into
-    #     torch tensors, instead.
-    # (2) It is cumbersome to permute the edge_attr, so we set it to constant
-    #     dummy values. For any experiments beyond unit testing, all GNN models
-    #     use the original edge_attr.
 
     return data
 

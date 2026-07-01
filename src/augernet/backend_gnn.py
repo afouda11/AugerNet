@@ -5,8 +5,6 @@ GNN Backend — model-specific routines for train_driver.py
 Supports both model types from a single module:
   - ``cebe-gnn``   : CEBE binding-energy prediction (scalar, 1 model/fold)
   - ``auger-gnn``  : Auger spectrum prediction
-      - ``stick``   : separate singlet + triplet stick spectra (2 models/fold)
-      - ``fitted``  : combined broadened spectrum (1 model/fold)
 
 Provides the routines for train_driver:
   load_data, train_single_run, load_saved_model,
@@ -127,7 +125,7 @@ def _handle_feature_override(data, cfg, overrides):
 def _rebuild_y_fitted(data, cfg, hp):
     """Rebuild ``y_fitted`` in-place when any spectrum parameter is overridden.
 
-    Called from ``train_single_run`` for ``auger-gnn fitted`` mode so that
+    Called from ``train_single_run`` for ``auger-gnn`` mode so that
     param searches over ``fwhm``, ``n_points``, ``min_ke``, or ``max_ke``
     train against targets built with the correct overridden values instead
     of the base ``cfg`` values that were used in ``load_data``.
@@ -157,17 +155,61 @@ def _rebuild_y_fitted(data, cfg, hp):
           f"ke=[{tmp.min_ke}, {tmp.max_ke}])")
     _attach_y_fitted(data['calc_data'], auger_norm_stats, tmp)
 
+def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
+
+    """Create ``y_fitted`` on each singlet Data object by combining singlet +
+    triplet stick spectra and Gaussian-broadening onto a common energy grid.
+
+    Each atom's ``y`` is a 600-vector = [energies(300), intensities(300)].
+    Energies are normalised by ``max_ke``; intensities by per-atom max.
+    ``spec_len`` gives the number of valid entries in each half.
+
+    After this call every element in *sing_data* has a new attribute
+    ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
+    """
+    maxE = auger_norm_stats['maxE']
+    maxI = auger_norm_stats['maxI']
+
+    for data in calc_data:
+        n_atoms = data.x.size(0)
+        s_y = data.sing_y
+        t_y = data.trip_y
+        E_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
+        I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
+
+        for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
+            # use maxE to un-normalize grid for fitting and later alpha loss constraint
+            s_e = s_y[c, :, 0] * maxE
+            s_i = s_y[c, :, 1]
+            t_e = t_y[c, :, 0] * maxE
+            t_i = t_y[c, :, 1]
+
+            energy_stick = np.concatenate([s_e, t_e])
+            intensity_stick = np.concatenate([s_i, t_i])
+
+            E_fitted[c], I_fitted[c] = fit_spectrum_to_grid(
+                energy_stick, intensity_stick, fwhm=cfg.fwhm,
+                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
+                n_points=cfg.n_points, normalize=False
+            )
+
+        data.y_fitted = torch.tensor(I_fitted, dtype=torch.float32)
+        data.e_fitted = torch.tensor(E_fitted, dtype=torch.float32)
+
+    print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
+          f"fwhm={cfg.fwhm})")
+
+
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
-                     pred_type='CEBE', spectrum_type='stick', spectrum_dim=300,
-                     task_type='single'):
+                     pred_type='CEBE', spectrum_dim=300, task_type='single'):
     """Build, train, and return a single MPNN model + train_results."""
     model = gtu.MPNN(
         num_layers=hp['n_layers'], emb_dim=hp['hidden_channels'],
         in_dim=in_channels, edge_dim=edge_dim,
         out_dim=1, layer_type=hp['layer_type'], pred_type=pred_type,
         dropout=hp['dropout'],
-        spectrum_type=spectrum_type, spectrum_dim=spectrum_dim,
+        spectrum_dim=spectrum_dim,
         task_type=task_type,
     ).to(device)
 
@@ -188,10 +230,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         task_type=task_type,
     )
     if pred_type == 'AUGER':
-        loop_kwargs['spectrum_type'] = spectrum_type
         loop_kwargs['auger_loss'] = hp.get('auger_loss', 'mse')
-    if pred_type == 'AUGER' and task_type == 'single' and spectrum_type == 'stick':
-        loop_kwargs['uw'] = hp.get('uw', False)
     if task_type == 'multi':
         loop_kwargs['mt_warmup_epochs']   = hp.get('mt_warmup_epochs', 10)
         loop_kwargs['mt_finetune_auger']  = hp.get('mt_finetune_auger', False)
@@ -202,8 +241,6 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     train_results = gtu.train_loop(train_data, model, device, **loop_kwargs)
     model.eval()
     return model, train_results
-
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CEBE experimental data helpers
@@ -379,64 +416,14 @@ def _split_exp_data(exp_data_all, cfg):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  On-the-fly stick to fitted conversion
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
-
-    """Create ``y_fitted`` on each singlet Data object by combining singlet +
-    triplet stick spectra and Gaussian-broadening onto a common energy grid.
-
-    Each atom's ``y`` is a 600-vector = [energies(300), intensities(300)].
-    Energies are normalised by ``max_ke``; intensities by per-atom max.
-    ``spec_len`` gives the number of valid entries in each half.
-
-    After this call every element in *sing_data* has a new attribute
-    ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
-    """
-    maxE = auger_norm_stats['maxE']
-    maxI = auger_norm_stats['maxI']
-
-    for data in calc_data:
-        n_atoms = data.x.size(0)
-        s_y = data.sing_y
-        t_y = data.trip_y
-        E_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
-        I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
-
-        for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
-            # use maxE to un-normalize grid for fitting and later alpha loss constraint
-            s_e = s_y[c, :, 0] * maxE
-            s_i = s_y[c, :, 1]
-            t_e = t_y[c, :, 0] * maxE
-            t_i = t_y[c, :, 1]
-
-            energy_stick = np.concatenate([s_e, t_e])
-            intensity_stick = np.concatenate([s_i, t_i])
-
-            E_fitted[c], I_fitted[c] = fit_spectrum_to_grid(
-                energy_stick, intensity_stick, fwhm=cfg.fwhm,
-                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points, normalize=False
-            )
-
-        data.y_fitted = torch.tensor(I_fitted, dtype=torch.float32)
-        data.e_fitted = torch.tensor(E_fitted, dtype=torch.float32)
-
-    print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
-          f"fwhm={cfg.fwhm})")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_data(cfg) -> Dict[str, Any]:
     """Load training data for any model type.
 
-    CEBE-GNN: calculated + experimental data with val/eval split.
-    Auger-GNN stick:  singlet + triplet calculated data.
-    Auger-GNN fitted: singlet + triplet stick data to y_fitted built on-the-fly.
+    cebe-gnn: calculated + experimental data with val/eval split.
+    auger-gnn: singlet + triplet stick data to y_fitted built on-the-fly.
 
     Feature assembly is deferred to ``train_single_run`` / ``run_evaluation``
     so that param-search can override ``feature_keys`` per configuration.
@@ -485,38 +472,24 @@ def load_data(cfg) -> Dict[str, Any]:
 
     # ── Auger-GNN ────────────────────────────────────────────────────────
     if cfg.model == 'auger-gnn':
-        spec_type = cfg.spectrum_type
 
-        # Singlet and triplet are always loaded
         ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.train_data_file)
         calc_data = [ds[i] for i in range(len(ds))]
 
         auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
-        # sing_y / trip_y are already (n_atoms, spec_dim, 2) — no reshape needed.
 
-        print(f"  Loaded {len(calc_data)} molecules ({spec_type})")
-        if spec_type == 'stick':
-            assemble_dataset(calc_data, feature_keys)
-            print(f"  x.shape[1]={calc_data[0].x.size(1)}")
-
-            return {
-                'calc_data': calc_data,  # used for splitting
+        print(f"  Loaded {len(calc_data)} molecules")
+        _attach_y_fitted(calc_data, auger_norm_stats, cfg)
+        assemble_dataset(calc_data, feature_keys)
+        print(f"  x.shape[1]={calc_data[0].x.size(1)}\n"
+                f"  y_fitted.shape={calc_data[0].y_fitted.shape} (fitted intensity)\n"
+                f"  e_fitted.shape={calc_data[0].e_fitted.shape} (fitted energy)")
+        return {
+                'calc_data': calc_data,
                 'assembled_feature_keys': cfg.feature_keys,
                 'cebe_norm_stats': cebe_norm_stats,
-                'auger_norm_stats': auger_norm_stats,
-            }
-        else:  # fitted — build y_fitted on-the-fly from stick data
-            _attach_y_fitted(calc_data, auger_norm_stats, cfg)
-            assemble_dataset(calc_data, feature_keys)
-            print(f"  x.shape[1]={calc_data[0].x.size(1)}\n"
-                  f"  y_fitted.shape={calc_data[0].y_fitted.shape} (fitted intensity)\n"
-                  f"  e_fitted.shape={calc_data[0].e_fitted.shape} (fitted energy)")
-            return {
-                    'calc_data': calc_data,
-                    'assembled_feature_keys': cfg.feature_keys,
-                    'cebe_norm_stats': cebe_norm_stats,
-                    'auger_norm_stats': auger_norm_stats
-            }
+                'auger_norm_stats': auger_norm_stats
+        }
     else:
         raise ValueError(
             f"Unknown model '{cfg.model}'. "
@@ -541,7 +514,6 @@ def train_single_run(
 ) -> Dict[str, Any]:
     """Train a single GNN model (or model pair) on one fold.
 
-    Works for CEBE-GNN, Auger-GNN stick, and Auger-GNN fitted.
     Returns a result dict compatible with train_driver expectations.
 
     Parameters
@@ -551,10 +523,7 @@ def train_single_run(
         Built by ``train_driver._build_save_paths``
 
         Examples::
-
-            {'model': '/…/cebe_gnn_…_fold1.pth'}           # cebe / fitted
-            {'singlet': '/…/…_singlet_fold1.pth',           # auger stick
-             'triplet': '/…/…_triplet_fold1.pth'}
+            {'model': '/…/cebe_gnn_…_fold1.pth'}  
     """
     hp = _extract_overrides(cfg, overrides)
 
@@ -562,9 +531,9 @@ def train_single_run(
     # in-place on the shared data dict before training starts.
     _handle_feature_override(data, cfg, overrides)
 
-    # For auger-gnn fitted: rebuild y_fitted targets if spectrum params
+    # For auger-gnn: rebuild y_fitted targets if spectrum params
     # (fwhm, n_points, min_ke, max_ke) were overridden for this config.
-    if cfg.model == 'auger-gnn' and getattr(cfg, 'spectrum_type', 'stick') == 'fitted':
+    if cfg.model == 'auger-gnn':
         _rebuild_y_fitted(data, cfg, hp)
 
     model_id = cfg.model_id
@@ -588,8 +557,6 @@ def train_single_run(
     if verbose:
         print(f"\n{'=' * 70}")
         label = cfg.model.upper().replace('-', ' ')
-        if cfg.model == 'auger-gnn':
-            label += f" ({cfg.spectrum_type})"
         print(f"{label} TRAINING — Fold {fold}/{n_folds}")
         print(f"{'=' * 70}")
         print(f"  Model ID:    {model_id}")
@@ -617,13 +584,8 @@ def train_single_run(
             data, train_idx, val_idx, in_channels, edge_dim,
             device, hp, fold, verbose,
         )
-    elif cfg.spectrum_type == 'stick':
-        result = _train_auger_stick(
-            data, train_idx, val_idx, in_channels, edge_dim,
-            device, hp, fold, verbose, cfg,
-        )
     else:
-        result = _train_auger_fitted(
+        result = _train_auger(
             data, train_idx, val_idx, in_channels, edge_dim,
             device, hp, fold, verbose, cfg,
         )
@@ -631,18 +593,9 @@ def train_single_run(
     # ── Save model(s) to disk ────────────────────────────────────────────
     # All file I/O happens here regardless of model type, so the naming
     # convention is enforced in exactly one place.
-    if cfg.model == 'auger-gnn' and cfg.spectrum_type == 'stick':
-        torch.save(result['sing_model'].state_dict(), save_paths['singlet'])
-        torch.save(result['trip_model'].state_dict(), save_paths['triplet'])
-        print(f"  Saved singlet to {save_paths['singlet']}")
-        print(f"  Saved triplet to {save_paths['triplet']}")
-        result['model_path'] = save_paths['singlet']
-        result['sing_model_path'] = save_paths['singlet']
-        result['trip_model_path'] = save_paths['triplet']
-    else:
-        torch.save(result['model'].state_dict(), save_paths['model'])
-        print(f"  Saved model to {save_paths['model']}")
-        result['model_path'] = save_paths['model']
+    torch.save(result['model'].state_dict(), save_paths['model'])
+    print(f"  Saved model to {save_paths['model']}")
+    result['model_path'] = save_paths['model']
 
     result['model_id'] = model_id
     return result
@@ -677,91 +630,16 @@ def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
         'train_results': train_results,
     }
 
-
-# ── Auger stick training (singlet + triplet) ─────────────────────────────────
-
-def _train_auger_stick(data, train_idx, val_idx, in_channels, edge_dim,
-                       device, hp, fold, verbose, cfg):
-    """Train singlet + triplet GNN models on one fold."""
-    import copy
-    calc_data = data['calc_data']
-
-    # Build singlet and triplet views from the combined data objects.
-    sing_calc = []
-    trip_calc = []
-    for d in calc_data:
-        ds = copy.copy(d)
-        ds.y = d.sing_y
-        ds.mask_bin = d.sing_mask_bin
-        sing_calc.append(ds)
-
-        dt = copy.copy(d)
-        dt.y = d.trip_y
-        dt.mask_bin = d.trip_mask_bin
-        trip_calc.append(dt)
-
-    sing_train = [sing_calc[i] for i in train_idx]
-    sing_val   = [sing_calc[i] for i in val_idx]
-    trip_train = [trip_calc[i] for i in train_idx]
-    trip_val   = [trip_calc[i] for i in val_idx]
-
-    # ── Singlet ──────────────────────────────────────────────────────────
-    print(f"\n{'─' * 70}\n  SINGLET MODEL\n{'─' * 70}")
-    sing_model, sing_results = _train_one_model(
-        sing_train, sing_val, in_channels, edge_dim, device, hp,
-        pred_type='AUGER', spectrum_type='stick',
-        spectrum_dim=cfg.max_spec_len,
-        task_type=cfg.task_type,
-    )
-
-    # ── Triplet ──────────────────────────────────────────────────────────
-    print(f"\n{'─' * 70}\n  TRIPLET MODEL\n{'─' * 70}")
-    trip_model, trip_results = _train_one_model(
-        trip_train, trip_val, in_channels, edge_dim, device, hp,
-        pred_type='AUGER', spectrum_type='stick',
-        spectrum_dim=cfg.max_spec_len,
-        task_type=cfg.task_type,
-    )
-
-    # ── Combine results ──────────────────────────────────────────────────
-    s_bvl, s_btl, s_bve, s_ftl, s_fvl, s_nep = _extract_results(sing_results)
-    t_bvl, t_btl, t_bve, t_ftl, t_fvl, t_nep = _extract_results(trip_results)
-
-    combined_val_loss = (s_bvl + t_bvl) / 2
-
-    if verbose:
-        print(f"\n  Fold {fold} complete")
-        print(f"    Singlet: {s_nep} epochs, best val loss {s_bvl:.6f}")
-        print(f"    Triplet: {t_nep} epochs, best val loss {t_bvl:.6f}")
-        print(f"    Combined val loss: {combined_val_loss:.6f}")
-
-    return {
-        'model': sing_model, 'device': device, 'fold': fold,
-        'sing_model': sing_model, 'trip_model': trip_model,
-        'best_val_loss': combined_val_loss,
-        'best_train_loss': (s_btl + t_btl) / 2,
-        'best_val_epoch': max(s_bve, t_bve),
-        'final_train_loss': (s_ftl + t_ftl) / 2,
-        'final_val_loss': (s_fvl + t_fvl) / 2,
-        'n_epochs': max(s_nep, t_nep),
-        'train_results': sing_results,  # driver uses for loss curves
-    }
-
-
-# ── Auger fitted training (single combined model) ────────────────────────────
-
-def _train_auger_fitted(data, train_idx, val_idx, in_channels, edge_dim,
+def _train_auger(data, train_idx, val_idx, in_channels, edge_dim,
                         device, hp, fold, verbose, cfg):
-    """Train a single fitted-spectrum GNN on one fold."""
+    """Train a single auger GNN on one fold."""
     calc_data = data['calc_data']
     train_data = [calc_data[i] for i in train_idx]
     val_data   = [calc_data[i] for i in val_idx]
 
     model, train_results = _train_one_model(
         train_data, val_data, in_channels, edge_dim, device, hp,
-        pred_type='AUGER', spectrum_type='fitted',
-        spectrum_dim=cfg.n_points,
-        task_type=cfg.task_type,
+        pred_type='AUGER', spectrum_dim=cfg.n_points, task_type=cfg.task_type,
     )
 
     bvl, btl, bve, ftl, fvl, n_ep = _extract_results(train_results)
@@ -793,7 +671,6 @@ def _load_model_from_path(
     n_layers: int,
     dropout: float = 0.0,
     pred_type: str = 'CEBE',
-    spectrum_type: str = 'stick',
     spectrum_dim: int = 300,
     task_type: str = 'single',
 ) -> Tuple[torch.nn.Module, torch.device]:
@@ -808,8 +685,7 @@ def _load_model_from_path(
         in_dim=in_channels, edge_dim=edge_dim,
         out_dim=1, layer_type=layer_type, pred_type=pred_type,
         dropout=dropout,
-        spectrum_type=spectrum_type, spectrum_dim=spectrum_dim,
-        task_type=task_type,
+        spectrum_dim=spectrum_dim, task_type=task_type,
     ).to(device)
 
     if not os.path.exists(model_path):
@@ -833,18 +709,14 @@ def _load_model_from_path(
 def _model_load_kwargs(cfg):
     """Return the extra kwargs for _load_model_from_path based on model type.
 
-    Maps the high-level config (model name, spectrum_type) to the MPNN
+    Maps the high-level config (model name) to the MPNN
     constructor arguments needed to reconstruct the architecture.
     """
     if cfg.model == 'cebe-gnn':
         return dict(pred_type='CEBE')
     elif cfg.model == 'auger-gnn':
-        kw = dict(pred_type='AUGER', spectrum_type=cfg.spectrum_type,
-                  task_type=cfg.task_type)
-        if cfg.spectrum_type == 'fitted':
-            kw['spectrum_dim'] = cfg.n_points
-        else:
-            kw['spectrum_dim'] = cfg.max_spec_len
+        kw = dict(pred_type='AUGER', task_type=cfg.task_type)
+        kw['spectrum_dim'] = cfg.n_points
         return kw
     return {}
 
@@ -873,25 +745,6 @@ def load_saved_model(save_paths, data, cfg):
 
     model_id = cfg.model_id
 
-    # ── Auger stick: load singlet + triplet pair ─────────────────────────
-    if cfg.model == 'auger-gnn' and cfg.spectrum_type == 'stick':
-        sing_path = save_paths['singlet']
-        trip_path = save_paths['triplet']
-        if not os.path.exists(sing_path):
-            raise FileNotFoundError(
-                f"No saved singlet model found:\n  {sing_path}"
-            )
-        sing_model, device = _load_model_from_path(sing_path, calc_data, **load_kw)
-        trip_model = None
-        if os.path.exists(trip_path):
-            trip_model, _ = _load_model_from_path(trip_path, calc_data, **load_kw)
-        return {
-            'model': sing_model, 'device': device,
-            'sing_model': sing_model, 'trip_model': trip_model,
-            'model_id': model_id,
-        }
-
-    # ── All other model types: single file ───────────────────────────────
     model_path = save_paths['model']
     if not os.path.exists(model_path):
         raise FileNotFoundError(
@@ -941,26 +794,24 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
 
         # ── Multi-task: also evaluate CEBE head on experimental CEBE data ──
         if getattr(cfg, 'task_type', 'single') == 'multi':
-            # Use singlet model (both models share the same CEBE head weights)
-            cebe_model = model_dict.get('sing_model', model_dict.get('model'))
-            if cebe_model is not None:
-                from .evaluation_scripts.evaluate_cebe_model import (
-                    run_evaluation as _run_cebe_eval,
-                )
-                # Load and assemble experimental CEBE data on-the-fly
-                exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.cebe_eval_data_file)
-                exp_data_mt = [exp_ds[i] for i in range(len(exp_ds))]
-                assemble_dataset(exp_data_mt, cfg.feature_keys_parsed)
-                _run_cebe_eval(
-                    cebe_model, device_a, exp_data_mt,
-                    output_dir=output_dir, fold=fold,
-                    png_dir=png_dir,
-                    train_results=train_results,
-                    norm_stats_file=cfg.cebe_norm_stats_file,
-                    model_id=model_id,
-                    config_id=config_id,
-                    param_file_prefix=param_file_prefix,
-                )
+            cebe_model = model_dict.get('model')
+            from .evaluation_scripts.evaluate_cebe_model import (
+                run_evaluation as _run_cebe_eval,
+            )
+            # Load and assemble experimental CEBE data on-the-fly
+            exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.cebe_eval_data_file)
+            exp_data_mt = [exp_ds[i] for i in range(len(exp_ds))]
+            assemble_dataset(exp_data_mt, cfg.feature_keys_parsed)
+            _run_cebe_eval(
+                cebe_model, device_a, exp_data_mt,
+                output_dir=output_dir, fold=fold,
+                png_dir=png_dir,
+                train_results=train_results,
+                norm_stats_file=cfg.cebe_norm_stats_file,
+                model_id=model_id,
+                config_id=config_id,
+                param_file_prefix=param_file_prefix,
+            )
 
         return auger_metrics
 
@@ -1017,31 +868,11 @@ def run_unit_tests(model, data, cfg):
     if isinstance(model, tuple):
         model = model[0]
 
-    if cfg.model == 'auger-gnn' and cfg.spectrum_type == 'stick':
-        # Test both singlet and triplet models
-        if isinstance(model, dict):
-            sing = model.get('sing_model', model.get('model'))
-            trip = model.get('trip_model')
-        else:
-            sing, trip = model, None
-
-        if sing:
-            sing.eval()
-            print("\n  [singlet model]")
-            gtu.run_unit_tests(sing, data['sing_calc_data'],
-                               layer_type=cfg.layer_type)
-        if trip:
-            trip.eval()
-            print("\n  [triplet model]")
-            gtu.run_unit_tests(trip, data['trip_calc_data'],
-                               layer_type=cfg.layer_type)
-    else:
-        # CEBE or Auger fitted — single model
-        if isinstance(model, dict):
-            model = model['model']
-        model.eval()
-        gtu.run_unit_tests(model, data['calc_data'],
-                           layer_type=cfg.layer_type)
+    if isinstance(model, dict):
+        model = model['model']
+    model.eval()
+    gtu.run_unit_tests(model, data['calc_data'],
+                        layer_type=cfg.layer_type)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1049,13 +880,8 @@ def run_unit_tests(model, data, cfg):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_predict(*, model_path: str, predict_dir: str, cfg):
-    """Build graphs from .xyz files, run inference, and write output.
-
-    Supports ``cebe-gnn`` (scalar per-atom CEBE) and ``auger-gnn``
-    (per-molecule Auger spectrum, fitted or stick).
-
-    For ``auger-gnn stick``, both ``model_path`` (singlet) and
-    ``cfg.trip_model_path`` (triplet) must be set in the YAML.
+    """
+    Build graphs from .xyz files, run inference, and write output.
     """
     from augernet.build_molecular_graphs import (
         _mol_from_xyz_order,
@@ -1064,7 +890,6 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
     )
     from augernet import DATA_RAW_DIR
     from torch_geometric.data import Data
-    from torch_geometric.loader import DataLoader
 
     # ── Discover .xyz files ──────────────────────────────────────────────
     xyz_files = sorted(
@@ -1123,8 +948,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
             model_path, data_list, mol_names,
             cfg=cfg, output_dir=output_dir, file_stem=file_stem,
         )
-
-    elif cfg.model == 'auger-gnn':
+    else: #auger-gnn
         load_kw = dict(
             layer_type=cfg.layer_type,
             hidden_channels=cfg.hidden_channels,
@@ -1132,30 +956,11 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
             dropout=cfg.dropout,
             **_model_load_kwargs(cfg),
         )
-        if cfg.spectrum_type == 'fitted':
-            model, device = _load_model_from_path(model_path, data_list, **load_kw)
-            _predict_auger_fitted(
-                model, device, data_list, mol_names,
-                cfg=cfg, output_dir=output_dir, file_stem=file_stem,
-            )
-        else:  # stick
-            sing_model, device = _load_model_from_path(model_path, data_list, **load_kw)
-            trip_model = None
-            trip_path = getattr(cfg, 'trip_model_path', '')
-            if trip_path:
-                trip_path = os.path.abspath(trip_path)
-                trip_model, _ = _load_model_from_path(trip_path, data_list, **load_kw)
-            else:
-                print("  WARNING: trip_model_path not set — only singlet spectra will be written.")
-            _predict_auger_stick(
-                sing_model, trip_model, device, data_list, mol_names,
-                cfg=cfg, output_dir=output_dir, file_stem=file_stem,
-            )
-    else:
-        raise NotImplementedError(
-            f"Predict mode not implemented for model '{cfg.model}'."
+        model, device = _load_model_from_path(model_path, data_list, **load_kw)
+        _predict_auger(
+            model, device, data_list, mol_names,
+            cfg=cfg, output_dir=output_dir, file_stem=file_stem,
         )
-
 
 def _predict_cebe(model_path, data_list, mol_names, *, cfg, output_dir, file_stem):
     """Run CEBE inference and write per-atom output files."""
@@ -1233,13 +1038,13 @@ def _predict_cebe(model_path, data_list, mol_names, *, cfg, output_dir, file_ste
     print(f"  Numeric results saved to {results_path}")
 
 
-def _predict_auger_fitted(model, device, data_list, mol_names,
+def _predict_auger(model, device, data_list, mol_names,
                            *, cfg, output_dir, file_stem):
-    """Run auger-gnn fitted inference and write per-molecule spectrum files."""
+    """Run auger-gnn inference and write per-molecule spectrum files."""
     from torch_geometric.loader import DataLoader
 
     print(f"\n{'=' * 80}")
-    print(f"  PREDICT: Running Auger fitted inference on {len(data_list)} molecules")
+    print(f"  PREDICT: Running Auger inference on {len(data_list)} molecules")
     print(f"  FWHM: {cfg.fwhm} eV  |  Grid: [{cfg.min_ke}, {cfg.max_ke}] eV  "
           f"|  {cfg.n_points} points")
     print(f"{'=' * 80}")
@@ -1288,93 +1093,3 @@ def _predict_auger_fitted(model, device, data_list, mol_names,
 
     print(f"\n  {len(spectra)} spectra written to {output_dir}/")
 
-
-def _predict_auger_stick(sing_model, trip_model, device, data_list, mol_names,
-                          *, cfg, output_dir, file_stem):
-    """Run auger-gnn stick inference and write broadened per-molecule spectra.
-
-    Singlet and triplet intensities are summed onto a common energy grid
-    using the fwhm from cfg.
-    """
-    from torch_geometric.loader import DataLoader
-    from augernet.spec_utils import fit_spectrum_to_grid
-
-    print(f"\n{'=' * 80}")
-    print(f"  PREDICT: Running Auger stick inference on {len(data_list)} molecules")
-    print(f"  FWHM: {cfg.fwhm} eV  |  Grid: [{cfg.min_ke}, {cfg.max_ke}] eV")
-    print(f"{'=' * 80}")
-
-    energy_grid = np.linspace(cfg.min_ke, cfg.max_ke, cfg.n_points)
-    loader = DataLoader(data_list, batch_size=1, shuffle=False)
-
-    # Load auger norm stats for energy de-normalisation
-    auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
-    maxE = auger_norm_stats['maxE']
-    max_spec_len = cfg.max_spec_len
-
-    def _run_model(model, data_list, device):
-        """Return {mol_idx: array(n_valid_atoms, 2*max_spec_len)} raw outputs."""
-        loader = DataLoader(data_list, batch_size=1, shuffle=False)
-        outputs = {}
-        model.eval()
-        with torch.no_grad():
-            for mol_idx, d in enumerate(loader):
-                d = d.to(device)
-                out = model(d)
-                if getattr(model, 'task_type', 'single') == 'multi':
-                    out = out[1]
-                node_mask = d.node_mask.squeeze()
-                valid = node_mask.nonzero(as_tuple=True)[0]
-                outputs[mol_idx] = {
-                    int(ai): out[ai].cpu().numpy() for ai in valid
-                }
-        return outputs
-
-    sing_out = _run_model(sing_model, data_list, device)
-    trip_out = _run_model(trip_model, data_list, device) if trip_model else {}
-
-    spectra = {}
-    for mol_idx, mol_name in enumerate(mol_names):
-        mol_spectrum = np.zeros(cfg.n_points)
-        for ai, s_vec in sing_out.get(mol_idx, {}).items():
-            # s_vec shape: (2*max_spec_len,) = [energies_norm, intensities]
-            e_s = s_vec[:max_spec_len] * maxE
-            i_s = s_vec[max_spec_len:]
-            # add ke_shift to align calculated to experimental frame
-            e_s += cfg.ke_shift_calc
-            _, broadened = fit_spectrum_to_grid(
-                e_s, i_s, fwhm=cfg.fwhm,
-                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points,
-            )
-            mol_spectrum += broadened
-
-        for ai, t_vec in trip_out.get(mol_idx, {}).items():
-            e_t = t_vec[:max_spec_len] * maxE + cfg.ke_shift_calc
-            i_t = t_vec[max_spec_len:]
-            _, broadened = fit_spectrum_to_grid(
-                e_t, i_t, fwhm=cfg.fwhm,
-                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points,
-            )
-            mol_spectrum += broadened
-
-        if mol_spectrum.max() > 0:
-            mol_spectrum /= mol_spectrum.max()
-        spectra[mol_name] = mol_spectrum
-
-    print(f"\n  Writing spectra to {output_dir}/")
-    for mol_name, spectrum in spectra.items():
-        out_path = os.path.join(output_dir, f"{file_stem}_{mol_name}_spectrum.txt")
-        np.savetxt(out_path,
-                   np.column_stack([energy_grid, spectrum]),
-                   header=f"energy_eV  intensity  (model={cfg.model_id}, fwhm={cfg.fwhm})",
-                   fmt="%.6f")
-
-    print(f"\n{'Molecule':<22s} {'Peak KE (eV)':>14s}")
-    print("-" * 38)
-    for mol_name, spectrum in spectra.items():
-        peak_ke = float(energy_grid[np.argmax(spectrum)]) if spectrum.max() > 0 else float('nan')
-        print(f"{mol_name:<22s} {peak_ke:>14.2f}")
-
-    print(f"\n  {len(spectra)} spectra written to {output_dir}/")

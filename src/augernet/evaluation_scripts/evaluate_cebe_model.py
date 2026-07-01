@@ -331,8 +331,6 @@ def run_evaluation(
                 if mol_name not in ['ketoavobenzone', 'enolavobenzone']:
                     all_pred_out_no_avo.append(pred_be_f)
                     all_true_out_no_avo.append(true_be_f)
-                else:
-                    print(mol_name)
             else:
                 mol_atom_rows.append((sym, -1.0, -1.0, -1.0))
 

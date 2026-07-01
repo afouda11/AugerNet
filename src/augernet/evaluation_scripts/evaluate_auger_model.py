@@ -5,13 +5,6 @@ Evaluate Auger GNN Model
 Compares GNN-predicted Auger spectra with calculated and experimental
 reference spectra via Pearson correlation coefficients (PCC).
 
-Supports two spectrum modes:
-
-- **stick**  — separate singlet + triplet models predict stick peaks,
-  which are broadened with Gaussians and summed.
-- **fitted** — a single model predicts intensity on a common energy grid
-  (n_points-dim), summed over carbon atoms.
-
 """
 
 from __future__ import annotations
@@ -38,99 +31,11 @@ if PROJECT_ROOT not in sys.path:
 
 from augernet import gnn_train_utils as gtu
 from augernet.feature_assembly import (
-    assemble_dataset, compute_feature_tag, describe_features,
-    parse_feature_keys,
+    assemble_dataset, 
 )
 from augernet import DATA_DIR, DATA_RAW_DIR
 from augernet import spec_utils as su
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Prediction generators
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _predict_stick(model, eval_data, device, max_ke, max_spec_len):
-    """Run inference on eval_data and return per-atom stick spectra.
-
-    Returns
-    -------
-    dict[int, dict[int, np.ndarray]]
-        ``{mol_idx: {atom_idx: array(N, 2)}}``  — energy / intensity pairs.
-    """
-    loader = DataLoader(eval_data, batch_size=1, shuffle=False)
-    predictions     = {}
-    carbon_counts   = {}
-    mol_list        = {}
-
-    model.eval()
-    with torch.no_grad():
-        for mol_idx, data in enumerate(loader):
-            data = data.to(device)
-            out = model(data)
-            # Multi-task models return (cebe_out, auger_out) — take the Auger head
-            if getattr(model, 'task_type', 'single') == 'multi':
-                out = out[1]
-
-            # Stick model returns (e_out, i_out), each (n_atoms, spec_dim)
-            e_out, i_out = out
-
-            node_mask = data.node_mask.squeeze()
-            valid_nodes = node_mask.nonzero(as_tuple=True)[0]
-            num_carbons = int(node_mask.sum().item())
-            carbon_counts[mol_idx] = num_carbons
-            name = data.mol_name
-            mol_list[mol_idx] = name[0] if isinstance(name, list) else name
-
-            predictions[mol_idx] = {}
-            for atom_idx, node_idx in enumerate(valid_nodes):
-                energy    = e_out[node_idx].cpu().numpy() * max_ke  # denormalize
-                intensity = i_out[node_idx].cpu().numpy()
-
-                mask_bin = data.mask_bin[node_idx].cpu().numpy()  # (spec_dim,) bool
-                mask_indices = mask_bin > 0.5
-
-                if mask_indices.sum() > 0:
-                    predictions[mol_idx][atom_idx] = np.column_stack(
-                        (energy[mask_indices], intensity[mask_indices])
-                    )
-
-    return predictions, carbon_counts, mol_list
-
-
-def _predict_fitted(model, eval_data, device):
-    """Run inference on eval_data and return per-atom fitted intensity vectors.
-
-    Returns
-    -------
-    dict[int, dict[int, np.ndarray]]
-        ``{mol_idx: {atom_idx: array(n_points,)}}``  — intensity vectors.
-    """
-    loader = DataLoader(eval_data, batch_size=1, shuffle=False)
-    predictions     = {}
-    carbon_counts   = {}
-    mol_list        = {}
-
-    model.eval()
-    with torch.no_grad():
-        for mol_idx, data in enumerate(loader):
-            data = data.to(device)
-            out = model(data)
-            # Multi-task models return (cebe_out, auger_out) — take the Auger head
-            if getattr(model, 'task_type', 'single') == 'multi':
-                out = out[1]
-
-            node_mask = data.node_mask.squeeze()
-            valid_nodes = node_mask.nonzero(as_tuple=True)[0]
-            num_carbons = int(node_mask.sum().item())
-            carbon_counts[mol_idx] = num_carbons
-            name = data.mol_name
-            mol_list[mol_idx] = name[0] if isinstance(name, list) else name
-
-            predictions[mol_idx] = {}
-            for atom_idx, node_idx in enumerate(valid_nodes):
-                predictions[mol_idx][atom_idx] = out[node_idx].cpu().numpy()
-
-    return predictions, carbon_counts, mol_list
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Shared evaluation helpers
@@ -150,18 +55,6 @@ def _load_calc_spectrum(eval_dir, mol_id, carbon_idx, state,
         f'{mol_id}_{method}_{state}_c{carbon_idx}.auger.spectrum.out',
     )
     return np.loadtxt(path) if os.path.exists(path) else None
-
-
-def _load_all_calc_sticks(eval_dir, mol_id, carbon_count):
-    """Collect all singlet + triplet calculated sticks for a molecule."""
-    sticks = []
-    for c in range(1, carbon_count + 1):
-        for state in ('singlet', 'triplet'):
-            spec = _load_calc_spectrum(eval_dir, mol_id, c, state)
-            if spec is not None:
-                sticks.append(spec)
-    return sticks
-
 
 def _compute_pcc(a, b):
     """Pearson r between two vectors, or ``None`` if invalid."""
@@ -401,180 +294,6 @@ def _add_pcc_annotation(ax, pcc_calc, pcc_gvc, pcc_gnn):
         bbox=dict(boxstyle='round', facecolor='none', edgecolor='gray'),
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Stick evaluation  (singlet + triplet)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _evaluate_stick(
-    sing_model, trip_model, device,
-    eval_data_sing, eval_data_trip,
-    *,
-    output_dir, png_dir, file_stem,
-    max_ke, max_spec_len, n_points, fwhm, ke_shift,
-    train_results=None,
-):
-    """Evaluate stick-mode singlet + triplet models.
-
-    Generates predictions, combines singlet + triplet, broadens with
-    Gaussians, and compares to experimental + calculated reference
-    spectra via Pearson correlation.
-
-    Returns a dict of PCC metrics.
-    """
-    print('\nGenerating singlet predictions...')
-    sing_preds, c_num, mol_list = _predict_stick(sing_model, eval_data_sing, device,
-                                max_ke, max_spec_len)
-    print(f'  {len(sing_preds)} molecules')
-
-    print('Generating triplet predictions...')
-    trip_preds, _, _ = _predict_stick(trip_model, eval_data_trip, device,
-                                max_ke, max_spec_len)
-    print(f'  {len(trip_preds)} molecules')
-
-    n_molecules = len(eval_data_sing)
-    eval_dir = os.path.join(DATA_RAW_DIR, 'eval_auger')
-
-    # Combine singlet + triplet GNN sticks per molecule
-    gnn_combined = {}
-    for mol_idx in range(n_molecules):
-        specs = []
-        for preds in (sing_preds, trip_preds):
-            if mol_idx in preds:
-                for a_idx in sorted(preds[mol_idx]):
-                    specs.append(preds[mol_idx][a_idx])
-        if specs:
-            combined = np.vstack(specs)
-            if combined.shape[0] > 0:
-                gnn_combined[mol_idx] = combined
-
-    # ── Loss curves ──────────────────────────────────────────────────────
-    if train_results is not None and len(train_results) > 0:
-        _plot_loss_curves(train_results, png_dir, file_stem)
-
-    # ── Overview plot ────────────────────────────────────────────────────
-    n_plot = min(16, n_molecules)
-    fig, axes = plt.subplots(8, 2, figsize=(24, 22), sharex=True, sharey=True)
-    ax = axes.ravel()
-    pcc_data = []
-
-    for i in range(n_plot):
-        mol_id = mol_list[i]
-        exp_spec = _load_experimental_spectrum(eval_dir, mol_id)
-
-        if exp_spec is None:
-            print(f'  No experimental spectrum: {mol_id}')
-            pcc_data.append(dict(molecule=mol_id, gnn_pcc=None,
-                                 calc_pcc=None, gnn_vs_calc_pcc=None))
-            continue
-
-        exp_min, exp_max = exp_spec[:, 0].min(), exp_spec[:, 0].max()
-        exp_base = np.linspace(exp_min, exp_max, n_points)
-        fit_exp = interpolate.interp1d(exp_spec[:, 0], exp_spec[:, 1])(exp_base)
-        fit_exp_norm = fit_exp / fit_exp.max()
-
-        # Plot experimental
-        ax[i].plot(exp_spec[:, 0], exp_spec[:, 1] / exp_spec[:, 1].max(),
-                   lw=2.5, color='k', ls='-', label='Experimental', alpha=0.8)
-
-        # Calculated reference
-        calc_sticks = _load_all_calc_sticks(eval_dir, mol_id, int(c_num[i]))
-        fit_calc_norm = None
-        if calc_sticks:
-            calc_all = np.vstack(calc_sticks)
-            calc_all[:, 0] += ke_shift
-            fit_calc_e, fit_calc_i = su.fit_spectrum_to_grid(
-                calc_all[:, 0], calc_all[:, 1],
-                fwhm, exp_min - 1, exp_max + 1, n_points,
-            )
-            fit_calc = np.column_stack((fit_calc_e, fit_calc_i))
-            fit_calc_norm = fit_calc[:, 1] / fit_calc[:, 1].max()
-            ax[i].plot(fit_calc[:, 0], fit_calc_norm,
-                       lw=2.5, color='g', ls='--', label='Calculated', alpha=0.8)
-            ax[i].vlines(calc_all[:, 0], 0,
-                         calc_all[:, 1] / fit_calc[:, 1].max(),
-                         lw=1.5, color='g', ls='--', alpha=0.6)
-
-        # GNN prediction
-        gnn_fit_norm = None
-        if i in gnn_combined:
-            gnn_spec = gnn_combined[i].copy()
-            gnn_spec[:, 0] += ke_shift
-            gnn_fit_e, gnn_fit_i = su.fit_spectrum_to_grid(
-                gnn_spec[:, 0], gnn_spec[:, 1],
-                fwhm, exp_min - 1, exp_max + 1, n_points,
-            )
-            gnn_fit = np.column_stack((gnn_fit_e, gnn_fit_i)) 
-            gnn_max = gnn_fit[:, 1].max()
-            if gnn_max > 0:
-                gnn_fit_norm = gnn_fit[:, 1] / gnn_max
-                ax[i].plot(gnn_fit[:, 0], gnn_fit_norm,
-                           lw=2.5, color='b', ls=':', label='GNN Predicted', alpha=0.8)
-                ax[i].vlines(gnn_spec[:, 0], 0,
-                             gnn_spec[:, 1] / gnn_max,
-                             lw=1.5, color='b', alpha=0.6)
-            else:
-                print(f' GNN predicted zero intensities for {mol_id}')
-
-        # PCC + MSE + MAE
-        pcc_gnn = pcc_calc = pcc_gvc = None
-        mse_gnn = mse_calc = mse_gvc = None
-        mae_gnn = mae_calc = mae_gvc = None
-        try:
-            if gnn_fit_norm is not None:
-                gnn_interp = np.interp(exp_base, gnn_fit[:, 0], gnn_fit_norm)
-                pcc_gnn = _compute_pcc(gnn_interp, fit_exp_norm)
-                mse_gnn = _compute_mse(gnn_interp, fit_exp_norm)
-                mae_gnn = _compute_mae(gnn_interp, fit_exp_norm)
-            if fit_calc_norm is not None:
-                calc_interp = np.interp(exp_base, fit_calc[:, 0], fit_calc_norm)
-                pcc_calc = _compute_pcc(calc_interp, fit_exp_norm)
-                mse_calc = _compute_mse(calc_interp, fit_exp_norm)
-                mae_calc = _compute_mae(calc_interp, fit_exp_norm)
-            if gnn_fit_norm is not None and fit_calc_norm is not None:
-                gnn_on_calc = np.interp(fit_calc[:, 0], gnn_fit[:, 0], gnn_fit_norm)
-                pcc_gvc = _compute_pcc(gnn_on_calc, fit_calc_norm)
-                mse_gvc = _compute_mse(gnn_on_calc, fit_calc_norm)
-                mae_gvc = _compute_mae(gnn_on_calc, fit_calc_norm)
-        except Exception as e:
-            print(f'  PCC error for {mol_id}: {e}')
-
-        # Annotations
-        ax[i].text(0.05, 0.95, mol_id, transform=ax[i].transAxes,
-                   fontsize=18, va='top',
-                   bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
-        _add_pcc_annotation(ax[i], pcc_calc, pcc_gvc, pcc_gnn)
-
-        pcc_data.append(dict(
-            molecule=mol_id,
-            gnn_pcc=pcc_gnn,   gnn_mse=mse_gnn,   gnn_mae=mae_gnn,
-            calc_pcc=pcc_calc, calc_mse=mse_calc,  calc_mae=mae_calc,
-            gnn_vs_calc_pcc=pcc_gvc, gnn_vs_calc_mse=mse_gvc, gnn_vs_calc_mae=mae_gvc,
-        ))
-
-        ax[i].set_xlim(220, 275)
-        ax[i].set_ylim(0, 1.1)
-        ax[i].tick_params(axis='y', labelleft=False)
-
-    ax[0].legend(loc='upper right', fontsize=12)
-    ax[6].set_ylabel('Normalized Intensity (arb. units)', fontsize=24)
-    ax[12].set_xlabel('Kinetic Energy (eV)', fontsize=24)
-    ax[13].set_xlabel('Kinetic Energy (eV)', fontsize=24)
-    plt.subplots_adjust(hspace=0)
-    plt.tight_layout()
-
-    plot_path = os.path.join(png_dir, f'{file_stem}.png')
-    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    print(f'  Overview plot saved to {plot_path}')
-    plt.close(fig)
-
-    return _print_pcc_summary('STICK (singlet + triplet)', pcc_data)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Fitted evaluation  (single combined model)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _compute_molecule_results(
     mol_idx, mol_id, predictions, n_carbons,
     eval_dir, energy_grid, n_points, fwhm, ke_shift, min_ke, max_ke,
@@ -691,7 +410,7 @@ def _compute_molecule_results(
     return result
 
 
-def _plot_fitted_overview(results, png_dir, file_stem, n_plot=16):
+def _plot_overview(results, png_dir, file_stem, n_plot=16):
     """8x2 grid overview: GNN vs calc vs exp for up to 16 eval molecules."""
     n_plot = min(n_plot, len(results))
     fig, axes = plt.subplots(8, 2, figsize=(24, 22), sharex=True, sharey=True)
@@ -762,15 +481,12 @@ def _plot_per_molecule_carbons(results, png_dir, file_stem):
             ax    = axes[row]
             a_idx = c - 1
 
-            plotted_any = False
             if c in calc_pc and calc_pc[c].max() > 0:
                 ax.plot(dg, calc_pc[c] / calc_pc[c].max(),
                         lw=2.0, color='g', ls='--', label='Calculated', alpha=0.8)
-                plotted_any = True
             if a_idx in gnn_pc and gnn_pc[a_idx].max() > 0:
                 ax.plot(dg, gnn_pc[a_idx] / gnn_pc[a_idx].max(),
                         lw=2.0, color='b', ls=':', label='GNN', alpha=0.8)
-                plotted_any = True
 
             pcc     = pc_pccs.get(c, (None, None))[1]
             env_lbl = pc_pccs.get(c, (None, None))[0] or ''
@@ -798,23 +514,88 @@ def _plot_per_molecule_carbons(results, png_dir, file_stem):
 
     print(f' Per carbon plots save to: {carbon_plot_path}')
 
-def _evaluate_fitted(
+# ─────────────────────────────────────────────────────────────────────────────
+#  Loss-curve plotting (shared)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _plot_loss_curves(train_results, png_dir, file_stem):
+    """Plot train/val loss curves (same style as CEBE evaluation)."""
+    epochs     = np.array([r[0] for r in train_results])
+    train_loss = np.array([r[1] for r in train_results])
+    val_loss   = np.array([r[2] for r in train_results])
+
+    best_epoch = int(np.argmin(val_loss))
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.semilogy(epochs, train_loss, color='#0072B2', lw=1.6,
+                label='Train', zorder=3)
+    ax.semilogy(epochs, val_loss,   color='#E69F00', lw=1.6,
+                label='Validation', alpha=0.92, zorder=3)
+    ax.axvline(best_epoch, color='#d62728', ls='--', lw=1.3, alpha=0.8)
+    ax.set_xlabel('Epoch', fontsize=10, fontweight='bold')
+    ax.set_ylabel('Loss', fontsize=10, fontweight='bold')
+    ax.legend(fontsize=8, framealpha=0.85, loc='lower left')
+    ax.tick_params(axis='both', labelsize=9)
+    ax.set_xlim(0, epochs[-1] + 2)
+    ax.grid(True, alpha=0.3, lw=1.0, zorder=0)
+
+    for ext in ('png', 'pdf'):
+        path = os.path.join(png_dir, f'{file_stem}_loss.{ext}')
+        fig.savefig(path, dpi=300, bbox_inches='tight')
+    print(f'  Loss curves saved to {png_dir}/{file_stem}_loss.{{png,pdf}}')
+    plt.close(fig)
+
+def _predict_spectra(model, eval_data, device):
+    """Run inference on eval_data and return per-atom fitted intensity vectors.
+
+    Returns
+    -------
+    dict[int, dict[int, np.ndarray]]
+        ``{mol_idx: {atom_idx: array(n_points,)}}``  — intensity vectors.
+    """
+    loader = DataLoader(eval_data, batch_size=1, shuffle=False)
+    predictions     = {}
+    carbon_counts   = {}
+    mol_list        = {}
+
+    model.eval()
+    with torch.no_grad():
+        for mol_idx, data in enumerate(loader):
+            data = data.to(device)
+            out = model(data)
+            # Multi-task models return (cebe_out, auger_out) — take the Auger head
+            if getattr(model, 'task_type', 'single') == 'multi':
+                out = out[1]
+
+            node_mask = data.node_mask.squeeze()
+            valid_nodes = node_mask.nonzero(as_tuple=True)[0]
+            num_carbons = int(node_mask.sum().item())
+            carbon_counts[mol_idx] = num_carbons
+            name = data.mol_name
+            mol_list[mol_idx] = name[0] if isinstance(name, list) else name
+
+            predictions[mol_idx] = {}
+            for atom_idx, node_idx in enumerate(valid_nodes):
+                predictions[mol_idx][atom_idx] = out[node_idx].cpu().numpy()
+
+    return predictions, carbon_counts, mol_list
+
+def _evaluate_spectra(
     model, device, eval_data, test_data, train_data,
     *,
     output_dir, png_dir, file_stem,
     n_points, min_ke, max_ke, fwhm, ke_shift,
     train_results=None,
 ):
-    """Evaluate a fitted-spectrum model.
-
+    """
     The model predicts per-atom intensity on a common energy grid.
 
     Returns a dict of PCC metrics.
     """
-    print('\nGenerating fitted predictions...')
-    eval_predictions, eval_c_num, eval_mol_list = _predict_fitted(model, eval_data, device)
+    print('\nGenerating predictions...')
+    eval_predictions, eval_c_num, eval_mol_list = _predict_spectra(model, eval_data, device)
     print(f'  {len(eval_predictions)} eval molecules')
-    test_predictions, test_c_num, test_mol_list = _predict_fitted(model, test_data, device)
+    test_predictions, test_c_num, test_mol_list = _predict_spectra(model, test_data, device)
     print(f'  {len(test_predictions)} test molecules')
 
     eval_dir = os.path.join(DATA_RAW_DIR, 'eval_auger')
@@ -866,7 +647,7 @@ def _evaluate_fitted(
         results.append(r)
 
     # Plots
-    _plot_fitted_overview(results, png_dir, file_stem)
+    _plot_overview(results, png_dir, file_stem)
     _plot_per_molecule_carbons(results, png_dir, file_stem)
 
     # Summary table
@@ -882,7 +663,7 @@ def _evaluate_fitted(
         )
         for r in results
     ]
-    eval_summary = _print_pcc_summary('FITTED SPECTRUM -- eval set', pcc_data,
+    eval_summary = _print_pcc_summary('eval set', pcc_data,
                                       train_env_counts=train_env_counts or None)
 
     # -- Test-set analysis (calc hold-out, no experimental data) --
@@ -908,7 +689,7 @@ def _evaluate_fitted(
             )
             test_results.append(r)
 
-        # Per-molecule carbon plots (no overview -- too many molecules)
+        # Per-molecule carbon plots 
         _plot_per_molecule_carbons(test_results, png_dir, f'{file_stem}_test')
 
         test_pcc_data = [
@@ -923,7 +704,7 @@ def _evaluate_fitted(
             )
             for r in test_results
         ]
-        test_summary = _print_pcc_summary('FITTED SPECTRUM -- calc test set (GNN vs Calc only)', test_pcc_data,
+        test_summary = _print_pcc_summary('calc test set (GNN vs Calc only)', test_pcc_data,
                            show_exp=False, train_env_counts=train_env_counts or None)
 
     # -- Save full evaluation results to JSON --
@@ -954,43 +735,6 @@ def _evaluate_fitted(
 
     return eval_summary
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Loss-curve plotting (shared)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _plot_loss_curves(train_results, png_dir, file_stem):
-    """Plot train/val loss curves (same style as CEBE evaluation)."""
-    epochs     = np.array([r[0] for r in train_results])
-    train_loss = np.array([r[1] for r in train_results])
-    val_loss   = np.array([r[2] for r in train_results])
-
-    best_epoch = int(np.argmin(val_loss))
-
-    fig, ax = plt.subplots(figsize=(5, 4))
-    ax.semilogy(epochs, train_loss, color='#0072B2', lw=1.6,
-                label='Train', zorder=3)
-    ax.semilogy(epochs, val_loss,   color='#E69F00', lw=1.6,
-                label='Validation', alpha=0.92, zorder=3)
-    ax.axvline(best_epoch, color='#d62728', ls='--', lw=1.3, alpha=0.8)
-    ax.set_xlabel('Epoch', fontsize=10, fontweight='bold')
-    ax.set_ylabel('Loss', fontsize=10, fontweight='bold')
-    ax.legend(fontsize=8, framealpha=0.85, loc='lower left')
-    ax.tick_params(axis='both', labelsize=9)
-    ax.set_xlim(0, epochs[-1] + 2)
-    ax.grid(True, alpha=0.3, lw=1.0, zorder=0)
-
-    for ext in ('png', 'pdf'):
-        path = os.path.join(png_dir, f'{file_stem}_loss.{ext}')
-        fig.savefig(path, dpi=300, bbox_inches='tight')
-    print(f'  Loss curves saved to {png_dir}/{file_stem}_loss.{{png,pdf}}')
-    plt.close(fig)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Public entry point  (called by backend.run_evaluation)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run_evaluation(
     model_result,
     device,
@@ -1012,13 +756,11 @@ def run_evaluation(
     ----------
     model_result : dict
         Training result dict from ``backend.train_single_run``.
-        For stick mode, must contain ``'sing_model'`` and ``'trip_model'``.
-        For fitted mode, must contain ``'model'``.
     device : torch.device
     output_dir, png_dir : str
         Output directories.
     cfg : AugerNetConfig
-        Full config — used for spectrum_type, feature_keys, and spectrum
+        Full config — used for feature_keys, and spectrum
         parameters (max_spec_len, max_ke, n_points, fwhm, etc.).
     fold : int, optional
     train_results : list, optional
@@ -1036,58 +778,27 @@ def run_evaluation(
         file_stem = f'{param_file_prefix}_{file_stem}'
 
     print(f"\n{'=' * 80}")
-    print(f"AUGER EVALUATION — {cfg.spectrum_type.upper()}"
+    print(f"AUGER EVALUATION"
           f"{f'  (fold {fold})' if fold else ''}")
     print(f"{'=' * 80}")
 
     # Load evaluation data
     feature_keys = cfg.feature_keys_parsed
 
-    if cfg.spectrum_type == 'stick':
-        import copy
-        eval_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.auger_eval_data_file)
-        eval_sing = [copy.copy(eval_ds[i]) for i in range(len(eval_ds))]
-        eval_trip = [copy.copy(eval_ds[i]) for i in range(len(eval_ds))]
-        for d in eval_sing:
-            d.y = d.sing_y          # (n_atoms, spec_dim, 2)
-            d.mask_bin = d.sing_mask_bin  # (n_atoms, spec_dim)
-        for d in eval_trip:
-            d.y = d.trip_y
-            d.mask_bin = d.trip_mask_bin
-        assemble_dataset(eval_sing, feature_keys)
-        assemble_dataset(eval_trip, feature_keys)
-        print(f'  Loaded {len(eval_sing)} singlet + {len(eval_trip)} triplet eval molecules')
+    eval_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.auger_eval_data_file)
+    eval_data = [eval_ds[i] for i in range(len(eval_ds))]
+    test_data = test_calc_data
+    train_data = train_calc_data
+    assemble_dataset(eval_data, feature_keys)
+    print(f'  Loaded {len(eval_data)} eval molecules')
 
-        # Extract models
-        sing_model = model_result.get('sing_model', model_result.get('model'))
-        trip_model = model_result.get('trip_model')
-        if trip_model is None:
-            print('  No triplet model — evaluating singlet only')
+    model = model_result.get('model') if isinstance(model_result, dict) else model_result
 
-        return _evaluate_stick(
-            sing_model, trip_model, device,
-            eval_sing, eval_trip,
-            output_dir=output_dir, png_dir=png_dir, file_stem=file_stem,
-            max_ke=cfg.max_ke, max_spec_len=cfg.max_spec_len,
-            n_points=cfg.n_points, fwhm=cfg.fwhm, ke_shift=cfg.ke_shift_calc,
-            train_results=train_results,
-        )
-
-    else:  # fitted
-        eval_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.auger_eval_data_file)
-        eval_data = [eval_ds[i] for i in range(len(eval_ds))]
-        test_data = test_calc_data
-        train_data = train_calc_data
-        assemble_dataset(eval_data, feature_keys)
-        print(f'  Loaded {len(eval_data)} eval molecules (fitted)')
-
-        model = model_result.get('model') if isinstance(model_result, dict) else model_result
-
-        return _evaluate_fitted(
-            model, device, eval_data, test_data, train_data,
-            output_dir=output_dir, png_dir=png_dir, file_stem=file_stem,
-            n_points=cfg.n_points, min_ke=cfg.min_ke, max_ke=cfg.max_ke,
-            fwhm=cfg.fwhm, ke_shift=cfg.ke_shift_calc,
-            train_results=train_results,
-        )
+    return _evaluate_spectra(
+        model, device, eval_data, test_data, train_data,
+        output_dir=output_dir, png_dir=png_dir, file_stem=file_stem,
+        n_points=cfg.n_points, min_ke=cfg.min_ke, max_ke=cfg.max_ke,
+        fwhm=cfg.fwhm, ke_shift=cfg.ke_shift_calc,
+        train_results=train_results,
+    )
 
