@@ -308,7 +308,7 @@ class EquivariantMPNNLayer(MessagePassing):
 class MPNN(nn.Module):
     def __init__(self, num_layers=4, emb_dim=64, in_dim=11, edge_dim=4, out_dim=1,
                 layer_type="IN", pred_type="AUGER", spectrum_dim=300, dropout=0.0, 
-                task_type='single'):
+                task_type='single', n_var=2):
 
         """Message Passing Neural Network model for graph property prediction
 
@@ -366,16 +366,16 @@ class MPNN(nn.Module):
         self.spectrum_dim = spectrum_dim
         self.dropout = dropout
         self.task_type = task_type
-        self.log_var = nn.Parameter(torch.zeros(2))
+        # Learnable log-variance for uncertainty weighting (Kendall et al. 2018)
+        # log_var[0] for CEBE, log_var[1] for Auger, log_var[2] for alpha (optional) 
+        self.log_var = nn.Parameter(torch.zeros(n_var))
+        #different weighting approach, from https://github.com/Mikoto10032/AutomaticWeightedLoss
+        #self.awl = AutomaticWeightedLoss(num=n_var)   # CEBE, Auger, alpha
 
         # Multi-task adapters and uncertainty weights (only for pred_type == 'AUGER')
         if task_type == 'multi' and pred_type == 'AUGER':
             self.adapter_cebe  = nn.Linear(emb_dim, emb_dim)
             self.adapter_auger = nn.Linear(emb_dim, emb_dim)
-            # Learnable log-variance for uncertainty weighting (Kendall et al. 2018)
-            # log_var[0] for CEBE task and log_var[1] for Auger task
-            #self.log_var = nn.Parameter(torch.zeros(2))
-            #self.awl = AutomaticWeightedLoss(num=3)   # CEBE, Auger, alpha
             # CEBE scalar prediction head (shared encoder -> adapter -> scalar)
             self.lin_pred = nn.Linear(emb_dim, 1)
 
@@ -494,8 +494,57 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             lr_range = self.base_lrs[0] - self.min_lr
             return [self.min_lr + lr_range * cosine_decay for _ in self.base_lrs]
 
-def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_loss_fn, 
-                  alpha_loss_fn, task_type='single', lambda_alpha=0.001):
+############################################################################ 
+# Auger peak estimators for auger parameter loss constraint
+############################################################################
+
+def soft_argmax_ek(intensity, e_grid, beta=30.0, eps=1e-8):
+    """
+    Softmax-weighted peak energy (differentiable surrogate for argmax).
+    weights = softmax(beta * I_norm), I_norm = I / max(I)
+    where `beta` isthe sharpness in units of the peak height
+    As beta -> inf the weights collapse onto the max bin and this recovers the true peak (argmax)
+    As beta -> 0 it tends to a flat average.
+    Recommended: beta ~ 20-50. Anneal upward during training (see below)
+    """
+    scale = intensity.max(dim=-1, keepdim=True).values + eps
+    logits = beta * intensity / scale
+    w = torch.softmax(logits, dim=-1)
+    return (w * e_grid).sum(dim=-1)
+
+def anneal_beta(epoch, beta_start=15.0, beta_end=80.0, n_epochs=150):
+    """ 
+    Option to control `beta` in soft_argmax
+    Call once per epoch and pass the result as `beta`
+    """
+    t = min(max(epoch / max(n_epochs, 1), 0.0), 1.0)
+    return beta_start + t * (beta_end - beta_start)
+
+def centroid_ek(intensity, e_grid, eps=1e-8):
+    """
+    Intensity-weighted centroid of the spectrum, gives the mean energy
+    Doesnt correspond to the Wagner Auger parameter but can act as a smooth auxiliary regulariser
+    for comparison to soft_argmax_energy
+    """
+    w = intensity.clamp(min=0.0)
+    return (w * e_grid).sum(dim=-1) / (w.sum(dim=-1) + eps)
+
+def hard_argmax_ek(intensity, e_grid):
+    """
+    Exact peak but non-differentiable
+    Only use to report the true Auger parameter and not for training
+    """
+    n = torch.arange(intensity.size(0), device=intensity.device)
+    return e_grid[n, intensity.argmax(dim=-1)]
+
+############################################################################ 
+# Validation run
+############################################################################
+
+def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_loss_fn,
+                  alpha_loss_fn, task_type='single', lambda_alpha=0.001,
+                  alpha_peak_method='soft_argmax', alpha_weight='fixed',
+                  beta_epoch=30):
     """
         One pass over data_loader without gradient to compute mean loss.
     """
@@ -516,44 +565,49 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
                 # Auger loss
                 out_sel = auger_out[idx]
                 y_sel = data.y_fitted[idx]
-                #loss_auger = F.mse_loss(out_sel, y_sel)
                 loss_auger = auger_loss_fn(out_sel, y_sel)
 
-                #auger paramter alpha loss
-                # convert cebe_out back to un-normalized molecular be
+                # Auger parameter alpha loss
                 cebe_mean  = data.cebe_norm_stats[0]
                 cebe_std   = data.cebe_norm_stats[1]
                 pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
                 pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
                 true_molbe = data.true_cebe[idx].float()
-                # get e grid and find energy at peak intensity
                 e_grid = data.e_fitted[idx]
-                # centroid: Ek = (intensity * energy).sum() / intensity.sum()
-#                     Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
-#                     E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
-                # argmax: energy at peak intensity
-                _n = torch.arange(out_sel.size(0), device=out_sel.device)
-                Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
-                E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
-                # calculate modified auger paramter alpha and respective loss
+
+                if alpha_peak_method == 'soft_argmax':
+                    Ek_pred = soft_argmax_ek(out_sel, e_grid, beta=beta_epoch)
+                    Ek_true = soft_argmax_ek(y_sel,   e_grid, beta=beta_epoch)
+                elif alpha_peak_method == 'centroid':
+                    Ek_pred = centroid_ek(out_sel, e_grid)
+                    Ek_true = centroid_ek(y_sel,   e_grid)
+                else:  # 'argmax'
+                    Ek_pred = hard_argmax_ek(out_sel, e_grid)
+                    Ek_true = hard_argmax_ek(y_sel,   e_grid)
+
                 alpha_pred = Ek_pred + pred_molbe
-                alpha_true = E_k_true + true_molbe 
-                #loss_alpha = F.mse_loss(alpha_pred, alpha_true)
+                alpha_true = Ek_true + true_molbe
                 loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
 
                 # Uncertainty-weighted combined loss
                 lv = model.log_var
-                loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                        torch.exp(-lv[1]) * loss_auger + lv[1] +
-                        lambda_alpha * loss_alpha)
-                #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
+                if alpha_weight == 'uw':
+                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                            torch.exp(-lv[1]) * loss_auger + lv[1] +
+                            torch.exp(-lv[2]) * loss_alpha)
+                else:  # 'fixed'
+                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                            torch.exp(-lv[1]) * loss_auger + lv[1] +
+                            lambda_alpha * loss_alpha)
+
             elif task_type == 'single':
+                if isinstance(out, tuple):
+                    out = out[1]
                 if pred_type == "CEBE":
                     idx  = data.node_mask.nonzero(as_tuple=True)[0]
                     loss = cebe_loss_fn(out[idx], data.cebe_y[idx])
                 elif pred_type == "AUGER":
                     idx  = data.node_mask.nonzero(as_tuple=True)[0]
-
                     out_sel = out[idx]
                     y_sel = data.y_fitted[idx]
                     loss = auger_loss_fn(out_sel, y_sel)
@@ -562,14 +616,22 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
             n_batches  += 1
     return total_loss / n_batches
 
-
+############################################################################ 
+# Training run
+############################################################################
 
 def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
                 pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", val_data_list=None,
-                cebe_loss='mse', auger_loss='mae', alpha_loss='mse', patience=50, optimizer_type='adamw', 
-                weight_decay=1e-4, gradient_clip_norm=0.5, warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine',
-                task_type='single', mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50, 
-                split_seed = 42, lambda_alpha=0.001):
+                cebe_loss='mse', auger_loss='mae', alpha_loss='mse', 
+                patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, 
+                warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine',
+                task_type='single', alpha_peak_method = "soft_argmax", # Options: 'soft_argmax', 'centroid', 'hard_argmax'
+                alpha_weight="uw", # Options 'uw' (learned uncertainty), 'fixed' (used fixed `lambda_alpha` value)
+                # For no phys-informed do alpha_weight = "fixed" and lambda_alpha = 0.0  
+                lambda_alpha=0.001, # For no phys-informed do alpha_weight = "fixed" and lambda_alpha = 0.0  
+                beta_soft_argmax = 30, anneal_beta_soft_argmax = True,
+                mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50, 
+                split_seed = 42):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
 
@@ -597,6 +659,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         min_lr: Minimum learning rate for cosine scheduler (default: 1e-7)
         scheduler_type: 'cosine' (CosineAnnealingWarmup, per-epoch) or
                         'onecycle' (OneCycleLR, per-batch — original AUGER schedule)
+        Phys-informed and multi-task Args (todo):
     """
 
     seed(0)
@@ -677,6 +740,12 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
         model.train()
         running_loss, n_batches = 0.0, 0
 
+        # Compute beta once per epoch so training and validation use the same value
+        if anneal_beta_soft_argmax:
+            beta_epoch = anneal_beta(epoch, n_epochs=num_epochs)
+        else:
+            beta_epoch = float(beta_soft_argmax)
+
         for data in train_loader:
             optimizer.zero_grad()
             data = data.to(device)
@@ -703,25 +772,34 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
                     pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
                     true_molbe = data.true_cebe[idx].float()
-                    # get e grid and find energy at peak intensity
+                    # get e grid and for energy at peak intensity approximation
                     e_grid = data.e_fitted[idx]
-                    # centroid: Ek = (intensity * energy).sum() / intensity.sum()
-#                         Ek_pred  = (out_sel * e_grid).sum(dim=-1) / out_sel.sum(dim=-1).clamp(min=1e-8)
-#                         E_k_true = (y_sel  * e_grid).sum(dim=-1) / y_sel.sum(dim=-1).clamp(min=1e-8)
-                    # argmax: energy at peak intensity
-                    _n = torch.arange(out_sel.size(0), device=out_sel.device)
-                    Ek_pred  = e_grid[_n, out_sel.argmax(dim=-1)]
-                    E_k_true = e_grid[_n, y_sel.argmax(dim=-1)]
-                    # calculate modified auger paramter alpha and respective loss
+
+                    if alpha_peak_method == "soft_argmax":
+                        Ek_pred = soft_argmax_ek(out_sel, e_grid, beta=beta_epoch)
+                        Ek_true = soft_argmax_ek(y_sel, e_grid, beta=beta_epoch)
+                    elif alpha_peak_method == "centroid":
+                        Ek_pred = centroid_ek(out_sel, e_grid)
+                        Ek_true = centroid_ek(y_sel, e_grid)
+                    else: #"argmax"#
+                        Ek_pred = hard_argmax_ek(out_sel, e_grid)
+                        Ek_true = hard_argmax_ek(y_sel, e_grid)
+
+#                   # calculate modified auger paramter alpha and respective loss
                     alpha_pred = Ek_pred + pred_molbe
-                    alpha_true = E_k_true + true_molbe 
+                    alpha_true = Ek_true + true_molbe 
                     loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
 
                     # Uncertainty-weighted combined loss
                     lv = model.log_var
-                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                            torch.exp(-lv[1]) * loss_auger + lv[1] +
-                            lambda_alpha * loss_alpha)
+                    if alpha_weight == "uw":
+                        loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                                torch.exp(-lv[1]) * loss_auger + lv[1] +
+                                torch.exp(-lv[2]) * loss_alpha)
+                    elif alpha_weight == "fixed": 
+                        loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                                torch.exp(-lv[1]) * loss_auger + lv[1] +
+                                lambda_alpha * loss_alpha)
                     #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
                     if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
                         print(f"  [multi] Switching to joint UW training at epoch {epoch}")
@@ -758,9 +836,12 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
         train_loss = running_loss / n_batches
 
-        val_loss   = validate_mpnn(val_loader, model, device, pred_type, 
+        val_loss   = validate_mpnn(val_loader, model, device, pred_type,
                                    cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
-                                   task_type=task_type, lambda_alpha=lambda_alpha)
+                                   task_type=task_type, lambda_alpha=lambda_alpha,
+                                   alpha_peak_method=alpha_peak_method,
+                                   alpha_weight=alpha_weight,
+                                   beta_epoch=beta_epoch)
         
         train_results.append([epoch, train_loss, val_loss])
 
@@ -820,9 +901,13 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
             ft_train = ft_loss / ft_n
 
-            ft_val   = validate_mpnn(val_loader, model, device, pred_type, 
-                                     cebe_loss_fn, auger_loss_fn, alpha_loss_fn, 
-                                     task_type=task_type, lambda_alpha=lambda_alpha)
+            ft_val   = validate_mpnn(val_loader, model, device, pred_type,
+                                     cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
+                                     task_type='single',   # ft is Auger-only
+                                     lambda_alpha=lambda_alpha,
+                                     alpha_peak_method=alpha_peak_method,
+                                     alpha_weight=alpha_weight,
+                                     beta_soft_argmax=beta_soft_argmax)
             
             train_results.append([num_epochs + ft_epoch, ft_train, ft_val])
             if verbose:

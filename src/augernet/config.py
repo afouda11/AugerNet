@@ -49,7 +49,8 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     # multi-task
     'mt_warmup_epochs', 'mt_finetune_auger', 'mt_finetune_epochs',
     'mt_log_grad_cosine',
-    'alpha_lambda',
+    'alpha_lambda', 'alpha_weight', 'alpha_peak_method',
+    'beta_soft_argmax', 'anneal_beta_soft_argmax',
     # gnn loss
     'auger_loss', 'cebe_loss', 'alpha_loss',
 })
@@ -146,8 +147,13 @@ class AugerNetConfig:
     mt_finetune_auger: bool = False              # after joint training, fine-tune on Auger loss only
     mt_finetune_epochs: int = 50                 # epochs of Auger-only fine-tune (if mt_finetune_auger)
     mt_log_grad_cosine: bool = False             # log cosine similarity of task gradients each epoch
-    alpha_lambda: float = 0.0                    # weight for Auger parameter in loss
+    alpha_lambda: float = 0.0                    # weight for Auger parameter in loss (used when alpha_weight='fixed')
     alpha_loss: str = 'mae'                      # mae or mse for Auger parameter loss in multi-task setting
+    # Physics-informed alpha constraint options (only active when task_type == 'multi')
+    alpha_peak_method: str = 'soft_argmax'       # soft_argmax | centroid | hard_argmax
+    alpha_weight: str = 'fixed'                  # uw (learned uncertainty weighting) | fixed (lambda_alpha scalar)
+    beta_soft_argmax: int = 30                   # sharpness parameter for soft_argmax peak estimator
+    anneal_beta_soft_argmax: bool = True         # linearly anneal beta_soft_argmax upward during training
 
     # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict

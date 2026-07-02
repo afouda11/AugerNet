@@ -46,7 +46,6 @@ def _load_experimental_spectrum(eval_dir, mol_id):
     path = os.path.join(eval_dir, f'{mol_id}_exp.txt')
     return np.loadtxt(path) if os.path.exists(path) else None
 
-
 def _load_calc_spectrum(eval_dir, mol_id, carbon_idx, state,
                         method='mcpdft_hybrid_rcc'):
     """Load a single calculated stick-spectrum file or return ``None``."""
@@ -55,6 +54,16 @@ def _load_calc_spectrum(eval_dir, mol_id, carbon_idx, state,
         f'{mol_id}_{method}_{state}_c{carbon_idx}.auger.spectrum.out',
     )
     return np.loadtxt(path) if os.path.exists(path) else None
+
+def _carbon_spec_idx(data_obj):
+    """Return the OpenMolcas spectrum-file index (c1, c2, ...) for each carbon.
+    """
+    mask = data_obj.node_mask.squeeze().tolist()
+    idx = data_obj.carbon_spec_idx.squeeze().tolist()
+    if not isinstance(idx, list):        # single-carbon edge case
+        idx = [idx]
+    return [int(ci) for ci, m in zip(idx, mask) if m > 0.5]
+
 
 def _compute_pcc(a, b):
     """Pearson r between two vectors, or ``None`` if invalid."""
@@ -299,6 +308,7 @@ def _compute_molecule_results(
     eval_dir, energy_grid, n_points, fwhm, ke_shift, min_ke, max_ke,
     carbon_env_labels=None,
     calc_method='mcpdft_hybrid_rcc',
+    carbon_spec_idx=None,
 ):
     """Compute broadened spectra and PCCs for one molecule.
 
@@ -311,6 +321,8 @@ def _compute_molecule_results(
         Ordered environment class label for each carbon (0-based), e.g.
         ``['C_methyl', 'C_ketone', ...]``.  If provided, each per-carbon
         PCC entry carries the label alongside the index.
+    carbon_spec_idx : list[int] or None
+        XYZ to openmolcas carbon index map, same logic as data prep
 
     Returns
     -------
@@ -332,13 +344,15 @@ def _compute_molecule_results(
             gnn_per_carbon[a_idx] = spec
             gnn_total += spec
 
-    # -- Calc: broaden per-carbon sticks onto display_grid --
-    calc_per_carbon = {}   # {1-based carbon: array(n_points)}
+    # Calc: broaden per-carbon sticks onto display_grid 
+    # Uses openmoclas to xyz carbon index mapping from data prep
+    calc_per_carbon = {}   
     calc_total = np.zeros(n_points)
     for c in range(1, n_carbons + 1):
+        file_idx = carbon_spec_idx[c - 1]
         sticks = []
         for state in ('singlet', 'triplet'):
-            s = _load_calc_spectrum(eval_dir, mol_id, c, state, method=calc_method)
+            s = _load_calc_spectrum(eval_dir, mol_id, file_idx, state, method=calc_method)
             if s is not None:
                 sticks.append(s)
         if sticks:
@@ -638,11 +652,13 @@ def _evaluate_spectra(
             ]
         else:
             env_labels_i = None
+        spec_idx_i = _carbon_spec_idx(data_obj)
         r = _compute_molecule_results(
             i, eval_mol_list[i], eval_predictions, int(eval_c_num[i]),
             eval_dir, energy_grid, n_points, fwhm, ke_shift, min_ke, max_ke,
             carbon_env_labels=env_labels_i,
             calc_method='mcpdft_hybrid_rcc',
+            carbon_spec_idx=spec_idx_i,
         )
         results.append(r)
 
@@ -681,11 +697,13 @@ def _evaluate_spectra(
                 ]
             else:
                 env_labels_i = None
+            spec_idx_i = _carbon_spec_idx(data_obj)
             r = _compute_molecule_results(
                 i, test_mol_list[i], test_predictions, int(test_c_num[i]),
                 calc_dir, energy_grid, n_points, fwhm, ke_shift, min_ke, max_ke,
                 carbon_env_labels=env_labels_i,
                 calc_method='auger',
+                carbon_spec_idx=spec_idx_i,
             )
             test_results.append(r)
 
@@ -801,4 +819,3 @@ def run_evaluation(
         fwhm=cfg.fwhm, ke_shift=cfg.ke_shift_calc,
         train_results=train_results,
     )
-

@@ -203,7 +203,13 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
                      pred_type='CEBE', spectrum_dim=300, task_type='single'):
+    
     """Build, train, and return a single MPNN model + train_results."""
+    # n_var: number of learnable log-variance terms for uncertainty weighting.
+    # 3 when alpha_weight='uw' (CEBE + Auger + alpha), 2 otherwise (CEBE + Auger).
+    # Not a config field -- derived here so the MPNN state_dict is always
+    # self-consistent with the loss used during training.
+    n_var = 3 if hp.get('alpha_weight', 'fixed') == 'uw' else 2
     model = gtu.MPNN(
         num_layers=hp['n_layers'], emb_dim=hp['hidden_channels'],
         in_dim=in_channels, edge_dim=edge_dim,
@@ -211,6 +217,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         dropout=hp['dropout'],
         spectrum_dim=spectrum_dim,
         task_type=task_type,
+        n_var=n_var,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -232,11 +239,15 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     if pred_type == 'AUGER':
         loop_kwargs['auger_loss'] = hp.get('auger_loss', 'mse')
     if task_type == 'multi':
-        loop_kwargs['mt_warmup_epochs']   = hp.get('mt_warmup_epochs', 10)
-        loop_kwargs['mt_finetune_auger']  = hp.get('mt_finetune_auger', False)
-        loop_kwargs['mt_finetune_epochs'] = hp.get('mt_finetune_epochs', 50)
-        loop_kwargs['lambda_alpha']       = hp.get('alpha_lambda', 0.0)
-        loop_kwargs['alpha_loss']         = hp.get('alpha_loss', 'mse')
+        loop_kwargs['mt_warmup_epochs']           = hp.get('mt_warmup_epochs', 10)
+        loop_kwargs['mt_finetune_auger']           = hp.get('mt_finetune_auger', False)
+        loop_kwargs['mt_finetune_epochs']          = hp.get('mt_finetune_epochs', 50)
+        loop_kwargs['lambda_alpha']               = hp.get('alpha_lambda', 0.0)
+        loop_kwargs['alpha_loss']                 = hp.get('alpha_loss', 'mse')
+        loop_kwargs['alpha_weight']               = hp.get('alpha_weight', 'fixed')
+        loop_kwargs['alpha_peak_method']          = hp.get('alpha_peak_method', 'soft_argmax')
+        loop_kwargs['beta_soft_argmax']           = hp.get('beta_soft_argmax', 30)
+        loop_kwargs['anneal_beta_soft_argmax']    = hp.get('anneal_beta_soft_argmax', True)
 
     train_results = gtu.train_loop(train_data, model, device, **loop_kwargs)
     model.eval()
@@ -673,6 +684,7 @@ def _load_model_from_path(
     pred_type: str = 'CEBE',
     spectrum_dim: int = 300,
     task_type: str = 'single',
+    n_var: int = 2,
 ) -> Tuple[torch.nn.Module, torch.device]:
     """Load any GNN model from a .pth file."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -686,6 +698,7 @@ def _load_model_from_path(
         out_dim=1, layer_type=layer_type, pred_type=pred_type,
         dropout=dropout,
         spectrum_dim=spectrum_dim, task_type=task_type,
+        n_var=n_var,
     ).to(device)
 
     if not os.path.exists(model_path):
@@ -709,13 +722,17 @@ def _load_model_from_path(
 def _model_load_kwargs(cfg):
     """Return the extra kwargs for _load_model_from_path based on model type.
 
-    Maps the high-level config (model name) to the MPNN
-    constructor arguments needed to reconstruct the architecture.
+    Maps the high-level config (model name) to the MPNN constructor arguments
+    needed to reconstruct the architecture at load time.
+
+    n_var is derived here from cfg.alpha_weight (same rule as _train_one_model)
+    so that the loaded model's log_var tensor has the correct dimension.
     """
     if cfg.model == 'cebe-gnn':
         return dict(pred_type='CEBE')
     elif cfg.model == 'auger-gnn':
-        kw = dict(pred_type='AUGER', task_type=cfg.task_type)
+        n_var = 3 if getattr(cfg, 'alpha_weight', 'fixed') == 'uw' else 2
+        kw = dict(pred_type='AUGER', task_type=cfg.task_type, n_var=n_var)
         kw['spectrum_dim'] = cfg.n_points
         return kw
     return {}

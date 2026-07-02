@@ -705,11 +705,13 @@ def build_graphs(data_type,
 
         if data_type in ['calc_auger', 'eval_auger']:
 
-            sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len = \
+            sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len, carbon_idx_mapping = \
                                         spec_utils.extract_spectra(
-                                            data_type, mol_dir, mol_name, 
+                                            data_type, mol_dir, mol_name,
                                             maxE, maxI, auger_max_spec_len
-                                        ) 
+                                        )
+            # pass openmolcas to xyz index map to data object for evalution
+            carbon_spec_idx = torch.tensor(np.asarray(carbon_idx_mapping), dtype=torch.long)
 
             #singlet
             sing_spec_out_array = np.array(sing_spec_out)
@@ -738,6 +740,7 @@ def build_graphs(data_type,
                 mol_name=mol_name,
                 carbon_env_labels=carbon_env_labels,
                 carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
+                carbon_spec_idx=carbon_spec_idx,
                 cebe_norm_stats=torch.tensor([mean, std], dtype=torch.float),
                 auger_norm_stats=torch.tensor([maxE, maxI], dtype=torch.float)
             )

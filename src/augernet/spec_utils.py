@@ -197,4 +197,4 @@ def extract_spectra(
             sing_spec_out.append(sing_spec_pad)
             trip_spec_out.append(trip_spec_pad)
 
-    return sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len
+    return sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len, carbon_idx_mapping
