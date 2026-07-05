@@ -793,9 +793,9 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     # Uncertainty-weighted combined loss
                     lv = model.log_var
                     if alpha_weight == "uw":
-                        loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                        loss = (torch.exp(-lv[0]) * loss_cebe  + lv[0] +
                                 torch.exp(-lv[1]) * loss_auger + lv[1] +
-                                torch.exp(-lv[2]) * loss_alpha)
+                                torch.exp(-lv[2]) * loss_alpha + lv[2])
                     elif alpha_weight == "fixed": 
                         loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
                                 torch.exp(-lv[1]) * loss_auger + lv[1] +

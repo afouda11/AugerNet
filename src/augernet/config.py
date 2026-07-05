@@ -46,6 +46,8 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     'label_smoothing', 'augment_noise_std', 'film_inputs',
     # splitting
     'n_folds', 'split_method',
+    # train data size
+    'train_frac', 'train_subsample_seed',
     # multi-task
     'mt_warmup_epochs', 'mt_finetune_auger', 'mt_finetune_epochs',
     'mt_log_grad_cosine',
@@ -99,6 +101,10 @@ class AugerNetConfig:
     train_fold: int = 3
     split_method: str = 'random'     # random | butina 
     butina_cutoff: float = 0.65
+
+    # reduce training data size
+    train_frac: float = 1.0 
+    train_subsample_seed: int = 0
 
     # node features
     feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
@@ -221,15 +227,28 @@ class AugerNetConfig:
 
         # ── model_id's for output file names  ────────────────────────
 
-        # cebe-gnn: 
-        # model_id = cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
+        # cebe-gnn:
+        # model_id = cebe_gnn_{cebe_loss}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}{de_tag} 
 
         # auger-gnn:
-        # model_id = auger_gnn_{fwhm}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}
+        # model_id = auger_gnn_{fwhm}{task_tag}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}{de_tag}
+        #   task_tag (single) = _{auger_loss}
+        #   task_tag (multi)  = _multi_w{mt_warmup_epochs}[_ft{mt_finetune_epochs}]{phys_tag}_l_a{auger_loss}_c{cebe_loss}
+        #     phys_tag = _nophys                                    (alpha off: fixed weighting AND alpha_lambda == 0)
+        #              | _{peak}_{weight}[{beta}]_al{alpha_loss}    (alpha on)
+        #       peak   = sa (soft_argmax) | cen (centroid) | am (hard_argmax)
+        #       weight = uw (learned uncertainty) | a{alpha_lambda} (fixed scalar, dots->pt)
+        #       beta   = _annb (annealed) | _b{beta_soft_argmax}    (soft_argmax only; empty otherwise)
 
-        # auger-cnn
-        # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}_BE{use_augmented}_f{filters}_k{kernels}_p{pool}_h{hidden}
-        
+        # auger-cnn:
+        # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}BE{cebe_augment}_f{filters}_k{kernels}_p{pool}_h{hidden}{de_tag}
+
+        # de_tag (all model types, data-efficiency sweep):
+        #   ''                                     when train_frac == 1.0 (full data)
+        #   _tf{train_frac*100:03d}_s{train_subsample_seed}   when train_frac < 1.0
+
+        # For all run mode and model types, the specific train_fold is appeneded to model_id at runtime
+
         # For all run mode and model types, the specific train_fold is appeneded to model_id at runtime
         # For parameter search (param) mode
         # In train_driver.py: 
@@ -242,23 +261,63 @@ class AugerNetConfig:
             stem = os.path.splitext(os.path.basename(self.model_path))[0]
             self.model_id = stem
         else:
+            # Data-efficiency sweep tag
+            # Only used when train_frac < 1.0
+            # Encodes fraction + subsample seed
+            if self.train_frac < 1.0:
+                de_tag = (f'_tf{int(round(self.train_frac * 100)):03d}'
+                          f'_s{self.train_subsample_seed}')
+            else:
+                de_tag = ''
+
             if self.model == 'cebe-gnn':
                 self.model_id = (
                     f"cebe_gnn_{self.cebe_loss}_{self.feature_keys}_{self.split_method}{self.n_folds}"
-                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{de_tag}"
                 )
             if self.model == 'auger-gnn':
                 if self.task_type == 'multi':
-                    loss_tag = f'_a{self.auger_loss}_c{self.cebe_loss}_al{self.alpha_loss}'
+                    loss_tag = f'_a{self.auger_loss}_c{self.cebe_loss}'
                     ft_tag = f'_ft{self.mt_finetune_epochs}' if self.mt_finetune_auger else ''
-                    alpha_lambda_str = str(self.alpha_lambda).replace('.', 'pt')
-                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_a{alpha_lambda_str}_l{loss_tag}'
+
+                    # Phys-informed alpha tag, 
+                    _alpha_off = (self.alpha_weight != 'uw'
+                                  and float(self.alpha_lambda) == 0.0)
+                    if _alpha_off:
+                    # setting alpha_weight = fixed and alpha_lambda = 0.0 turns of phys-informed
+                        phys_tag = '_nophys'
+                    else:
+                        # peak estimator: soft_argmax = sa, centroid = cen, hard_argmax = am
+                        _peak_map = {'soft_argmax': 'sa', 'centroid': 'cen',
+                                     'hard_argmax': 'am', 'argmax': 'am'}
+                        _peak_tag = _peak_map.get(self.alpha_peak_method,
+                                                  self.alpha_peak_method)
+
+                        # weighting: learned uncertainty ('uw') vs fixed scalar lambda
+                        if self.alpha_weight == 'uw':
+                            _weight_tag = 'uw'
+                        else:
+                            _weight_tag = 'a' + str(self.alpha_lambda).replace('.', 'pt')
+
+                        # beta only affects soft_argmax: annealed vs fixed sharpness
+                        if self.alpha_peak_method == 'soft_argmax':
+                            if self.anneal_beta_soft_argmax:
+                                _beta_tag = '_annb'
+                            else:
+                                _beta_tag = f'_b{int(self.beta_soft_argmax)}'
+                        else:
+                            _beta_tag = ''
+
+                        # alpha_loss fn only meaningful when the alpha term is active
+                        phys_tag = f'_{_peak_tag}_{_weight_tag}{_beta_tag}_al{self.alpha_loss}'
+
+                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}{phys_tag}_l{loss_tag}'
                 else:
                     task_tag = f'_{self.auger_loss}'
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
                 self.model_id = (
                     f"auger_gnn_{fwhm_str}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
-                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{de_tag}"
                 )
             if self.model == 'auger-cnn':
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
@@ -266,10 +325,10 @@ class AugerNetConfig:
                 filters_str = 'f' + '_'.join(str(f) for f in self.architecture.get('conv_filters', []))
                 kernels_str = 'k' + '_'.join(str(k) for k in self.architecture.get('conv_kernels', []))
                 pool_str    = 'p' + '_'.join(str(p) for p in self.architecture.get('pool_size', []))
-                hidden_str  =  'h' + '_'.join(str(h) for h in self.architecture.get('fc_hidden', []))
+                hidden_str  = 'h' + '_'.join(str(h) for h in self.architecture.get('fc_hidden', []))
                 self.model_id = (
                     f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
-                    f"BE{self.cebe_augment}_{filters_str}_{kernels_str}_{pool_str}_{hidden_str}"
+                    f"BE{self.cebe_augment}_{filters_str}_{kernels_str}_{pool_str}_{hidden_str}{de_tag}"
                 )
 
         # results sub dirs: outputs files, train loss and eval pngs, and models 

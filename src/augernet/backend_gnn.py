@@ -557,13 +557,25 @@ def train_single_run(
         os.makedirs(os.path.dirname(p), exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    # ── Splitting (shared) ───────────────────────────────────────────────
+    # train val splitting
     
     calc_data = data['calc_data']
     train_idx, val_idx = _get_fold_split(
         calc_data, fold, n_folds,
         hp['split_method'], hp['random_seed'], verbose=verbose,
     )
+
+    # training-set subsampling for data-efficiency sweep
+    frac = hp.get('train_frac', 1.0)
+    if frac < 1.0:
+        rng = np.random.default_rng(hp.get('train_subsample_seed', 0))
+        n = len(train_idx)
+        k = max(1, int(round(frac * len(train_idx))))
+        perm = rng.permutation(n)
+        train_idx = [train_idx[perm[i]] for i in range(k)]
+        if verbose:
+            print(f"  [data-eff] train_frac={frac}  seed={hp.get('train_subsample_seed',0)}  "
+              f" {k}/{n} train molecules kept")
 
     if verbose:
         print(f"\n{'=' * 70}")
