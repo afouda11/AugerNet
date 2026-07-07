@@ -551,6 +551,7 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
 
     model.eval()
     total_loss, n_batches = 0.0, 0
+    run_cebe, run_auger, run_alpha, n_joint = 0.0, 0.0, 0.0, 0
     with torch.no_grad():
         for data in data_loader:
             data = data.to(device)
@@ -571,10 +572,10 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
                 cebe_mean  = data.cebe_norm_stats[0]
                 cebe_std   = data.cebe_norm_stats[1]
                 pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                pred_molbe = data.atomic_be_eV[idx].float() - pred_dbe
                 true_molbe = data.true_cebe[idx].float()
-                e_grid = data.e_fitted[idx]
 
+                e_grid = data.e_fitted[idx]
                 if alpha_peak_method == 'soft_argmax':
                     Ek_pred = soft_argmax_ek(out_sel, e_grid, beta=beta_epoch)
                     Ek_true = soft_argmax_ek(y_sel,   e_grid, beta=beta_epoch)
@@ -585,16 +586,23 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
                     Ek_pred = hard_argmax_ek(out_sel, e_grid)
                     Ek_true = hard_argmax_ek(y_sel,   e_grid)
 
-                alpha_pred = Ek_pred + pred_molbe
-                alpha_true = Ek_true + true_molbe
+                alpha_mean = data.alpha_norm_stats[0]
+                alpha_std  = data.alpha_norm_stats[1]
+                alpha_pred = (Ek_pred + pred_molbe - alpha_mean) / alpha_std
+                alpha_true = (Ek_true + true_molbe - alpha_mean) / alpha_std
                 loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
+
+                run_cebe  += loss_cebe.item()
+                run_auger += loss_auger.item()
+                run_alpha += loss_alpha.item()
+                n_joint   += 1
 
                 # Uncertainty-weighted combined loss
                 lv = model.log_var
                 if alpha_weight == 'uw':
-                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                    loss = (torch.exp(-lv[0]) * loss_cebe  + lv[0] +
                             torch.exp(-lv[1]) * loss_auger + lv[1] +
-                            torch.exp(-lv[2]) * loss_alpha)
+                            torch.exp(-lv[2]) * loss_alpha + lv[2])
                 else:  # 'fixed'
                     loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
                             torch.exp(-lv[1]) * loss_auger + lv[1] +
@@ -614,7 +622,13 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
 
             total_loss += loss.item()
             n_batches  += 1
-    return total_loss / n_batches
+    val_loss = total_loss / n_batches
+    comp = ({'cebe':  run_cebe  / n_joint,
+             'auger': run_auger / n_joint,
+             'alpha': run_alpha / n_joint} if n_joint > 0 else None)
+    return val_loss, comp
+
+    #return total_loss / n_batches
 
 ############################################################################ 
 # Training run
@@ -739,6 +753,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
         model.train()
         running_loss, n_batches = 0.0, 0
+        run_cebe, run_auger, run_alpha, n_joint = 0.0, 0.0, 0.0, 0
 
         # Compute beta once per epoch so training and validation use the same value
         if anneal_beta_soft_argmax:
@@ -750,12 +765,13 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
             optimizer.zero_grad()
             data = data.to(device)
             out = model(data)
+            idx = data.node_mask.nonzero(as_tuple=True)[0]
             if task_type == 'multi':
                 # Multi-task: out is (cebe_out, auger_out)
                 cebe_out, auger_out = out
-                idx = data.node_mask.nonzero(as_tuple=True)[0]
                 # CEBE loss
                 loss_cebe = cebe_loss_fn(cebe_out[idx], data.cebe_y[idx])
+                run_cebe += loss_cebe.item()
                 if epoch < mt_warmup_epochs:
                     # Stage 1: CEBE-only warmup — stabilise encoder first
                     loss = loss_cebe
@@ -770,7 +786,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     cebe_mean  = data.cebe_norm_stats[0]
                     cebe_std   = data.cebe_norm_stats[1]
                     pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                    pred_molbe = pred_dbe + data.atomic_be_eV[idx].float()
+                    pred_molbe = data.atomic_be_eV[idx].float() - pred_dbe
                     true_molbe = data.true_cebe[idx].float()
                     # get e grid and for energy at peak intensity approximation
                     e_grid = data.e_fitted[idx]
@@ -786,9 +802,15 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                         Ek_true = hard_argmax_ek(y_sel, e_grid)
 
 #                   # calculate modified auger paramter alpha and respective loss
-                    alpha_pred = Ek_pred + pred_molbe
-                    alpha_true = Ek_true + true_molbe 
+                    alpha_mean = data.alpha_norm_stats[0]
+                    alpha_std  = data.alpha_norm_stats[1]
+                    alpha_pred = (Ek_pred + pred_molbe - alpha_mean) / alpha_std
+                    alpha_true = (Ek_true + true_molbe - alpha_mean) / alpha_std
                     loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
+
+                    run_auger += loss_auger.item()
+                    run_alpha += loss_alpha.item()
+                    n_joint   += 1
 
                     # Uncertainty-weighted combined loss
                     lv = model.log_var
@@ -804,10 +826,8 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
                         print(f"  [multi] Switching to joint UW training at epoch {epoch}")
             elif pred_type == "CEBE": 
-                idx  = data.node_mask.nonzero(as_tuple=True)[0]
                 loss = cebe_loss_fn(out[idx], data.cebe_y[idx])    
             elif pred_type == "AUGER":
-                idx  = data.node_mask.nonzero(as_tuple=True)[0]
 
                 out_sel = out[idx]
                 # DEBUG: Print shapes on first batch of first epoch
@@ -836,7 +856,7 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
         train_loss = running_loss / n_batches
 
-        val_loss   = validate_mpnn(val_loader, model, device, pred_type,
+        val_loss, val_comp  = validate_mpnn(val_loader, model, device, pred_type,
                                    cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
                                    task_type=task_type, lambda_alpha=lambda_alpha,
                                    alpha_peak_method=alpha_peak_method,
@@ -868,7 +888,23 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 break
 
         if verbose:
-            print(f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}")
+            #print(f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}")
+            msg = f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}"
+            if task_type == 'multi' and (epoch % 10 == 0 or epoch == num_epochs - 1):
+                lv = model.log_var.detach()
+                w  = torch.exp(-lv)
+                c  = run_cebe / max(n_batches, 1)
+                if n_joint > 0:
+                    a, al = run_auger / n_joint, run_alpha / n_joint
+                    wa = w[2].item() if alpha_weight == 'uw' else lambda_alpha
+                    msg += (f" │ trnL(c/a/ap)={c:.4f}/{a:.4f}/{al:.4f}"
+                            f" │ w(c/a/ap)={w[0].item():.3f}/{w[1].item():.3f}/{wa:.4g}")
+                else:
+                    msg += f" │ trnL(c)={c:.4f} (warmup)"
+                if val_comp is not None:
+                    msg += (f" │ valL(c/a/ap)="
+                            f"{val_comp['cebe']:.4f}/{val_comp['auger']:.4f}/{val_comp['alpha']:.4f}")
+            print(msg)
 
     # ── Optional multi-task Stage 3: Auger-only fine-tune ────────────────────
     if task_type == 'multi' and mt_finetune_auger and mt_finetune_epochs > 0:
@@ -901,13 +937,13 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
 
             ft_train = ft_loss / ft_n
 
-            ft_val   = validate_mpnn(val_loader, model, device, pred_type,
+            ft_val, _  = validate_mpnn(val_loader, model, device, pred_type,
                                      cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
                                      task_type='single',   # ft is Auger-only
                                      lambda_alpha=lambda_alpha,
                                      alpha_peak_method=alpha_peak_method,
                                      alpha_weight=alpha_weight,
-                                     beta_soft_argmax=beta_soft_argmax)
+                                     beta_epoch=beta_epoch)
             
             train_results.append([num_epochs + ft_epoch, ft_train, ft_val])
             if verbose:

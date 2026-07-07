@@ -597,6 +597,75 @@ def _compute_auger_normalization_stats(data_type, auger_dir, mol_list, max_spec_
 
     return maxE_arr.max(), maxI_arr.max()
 
+def _compute_alpha_normalization_stats(data_type, auger_dir, mol_list, max_spec_len):
+    """
+    Compute normalization statistics for the modified Auger parameter
+        alpha' = Ek + Eb
+    where Ek is the kinetic energy (eV) of the most intense Auger line (the
+    peak of the combined singlet+triplet spectrum) and Eb is the carbon 1s
+    core-electron binding energy (eV, i.e. the molecular CEBE).
+
+    Both quantities are read in raw eV (no maxE/CEBE normalization), so the
+    returned mean/std are in eV and can standardize the alpha loss exactly the
+    way cebe_norm_stats standardizes the CEBE target. Uses the raw-stick peak
+    (hard argmax) as Ek — a close, method-independent proxy for the fitted-
+    spectrum peak used at train time; fine for a fixed scaling constant.
+
+    Returns: mean and std of alpha' across all carbon atoms.
+    """
+    all_alpha = []
+
+    for mol_name in mol_list:
+
+        # carbon 1s binding energies (eV), one row per atom in XYZ order
+        cebe_path = os.path.join(auger_dir, f"{mol_name}_out.txt")
+        cebe = np.loadtxt(cebe_path)
+
+        # spectrum→atom mapping (same row order as XYZ / cebe); col0 = carbon idx
+        mapped_file = os.path.join(auger_dir, f"{mol_name}_out_map.txt")
+        carbon_idx_mapping = np.loadtxt(mapped_file)[:, 0].astype(int)
+
+        for k, c_idx in enumerate(carbon_idx_mapping):
+            if c_idx == 0:
+                continue                      # non-carbon atom
+            Eb = float(cebe[k])
+            if Eb == -1.0:
+                continue                      # safety: unlabelled carbon
+
+            if data_type == 'calc_auger':
+                sing_path = os.path.join(
+                    auger_dir, f"{mol_name}_auger_singlet_c{c_idx}.auger.spectrum.out")
+                trip_path = os.path.join(
+                    auger_dir, f"{mol_name}_auger_triplet_c{c_idx}.auger.spectrum.out")
+            else:  # eval_auger
+                sing_path = os.path.join(
+                    auger_dir, f"{mol_name}_mcpdft_hybrid_rcc_singlet_c{c_idx}.auger.spectrum.out")
+                trip_path = os.path.join(
+                    auger_dir, f"{mol_name}_mcpdft_hybrid_rcc_triplet_c{c_idx}.auger.spectrum.out")
+
+            sing = np.atleast_2d(np.loadtxt(sing_path))
+            trip = np.atleast_2d(np.loadtxt(trip_path))
+            if sing.size == 0 or trip.size == 0:
+                raise ValueError(f"empty spectrum for {mol_name} c{c_idx}")
+
+            # peak KE (eV) = energy at max intensity over both channels
+            energies    = np.concatenate([sing[:, 0], trip[:, 0]])
+            intensities = np.concatenate([sing[:, 1], trip[:, 1]])
+            Ek = float(energies[np.argmax(intensities)])
+
+            all_alpha.append(Ek + Eb)         # alpha' in eV
+
+    mean = np.mean(all_alpha)
+    std = np.std(all_alpha, ddof=1)
+
+    print(f"Alpha (modified Auger parameter) normalization stats:")
+    print(f"  Mean: {mean}")
+    print(f"  Std: {std}")
+    print(f"  Total atoms: {len(all_alpha)}")
+
+    return mean, std
+
+
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
@@ -648,6 +717,19 @@ def build_graphs(data_type,
             auger_norm_stats = torch.load(auger_norm_stats_path, weights_only=False)
             maxE = auger_norm_stats['maxE']
             maxI = auger_norm_stats['maxI']
+
+        #alpha (modified Auger parameter) norm stats, for phys-informed learning   
+        alpha_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'alpha_norm_stats.pt')
+        if data_type == 'calc_auger':
+            alpha_mean, alpha_std = _compute_alpha_normalization_stats(
+                data_type, mol_dir, mol_list, auger_max_spec_len)
+            alpha_norm_stats = {'mean': float(alpha_mean), 'std': float(alpha_std)}
+            print("Alpha Normalization statistics:", alpha_norm_stats)
+            torch.save(alpha_norm_stats, alpha_norm_stats_path)
+        else:  # eval_auger — reuse the calc alpha norm throughout
+            alpha_norm_stats = torch.load(alpha_norm_stats_path, weights_only=False)
+            alpha_mean = alpha_norm_stats['mean']
+            alpha_std = alpha_norm_stats['std']
 
     data_list = []
 
@@ -742,7 +824,8 @@ def build_graphs(data_type,
                 carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
                 carbon_spec_idx=carbon_spec_idx,
                 cebe_norm_stats=torch.tensor([mean, std], dtype=torch.float),
-                auger_norm_stats=torch.tensor([maxE, maxI], dtype=torch.float)
+                auger_norm_stats=torch.tensor([maxE, maxI], dtype=torch.float),
+                alpha_norm_stats=torch.tensor([alpha_mean, alpha_std], dtype=torch.float),
             )
 
         # Store all features as separate attributes
