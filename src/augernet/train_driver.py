@@ -159,7 +159,7 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
                 result, data, fold,
                 output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
-                exp_split='val',  # CV uses validation subset only
+                exp_split=cfg.cebe_exp_split,  
             )
 
         # Build a JSON-serialisable record
@@ -283,7 +283,7 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
                     train_results=result.get('train_results'),
                     config_id=config_id,
                     param_file_prefix=search_id,
-                    exp_split='val',  # param search uses validation subset only
+                    exp_split=cfg.cebe_exp_split,  
                 )
 
             entry = _run_entry(result, eval_metrics=eval_metrics)
@@ -512,7 +512,8 @@ def _run_evaluate(data, cfg):
     if cfg.model == 'auger-cnn':
         # CNN backend: _load_model_from_path takes (path, data, cfg)
         model, device = be._load_model_from_path(model_path, data, cfg)
-        result = (model, device)
+        #result = (model, device)
+        result = {'model': model, 'device': device}
     else:
         # GNN backend (cebe-gnn or auger-gnn): 
         calc_data = data['calc_data']
@@ -524,7 +525,8 @@ def _run_evaluate(data, cfg):
             dropout=cfg.dropout,
             **be._model_load_kwargs(cfg),
         )
-        result = (model, device)
+        #result = (model, device)
+        result = {'model': model, 'device': device}
 
     # Try to infer fold from filename (e.g. …_fold3.pth → 3)
     fold = _infer_fold_from_path(model_path)

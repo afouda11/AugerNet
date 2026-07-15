@@ -28,6 +28,7 @@ from augernet import PROJECT_ROOT, DATA_PROCESSED_DIR
 OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     # node features
     'feature_keys',
+    'node_feature_norm',
     # GNN hyper-parameters
     'layer_type', 'hidden_channels', 'n_layers',
     'num_epochs', 'patience', 'batch_size', 'learning_rate', 'random_seed',
@@ -107,7 +108,8 @@ class AugerNetConfig:
     train_subsample_seed: int = 0
 
     # node features
-    feature_keys: str = '035'        # compact string: '035' → keys [0,3,5]
+    feature_keys: str = '035'        # compact string: '035' keys [0,3,5]
+    node_feature_norm: str = 'graph' # 'graph' (per molecule norm) or 'data' (all calc data norm)
 
     # GNN hyper-parameters
     layer_type: str = 'EQ'           # EQ (equivariant) | IN (invariant)
@@ -270,10 +272,12 @@ class AugerNetConfig:
             else:
                 de_tag = ''
 
+            nn_tag = '' if self.node_feature_norm == 'graph' else '_ndata'
+
             if self.model == 'cebe-gnn':
                 self.model_id = (
                     f"cebe_gnn_{self.cebe_loss}_{self.feature_keys}_{self.split_method}{self.n_folds}"
-                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{de_tag}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{nn_tag}{de_tag}"
                 )
             if self.model == 'auger-gnn':
                 if self.task_type == 'multi':
@@ -317,7 +321,7 @@ class AugerNetConfig:
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
                 self.model_id = (
                     f"auger_gnn_{fwhm_str}{task_tag}_{self.feature_keys}_{self.split_method}{self.n_folds}"
-                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{de_tag}"
+                    f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{nn_tag}{de_tag}"
                 )
             if self.model == 'auger-cnn':
                 fwhm_str = str(self.fwhm).replace('.', 'pt')

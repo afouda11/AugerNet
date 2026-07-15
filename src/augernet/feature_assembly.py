@@ -130,6 +130,22 @@ def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
             feat_dim += tensor.size(1)
     return cat_dim + feat_dim
 
+def compute_feature_stats(data_list, feature_keys):
+       import torch
+       stats = {}
+       for key in feature_keys:
+           if key not in (3, 4, 5):          # only the scaled scalar features
+               continue
+           name = FEATURE_NAMES[key]
+           cols = []
+           for d in data_list:
+               t = getattr(d, name).float()
+               cols.append(t.unsqueeze(1) if t.dim() == 1 else t)
+           v = torch.cat(cols, dim=0)         # (total_atoms, D)
+           mu = v.mean(0, keepdim=True)
+           sig = v.std(0, keepdim=True).clamp(min=1e-8)
+           stats[name] = (mu, sig)
+       return stats
 
 def _scale_tensor(t: torch.Tensor) -> torch.Tensor:
     """
@@ -158,6 +174,8 @@ def assemble_node_features(
     data,
     feature_keys: Sequence[int],
     inplace: bool = True,
+    scale_mode='graph',
+    feature_stats=None,
 ):
     """
     Concatenate selected node features into ``data.x``.
@@ -214,6 +232,9 @@ def assemble_node_features(
         # Scale scalar features only
         if key in no_scale_keys:
             parts.append(tensor.float())
+        elif scale_mode == 'data' and feature_stats and attr_name in feature_stats:
+            mu, sig = feature_stats[attr_name]
+            parts.append((tensor.float() - mu) / sig)     # dataset-wide z-score
         else:
             parts.append(_scale_tensor(tensor.float()))
 
@@ -224,6 +245,8 @@ def assemble_node_features(
 def assemble_dataset(
     data_list: list,
     feature_keys: Sequence[int],
+    scale_mode='graph',
+    feature_stats=None,    
 ) -> list:
     """
     Apply ``assemble_node_features`` to every graph in a list (in-place).
@@ -241,7 +264,8 @@ def assemble_dataset(
     Returns the same list for convenience.
     """
     for data in data_list:
-        assemble_node_features(data, feature_keys, inplace=True)
+        assemble_node_features(data, feature_keys, inplace=True, 
+                               scale_mode=scale_mode, feature_stats=None)
     return data_list
 
 def describe_features(feature_keys: Sequence[int]) -> str:

@@ -372,7 +372,7 @@ class MPNN(nn.Module):
         #different weighting approach, from https://github.com/Mikoto10032/AutomaticWeightedLoss
         #self.awl = AutomaticWeightedLoss(num=n_var)   # CEBE, Auger, alpha
 
-        # Multi-task adapters and uncertainty weights (only for pred_type == 'AUGER')
+        # Multi-task adapters (only for pred_type == 'AUGER')
         if task_type == 'multi' and pred_type == 'AUGER':
             self.adapter_cebe  = nn.Linear(emb_dim, emb_dim)
             self.adapter_auger = nn.Linear(emb_dim, emb_dim)

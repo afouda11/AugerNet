@@ -22,7 +22,7 @@ from sklearn.model_selection import KFold, GroupKFold
 from augernet import gnn_train_utils as gtu
 from augernet.feature_assembly import (
     assemble_dataset, compute_feature_tag, describe_features,
-    parse_feature_keys,
+    parse_feature_keys, compute_feature_stats
 )
 from augernet.spec_utils import fit_spectrum_to_grid
 
@@ -115,11 +115,15 @@ def _handle_feature_override(data, cfg, overrides):
         fk_tag = compute_feature_tag(fk_parsed)
         if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
             print(f"  Re-assembling features for key override: {fk_tag}")
-            ns = data.get('norm_stats')
-            assemble_dataset(data['calc_data'], fk_parsed)
+            mode = getattr(cfg, 'node_feature_norm', 'graph')
+            fs = compute_feature_stats(data['calc_data'], fk_parsed) if mode == 'data' else None
+            assemble_dataset(data['calc_data'], fk_parsed, scale_mode=mode, feature_stats=fs)
             if data.get('exp_data'):
-                assemble_dataset(data['exp_data'], fk_parsed)
-            data['assembled_feature_keys'] = fk_tag
+                #assemble_dataset(data['exp_data'], fk_parsed)
+                assemble_dataset(data['exp_data'], fk_parsed, scale_mode=mode, feature_stats=fs)
+            #data['assembled_feature_keys'] = fk_tag
+            data['feature_stats'] = fs
+
 
 
 def _rebuild_y_fitted(data, cfg, hp):
@@ -467,9 +471,16 @@ def load_data(cfg) -> Dict[str, Any]:
             print(f"  Exp split: {exp_split}  "
                   f"(val={len(exp_val)}, eval={len(exp_eval)})")
 
-        print(f"  Assembling features {cfg.feature_keys}")
-        assemble_dataset(calc_data, feature_keys)
-        assemble_dataset(exp_data_all, feature_keys)
+        feature_stats = None
+        if cfg.node_feature_norm == 'data':
+            feature_stats = compute_feature_stats(calc_data, feature_keys)
+
+        print(f"  Assembling features {cfg.feature_keys}, with {cfg.node_feature_norm} normalization")
+        assemble_dataset(calc_data, feature_keys,
+                    scale_mode=cfg.node_feature_norm, feature_stats=feature_stats)
+        assemble_dataset(exp_data_all, feature_keys,
+                    scale_mode=cfg.node_feature_norm, feature_stats=feature_stats)
+        
         print(f"  Calculated data: {len(calc_data)} molecules, "
               f"x.shape[1]={calc_data[0].x.size(1)}")
         return {
@@ -479,6 +490,8 @@ def load_data(cfg) -> Dict[str, Any]:
             'exp_eval_data': exp_eval,
             'assembled_feature_keys': cfg.feature_keys,
             'norm_stats': cebe_norm_stats,
+            'feature_stats': feature_stats,
+            'node_feature_norm': cfg.node_feature_norm
         }
 
     # ── Auger-GNN ────────────────────────────────────────────────────────
