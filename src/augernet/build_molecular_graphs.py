@@ -747,6 +747,14 @@ def build_graphs(data_type,
         #print("mol_name:", mol_name)
         node_features, x, edge_index, edge_attr, atomic_be, carbon_env_indices, carbon_env_labels = \
             _build_node_and_edge_features(mol, all_encoders, cebe)
+        
+        ###### cat feature debug check
+        if data_type in ['calc_cebe', 'exp_cebe']:
+            n_atoms = mol.GetNumAtoms() 
+            category_feature=np.array([1, 0, 0])
+            cat_feat = np.tile(category_feature, (n_atoms, 1))
+            x = torch.tensor(cat_feat, dtype=torch.float)
+        ######
 
         # Build targets (same logic as v1)
         cebe_out = []
