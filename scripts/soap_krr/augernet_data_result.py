@@ -1,64 +1,11 @@
-from pathlib import Path
 import numpy as np
 import itertools
 from sklearn.kernel_ridge import KernelRidge
-from sklearn.model_selection import GroupKFold
-
-from augernet import DATA_RAW_DIR, DATA_PROCESSED_DIR
-from augernet.build_molecular_graphs import _mol_from_xyz_order, get_butina_clusters
 
 from soap_krr_utils import (
-    detect_atom_types, soap_input_and_be_output, metrics
+    detect_atom_types, soap_input_and_be_output, metrics,
+    load_augernet_data, augernet_butina_split 
     )
-
-def _read_list(path):
-    return [ln.strip() for ln in open(path) if ln.strip()]
-
-def _parse_xyz_files(path):
-    lines = Path(path).read_text().splitlines()
-    n = int(lines[0].split()[0])
-    syms, pos = [], []
-    for ln in lines[2:2 + n]:
-        p = ln.split()
-        syms.append("".join(c for c in p[0] if c.isalpha()))
-        pos.append([float(p[1]), float(p[2]), float(p[3])])
-    return syms, np.asarray(pos, float)
-
-def _load_augernet_data():
-    data_raw = Path(DATA_RAW_DIR)
-    def load_set(folder, mol_list):
-        data = []
-        for m in mol_list:
-            xyz, out = data_raw / folder / f"{m}.xyz", data_raw / folder / f"{m}_out.txt"
-            syms, pos = _parse_xyz_files(xyz)
-            cebe = np.loadtxt(out).reshape(-1)
-            cidx = [i for i, (s, v) in enumerate(zip(syms, cebe)) if s == "C" and v != -1.0]
-            if cidx:
-                data.append(dict(name=m, symbols=syms, positions=pos, cidx=cidx,
-                                 y=np.array([cebe[i] for i in cidx]),
-                                 natoms=len(syms)))
-        return data
-    return dict(
-        calc=load_set("calc_cebe",    _read_list(data_raw / "calc_cebe" / "mol_list.txt")),
-        exp_val=load_set("exp_cebe",  _read_list(data_raw / "exp_cebe" / "mol_list_val.txt")),
-        exp_eval=load_set("exp_cebe", _read_list(data_raw / "exp_cebe" / "mol_list_eval.txt")),
-    )
-
-def _augernet_butina_split(fold, n_folds, cutoff):
-    smiles = []
-    data_raw = Path(DATA_RAW_DIR)
-    mol_list =  _read_list(data_raw / "calc_cebe" / "mol_list.txt") 
-    for name in mol_list:
-        _, _, _, smi = _mol_from_xyz_order(str(data_raw / "calc_cebe" / f"{name}.xyz"),
-                                           labeled_atoms=False)
-        smiles.append(smi)
-
-    clusters = get_butina_clusters(smiles, cutoff=cutoff)
-    folds = list(GroupKFold(n_splits=n_folds).split(np.arange(len(mol_list)), groups=clusters))
-    train, val = folds[fold - 1]
-    train_list, val_list = train.tolist(), val.tolist()
-    return train_list, val_list 
-
 
 SOAP_PARAM_GRID = dict(rcut=[4.0, 6.0, 8.0], nmax=[6, 8, 10],
                       lmax=[4, 6, 8], sigma=[0.025, 0.05, 0.1])
@@ -76,7 +23,7 @@ SEED    = 42
 FOLD    = 5
 N_FOLDS = 10
 CUTOFF  = 0.65
-SELECT_MAX = 3000 # sub sample for param
+SELECT_MAX = 3000 # sub sample train data for faster param search
 
 # RUN_TYPE Options: 
 # 'train': uses SOAP_PARAMS and KRR_PARAMS 
@@ -84,7 +31,7 @@ SELECT_MAX = 3000 # sub sample for param
 RUN_TYPE = 'param' 
 
 # Need to have prevsiously run scripts/prepare_data.py to download data from zenodo to data/raw
-data = _load_augernet_data()
+data = load_augernet_data()
 
 # Data info
 atom_types = detect_atom_types(data["calc"], data["exp_val"], data["exp_eval"])
@@ -92,7 +39,7 @@ for nm in ("calc", "exp_val", "exp_eval"):
     print(f"  {nm:9s}: {len(data[nm])} mols, {sum(len(r['cidx']) for r in data[nm])} C")
 
 # butina slit on calc data mol_list to copy AugerNet EGNN split
-calc_train_mol_idx, calc_val_mol_idx = _augernet_butina_split(FOLD, N_FOLDS, CUTOFF)
+calc_train_mol_idx, calc_val_mol_idx = augernet_butina_split(FOLD, N_FOLDS, CUTOFF)
 
 # Split calc data into train/val molecule sets
 data['calc_train'] = [data['calc'][i] for i in calc_train_mol_idx]
@@ -173,7 +120,7 @@ if RUN_TYPE == 'param':
         print(f"  progress: {si}/{len(soap_settings)} SOAP settings | "
               f"{done_fits}/{total_fits} fits ({100*done_fits/total_fits:4.1f}%)",
               end="\r", flush=True)
-    print()  # finish the \r progress line
+    print()  # finish the printout progress line
 
     # remake SOAP and KRR with best params and apply to fulll train data
     Xtr, ytr, _, _ = soap_input_and_be_output(atom_types, best['soap'], data['calc_train'], N_JOBS)
