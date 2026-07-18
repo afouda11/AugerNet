@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import numpy as np
 from sklearn.kernel_ridge import KernelRidge
@@ -28,7 +27,7 @@ n_c = sum(len(d["cidx"]) for d in data)
 print(f"Loaded {len(data)} molecules: {n_c} carbons and atom types: {atom_types}")
 
 # Generate X SOAP matrix and y BE vector
-X, y, *_ = soap_input_and_be_output(atom_types, SOAP_PARAMS, data, N_JOBS)
+X, y, _ = soap_input_and_be_output(atom_types, SOAP_PARAMS, data, N_JOBS)
 print("Built SOAP input descriptors")
 #Random 70/30 test train split
 Xtr, Xte, ytr, yte = train_test_split(

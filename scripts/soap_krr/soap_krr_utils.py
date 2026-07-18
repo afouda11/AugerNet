@@ -1,5 +1,6 @@
 import numpy as np
 from pathlib import Path
+import json
 
 from ase import Atoms
 from dscribe.descriptors import SOAP
@@ -22,12 +23,15 @@ def soap_input_and_be_output(atom_types, soap_params, data, n_jobs=4):
     systems = [Atoms(symbols=d["symbols"], positions=d["positions"]) for d in data]
     # Only make SOAP descriptors for carbons with BE labels
     centers = [d["cidx"] for d in data]
-    X = np.vstack(soap.create(systems, centers=centers, n_jobs=n_jobs))
+    D = soap.create(systems, centers=centers, n_jobs=n_jobs)
+    X = np.vstack(D)
     # y in data dict already selected with cidx 
     y = np.concatenate([d["y"] for d in data])
-    natoms = np.concatenate([np.full(len(d["cidx"]), d["natoms"]) for d in data])
-    names = np.concatenate([[d["name"]] * len(d["cidx"]) for d in data])
-    return X, y, natoms, names
+    # row-index map for data efficiencey scan    
+    name2rows, off = {}, 0
+    for dat, d in zip(data, D):
+        name2rows[dat["name"]] = np.arange(off, off + len(d)); off += len(d)
+    return X, y, name2rows
 
 def metrics(pred, y):
     err = y - pred
@@ -90,5 +94,38 @@ def augernet_butina_split(fold, n_folds, cutoff):
     folds = list(GroupKFold(n_splits=n_folds).split(np.arange(len(mol_list)), groups=clusters))
     train, val = folds[fold - 1]
     train_list, val_list = train.tolist(), val.tolist()
-    return train_list, val_list 
+    return mol_list, train_list, val_list 
 
+
+#######################################################
+## reproduce_porcelli_et_al.py1 specific functions
+#######################################################
+
+def _parse_xyz_and_be_from_string(xyz_string):
+    """Porcelli et al. xyz atom lines are 'element x y z BE' (BE='Nan' if not target)."""
+    lines = xyz_string.strip().splitlines()
+    n = int(lines[0].split()[0])
+    symbol, pos, be = [], [], []
+    for ln in lines[2:2 + n]:
+        p = ln.split()
+        if len(p) < 4:
+            continue
+        symbol.append("".join(c for c in p[0] if c.isalpha()))
+        pos.append([float(p[1]), float(p[2]), float(p[3])])
+        try:
+            be.append(float(p[4]) if len(p) >= 5 else np.nan)
+        except ValueError:
+            be.append(np.nan)
+    return symbol, np.asarray(pos, float), np.asarray(be, float)
+
+def load_data_from_json(json_path):
+    with open(json_path, 'r') as f:
+        data_json = json.load(f)
+    data = []
+    for item in data_json:
+        symbol, pos, be = _parse_xyz_and_be_from_string(item['xyz_file'])
+        cidx = [i for i, (s, b) in enumerate(zip(symbol, be)) if s == "C" and not np.isnan(b)]
+        if cidx:
+            data.append(dict(name=item['name'], symbols=symbol, positions=pos,
+                             cidx=cidx, y=be[cidx], natoms=len(symbol)))
+    return data
