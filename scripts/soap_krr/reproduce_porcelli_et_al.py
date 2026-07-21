@@ -1,7 +1,7 @@
 from pathlib import Path
 import numpy as np
 from sklearn.kernel_ridge import KernelRidge
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 
 from soap_krr_utils import (
     detect_atom_types, soap_input_and_be_output, metrics,
@@ -12,11 +12,15 @@ from soap_krr_utils import (
 SOAP_PARAMS = dict(r_cut=8.0, n_max=8, l_max=4, sigma=0.05)
 KRR_PARAMS  = dict(kernel="rbf", alpha=1e-11, gamma=0.25)
 TEST_FRAC   = 0.3
+# SPLIT_TYPE Options:
+# 'atom': random split over individual carbons (same-molecule atoms can span train/test)
+# 'mol' : molecule-grouped split (all carbons of a molecule stay on one side)
+SPLIT_TYPE  = 'atom'
 
 # OMP
 N_JOBS = 4
 #Split seed
-SEED = 42
+SEED = 0
 
 # Read data from json and make data dict
 data = load_data_from_json('photoemission_v1_ML-C1S-XYZ.json')
@@ -29,9 +33,13 @@ print(f"Loaded {len(data)} molecules: {n_c} carbons and atom types: {atom_types}
 # Generate X SOAP matrix and y BE vector
 X, y, _ = soap_input_and_be_output(atom_types, SOAP_PARAMS, data, N_JOBS)
 print("Built SOAP input descriptors")
-#Random 70/30 test train split
-Xtr, Xte, ytr, yte = train_test_split(
-        X, y, test_size=TEST_FRAC, shuffle=True, random_state=SEED)
+
+# Group by molecule so carbons from one molecule never span train and test
+groups = np.concatenate([[d["name"]] * len(d["cidx"]) for d in data])
+#Molecule-grouped 70/30 test train split
+gss = GroupShuffleSplit(n_splits=1, test_size=TEST_FRAC, random_state=SEED)
+tr_idx, te_idx = next(gss.split(X, y, groups))
+Xtr, Xte, ytr, yte = X[tr_idx], X[te_idx], y[tr_idx], y[te_idx]
 
 print(f"Data shuffled and split with {TEST_FRAC} test fraction random seed: {SEED}")
 print(f"Running KRR model with:\n", 

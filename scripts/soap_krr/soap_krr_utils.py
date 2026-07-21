@@ -124,8 +124,230 @@ def load_data_from_json(json_path):
     data = []
     for item in data_json:
         symbol, pos, be = _parse_xyz_and_be_from_string(item['xyz_file'])
-        cidx = [i for i, (s, b) in enumerate(zip(symbol, be)) if s == "C" and not np.isnan(b)]
+        cidx = [i for i, (s, b) in enumerate(zip(symbol, be)) if s == "C" and not np.isnan(b) and b != -1.0]
         if cidx:
             data.append(dict(name=item['name'], symbols=symbol, positions=pos,
                              cidx=cidx, y=be[cidx], natoms=len(symbol)))
     return data
+
+
+#######################################################
+## Evulation and plotting routines 
+#######################################################
+
+
+def conformal_quantile(residuals, alpha):
+    """
+    Compute split conformal prediction quantile.
+    
+    Parameters
+    ----------
+    residuals : np.ndarray
+        Absolute residuals from validation set.
+    alpha : float
+        Error probability (1 - confidence level).
+    
+    Returns
+    -------
+    float
+        Quantile threshold q_hat for conformal bands.
+    """
+    n = len(residuals)
+    k = int(np.ceil((n + 1) * (1 - alpha))) - 1
+    sorted_residuals = np.sort(residuals)
+    if k > n:
+        print(f"Split CP Warning: k={k} exceeds number of residuals n={n}. Returning infinity.")
+        return np.inf
+    return sorted_residuals[k]
+
+
+def _rstats(pred, exp):
+    """Calculate R2, MAE, STD for scatter plot statistics."""
+    mae = float(mean_absolute_error(exp, pred))
+    r2 = float(r2_score(exp, pred))
+    std = float(np.std(exp - pred))
+    return dict(r2=r2, mae=mae, std=std)
+
+
+def _scatter_panel(ax, all_pred, all_exp, rstats, scatter_s, LINE_WIDTH,
+                   STATS_FONT, AXIS_FONT, TICK_FONT, subplot=None, mol_sizes=None,
+                   vmin=None, vmax=None, cmap="YlOrRd", size_threshold=16,
+                   below_color="#0072B2", pred_label="Predicted CEBE (eV)", band=0.68,
+                   scp_value=None, show_band=True, show_scp=True):
+    import matplotlib.colors as mcolors
+    if mol_sizes is not None:
+        mask_below = mol_sizes <= size_threshold
+        mask_above = ~mask_below
+        ax.scatter(all_pred[mask_below], all_exp[mask_below], alpha=0.6, s=scatter_s,
+                   color=below_color, edgecolors=None, linewidth=0.2, zorder=3,
+                   label=f"≤{size_threshold} atoms")
+        cmap_vmin = vmin if vmin is not None else mol_sizes[mask_above].min()
+        cmap_vmax = vmax if vmax is not None else mol_sizes[mask_above].max()
+        norm = mcolors.Normalize(vmin=cmap_vmin, vmax=cmap_vmax)
+        sc = ax.scatter(all_pred[mask_above], all_exp[mask_above], alpha=0.8, s=scatter_s,
+                        c=mol_sizes[mask_above], cmap=cmap, norm=norm,
+                        edgecolors="black", linewidth=0.4, zorder=4)
+    else:
+        sc = ax.scatter(all_pred, all_exp, alpha=0.4, s=scatter_s, edgecolors=None,
+                        linewidth=0.2, color=below_color, zorder=3)
+    lo = min(all_exp.min(), all_pred.min())
+    hi = max(all_exp.max(), all_pred.max())
+    pad = (hi - lo) * 0.03
+    diag = np.array([lo - pad, hi + pad])
+    
+    # Only draw shaded band if show_band is True
+    if show_band:
+        ax.fill_between(diag, diag - band, diag + band, color="#301934", alpha=0.2, zorder=1)
+    
+    ax.plot(diag, diag, "k:", linewidth=LINE_WIDTH, alpha=0.7, zorder=2)
+    
+    # Build text annotation with optional split-CP value
+    stats_text = (f"R$^{{2}}$ = {rstats['r2']:.2f}\nMAE = {rstats['mae']:.2f} eV\n"
+                  f"STD = {rstats['std']:.2f} eV")
+    if show_scp and scp_value is not None:
+        stats_text += f"\nS-CP = {scp_value:.2f} eV"
+    
+    ax.text(0.05, 0.95,
+            stats_text,
+            ha="left", va="top", transform=ax.transAxes, fontsize=STATS_FONT,
+            fontweight="bold",
+            bbox=dict(boxstyle="round", edgecolor="grey", facecolor="white",
+                      alpha=0.85, pad=0.5), zorder=5)
+    ax.set_xlabel(pred_label, fontsize=AXIS_FONT, fontweight="bold")
+    if subplot is None or subplot == "(a)":
+        ax.set_ylabel("Experimental CEBE (eV)", fontsize=AXIS_FONT, fontweight="bold")
+    else:
+        ax.set_ylabel("")
+    ax.tick_params(axis="both", labelsize=TICK_FONT)
+    ax.set_xlim(lo - pad, hi + pad); ax.set_ylim(lo - pad, hi + pad)
+    ax.grid(True, alpha=0.3, linewidth=1.0, zorder=0); ax.set_axisbelow(True)
+    if subplot:
+        ax.text(-0.12, 1.05, subplot, transform=ax.transAxes,
+                fontsize=AXIS_FONT + 2, fontweight="bold", va="top")
+    return ax, sc
+
+
+def write_cebe_labels(pred_data, true_data, mol_symbols, output_dir, file_stem):
+    """
+    Write CEBE evaluation results to a labels file.
+    
+    Produces a text file with per-atom predicted vs true CEBE values, organized by molecule.
+    Format mirrors evaluate_cebe_model.py output.
+    
+    Parameters
+    ----------
+    pred_data : np.ndarray
+        Predicted CEBE values (per carbon atom).
+    true_data : np.ndarray
+        True (experimental) CEBE values (per carbon atom).
+    mol_symbols : list of dicts
+        Each dict has 'name' and 'symbols' keys. Used to organize output by molecule.
+    output_dir : str or Path
+        Directory for output file.
+    file_stem : str
+        Base filename (labels file will be {file_stem}_labels.txt).
+    
+    Returns
+    -------
+    Path
+        Path to the written labels file.
+    """
+    from pathlib import Path
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    label_path = output_dir / f"{file_stem}_labels.txt"
+    
+    with open(label_path, 'w') as f:
+        f.write("# CEBE Evaluation Results (SOAP-KRR)\n")
+        f.write("# Columns: atom_symbol  true_BE(eV)  pred_BE(eV)  error(eV)\n")
+        f.write("# Non-carbon atoms and missing values marked with '--'\n")
+        f.write("#\n")
+        
+        pred_idx = 0
+        for mol_info in mol_symbols:
+            mol_name = mol_info['name']
+            syms = mol_info['symbols']
+            cidx = mol_info.get('cidx', [])
+            
+            f.write(f"# --- {mol_name} ---\n")
+            
+            c_count = 0
+            for atom_idx, sym in enumerate(syms):
+                if atom_idx in cidx:
+                    # This is a carbon atom with a prediction
+                    true_be = float(true_data[pred_idx])
+                    pred_be = float(pred_data[pred_idx])
+                    error = pred_be - true_be
+                    f.write(f"{sym:>3s}    {true_be:10.4f}    {pred_be:10.4f}    {error:10.4f}\n")
+                    pred_idx += 1
+                    c_count += 1
+                else:
+                    # Non-carbon or carbon with no prediction
+                    f.write(f"{sym:>3s}    {'--':>10s}    {'--':>10s}    {'--':>10s}\n")
+            
+            f.write("\n")
+    
+    return label_path
+
+
+def two_panel_scatter(res, out_dir, tag="augernet",
+                      pred_label="SOAP/KRR Predicted CEBE (eV)", band=0.68):
+    """band = split-CP half-width (q_hat) of THIS model, shaded around y=x."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+    import seaborn as sns
+
+    pv, ev, sv = res["exp_val"]["pred"], res["exp_val"]["y"], res["exp_val"]["natoms"]
+    scp_val = res["exp_val"].get("scp", None)
+    pe, ee, se = res["exp_eval"]["pred"], res["exp_eval"]["y"], res["exp_eval"]["natoms"]
+    scp_eval = res["exp_eval"].get("scp", None)
+    rstats_val, rstats_eval = _rstats(pv, ev), _rstats(pe, ee)
+
+    above = np.concatenate([sv[sv > 16], se[se > 16]])
+    vmin = above.min() if len(above) else 17
+    vmax = above.max() if len(above) else 45
+
+    sns.set_style("whitegrid")
+    plt.rcParams.update({'font.size': 10, 'axes.linewidth': 1.2,
+                         'xtick.direction': 'in', 'ytick.direction': 'in',
+                         'xtick.major.width': 1.0, 'xtick.major.width': 1.0,
+                         'xtick.major.size': 5, 'ytick.major.size': 5,
+                         'legend.frameon': True})
+    AXIS_FONT, TICK_FONT, STATS_FONT, LINE_WIDTH, scatter_s = 16, 17, 16, 2.2, 60
+
+    fig = plt.figure(figsize=(16, 6), constrained_layout=True)
+    gs = GridSpec(1, 2, figure=fig, wspace=0.01)
+
+    ax_l = fig.add_subplot(gs[0, 0])
+    ax_l, sc = _scatter_panel(ax_l, pv, ev, rstats_val, scatter_s, LINE_WIDTH,
+                              STATS_FONT, AXIS_FONT, TICK_FONT, subplot="(a)",
+                              mol_sizes=sv, vmin=vmin, vmax=vmax, pred_label=pred_label,
+                              band=band, scp_value=scp_val, show_band=False, show_scp=False)
+    ax_l.text(0.95, 0.05, "Exp. Validation", ha="right", va="bottom",
+              transform=ax_l.transAxes, fontsize=STATS_FONT, fontweight="bold",
+              bbox=dict(boxstyle="round", edgecolor="grey", facecolor="white",
+                        alpha=0.85, pad=0.5), zorder=5)
+
+    ax_r = fig.add_subplot(gs[0, 1])
+    ax_r, sc_eval = _scatter_panel(ax_r, pe, ee, rstats_eval, scatter_s, LINE_WIDTH,
+                                   STATS_FONT, AXIS_FONT, TICK_FONT, subplot="(b)",
+                                   mol_sizes=se, vmin=vmin, vmax=vmax, pred_label=pred_label,
+                                   band=band, scp_value=scp_eval, show_band=True, show_scp=True)
+    ax_r.text(0.95, 0.05, "Exp. Evaluation", ha="right", va="bottom",
+              transform=ax_r.transAxes, fontsize=STATS_FONT, fontweight="bold",
+              bbox=dict(boxstyle="round", edgecolor="grey", facecolor="white",
+                        alpha=0.85, pad=0.5), zorder=5)
+
+    cbar = fig.colorbar(sc_eval, ax=[ax_l, ax_r], shrink=0.85, pad=0.02)
+    cbar.set_label("Molecule Size (atoms)", fontsize=AXIS_FONT, fontweight="bold")
+    cbar.ax.tick_params(labelsize=TICK_FONT)
+
+    png = Path(out_dir) / f"2_panel_scatter_{tag}.png"
+    fig.savefig(png, dpi=300, bbox_inches="tight")
+    fig.savefig(Path(out_dir) / f"2_panel_scatter_{tag}.pdf", bbox_inches="tight")
+    plt.close(fig)
+    return png

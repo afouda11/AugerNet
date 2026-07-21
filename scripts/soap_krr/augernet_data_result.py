@@ -7,7 +7,8 @@ import json
 from soap_krr_utils import (
     detect_atom_types, soap_input_and_be_output, metrics,
     load_augernet_data, augernet_butina_split,
-    load_data_from_json 
+    load_data_from_json, two_panel_scatter, conformal_quantile,
+    write_cebe_labels
     )
 
 OUT_DIR = Path("soap_krr_outputs")
@@ -18,12 +19,12 @@ SOAP_PARAM_GRID = dict(rcut=[4.0, 6.0, 8.0], nmax=[6, 8, 10],
 KRR_PARAM_GRID  = dict(gamma=list(np.logspace(-3, 1, 9)), alpha=list(np.logspace(-11, -1, 6)))
 
 SOAP_PARAMS = dict(r_cut=4.0, n_max=8, l_max=6, sigma=0.025)
-KRR_PARAMS  = dict(kernel="rbf", alpha=1e-11, gamma=1.0)
+KRR_PARAMS  = dict(kernel="rbf", alpha=1e-11, gamma=10.0)
 
 # OMP
 N_JOBS  = 1
 #Split seed
-PARAM_SEED  = 42
+PARAM_SEED  = 0
 FOLD    = 5
 N_FOLDS = 10
 CUTOFF  = 0.65
@@ -51,6 +52,12 @@ for nm in ("calc", "exp_val", "exp_eval"):
 print(f"  WS22 PES Data: {len(pes_data)} mols, {sum(len(d['cidx']) for d in pes_data)} C")
 # butina slit on calc data mol_list to copy AugerNet EGNN split
 mol_list, calc_train_mol_idx, calc_val_mol_idx = augernet_butina_split(FOLD, N_FOLDS, CUTOFF)
+
+# calc_*_mol_idx index into the full mol_list; load_augernet_data drops molecules
+# with no valid carbon, which would silently misalign these positional indices.
+assert len(data['calc']) == len(mol_list), (
+    f"calc molecule count ({len(data['calc'])}) != mol_list ({len(mol_list)}); "
+    "positional split indices would be misaligned")
 
 # Split calc data into train/val molecule sets
 data['calc_train'] = [data['calc'][i] for i in calc_train_mol_idx]
@@ -84,6 +91,65 @@ if RUN_TYPE == 'train':
         print(f"\tMAE = {results[key]['MAE']:.3f} eV  |  RMSE {results[key]['RMSE']:.3f} | R2 {results[key]['R2']:.3f}  | "
             f"MAX {results[key]['MAX']:.3f} | STD {results[key]['STD']:.3f}\n")
 
+    # Split Conformal Prediction on exp-eval (holdout) set
+    exp_eval_pred = results['exp_eval']['pred']
+    exp_eval_true = y['exp_eval']
+    residuals_full = np.abs(exp_eval_pred - exp_eval_true)
+    
+    # Exclude problematic molecules (approximate exp CEBEs)
+    # These have unreliable experimental values, so exclude from split-CP calibration
+    exclude_mols = {'ketoavobenzone', 'enolavobenzone'}
+    mask_keep = np.array([
+        data['exp_eval'][i]['name'] not in exclude_mols 
+        for i in range(len(data['exp_eval']))
+        for _ in range(len(data['exp_eval'][i]['cidx']))
+    ])
+    
+    residuals = residuals_full[mask_keep]
+    
+    alpha = 0.1  # 90% confidence level
+    q_hat = conformal_quantile(residuals, alpha)
+    confidence_level = (1 - alpha) * 100
+    
+    # Print split-CP with the exp_eval metrics
+    print(f"exp_eval (cont'd):")
+    print(f"\tS-CP = {q_hat:.3f} eV  ({confidence_level:.0f}% confidence, n={len(residuals)})\n")
+
+    # Map molecule-level natoms to atom-level (one natoms value per carbon prediction)
+    def expand_natoms(data):
+        natoms_expanded = []
+        for d in data:
+            mol_natoms = len(d['symbols'])
+            natoms_expanded.extend([mol_natoms] * len(d['cidx']))
+        return np.array(natoms_expanded)
+    
+    res = dict(
+    exp_val=dict(pred=results['exp_val']['pred'], 
+                    y=y['exp_val'],
+                    natoms=expand_natoms(data['exp_val']),
+                    scp=None),  # No split-CP on validation
+    exp_eval=dict(pred=results['exp_eval']['pred'], 
+                    y=y['exp_eval'],
+                    natoms=expand_natoms(data['exp_eval']),
+                    scp=q_hat)  # Include split-CP for evaluation set
+    )
+
+    two_panel_scatter(res, OUT_DIR, tag="soap_krr", 
+                        pred_label="SOAP-KRR Predicted CEBE (eV)", band=q_hat)
+    print(f"Wrote scatter plots to {OUT_DIR}/2_panel_scatter_soap_krr.png/pdf")
+
+    # Write detailed per-atom labels file (exp_eval)
+    exp_eval_labels = write_cebe_labels(
+        results['exp_eval']['pred'],
+        y['exp_eval'],
+        data['exp_eval'],
+        OUT_DIR,
+        file_stem="soap_krr_eval"
+    )
+    print(f"Wrote evaluation labels to {exp_eval_labels}")
+
+    ### PES ASSESMENT
+
     X_pes, y_pes, _  = soap_input_and_be_output(atom_types, SOAP_PARAMS, pes_data, N_JOBS)
     pes_preds = model.predict(X_pes) + mu
 
@@ -114,7 +180,6 @@ if RUN_TYPE == 'train':
             f.write("\n")
     
     print(f"Wrote {pes_out_file}")
-
 
 
 

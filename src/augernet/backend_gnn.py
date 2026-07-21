@@ -26,7 +26,7 @@ from augernet.feature_assembly import (
 )
 from augernet.spec_utils import fit_spectrum_to_grid
 
-from augernet import PROJECT_ROOT, DATA_DIR, DATA_PROCESSED_DIR
+from augernet import DATA_DIR, DATA_PROCESSED_DIR
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,9 +230,9 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     loop_kwargs = dict(
         num_epochs=hp['num_epochs'], batch_size=hp['batch_size'],
         max_lr=hp['learning_rate'],
-        verbose=True, layer_type=hp['layer_type'], pred_type=pred_type,
+        verbose=True, pred_type=pred_type,
         cebe_loss=hp['cebe_loss'], 
-        val_data_list=val_data, patience=hp['patience'],
+        patience=hp['patience'],
         optimizer_type=hp['optimizer_type'], weight_decay=hp['weight_decay'],
         gradient_clip_norm=hp['gradient_clip_norm'],
         warmup_epochs=hp['warmup_epochs'], min_lr=hp['min_lr'],
@@ -253,7 +253,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         loop_kwargs['beta_soft_argmax']           = hp.get('beta_soft_argmax', 30)
         loop_kwargs['anneal_beta_soft_argmax']    = hp.get('anneal_beta_soft_argmax', True)
 
-    train_results = gtu.train_loop(train_data, model, device, **loop_kwargs)
+    train_results = gtu.train_loop(train_data, val_data, model, device, **loop_kwargs)
     model.eval()
     return model, train_results
 

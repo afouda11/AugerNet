@@ -634,8 +634,8 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
 # Training run
 ############################################################################
 
-def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
-                pct_start=0.6, verbose = True, layer_type="IN", pred_type="AUGER", val_data_list=None,
+def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
+                pct_start=0.6, verbose = True, pred_type="AUGER", 
                 cebe_loss='mse', auger_loss='mae', alpha_loss='mse', 
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, 
                 warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine',
@@ -644,8 +644,8 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                 # For no phys-informed do alpha_weight = "fixed" and lambda_alpha = 0.0  
                 lambda_alpha=0.001, # For no phys-informed do alpha_weight = "fixed" and lambda_alpha = 0.0  
                 beta_soft_argmax = 30, anneal_beta_soft_argmax = True,
-                mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50, 
-                split_seed = 42):
+                mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50
+                ):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
 
@@ -685,14 +685,8 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
     auger_loss_fn = _loss_fn[auger_loss]
     alpha_loss_fn = _loss_fn[alpha_loss]
 
-    # If val_data_list is provided, use it directly; otherwise perform internal split
-    if val_data_list is not None:
-        # External split already performed (e.g., for combined singlet+triplet training)
-        train_set = data_list
-        val_set = val_data_list
-    else:
-        train_set, val_set = train_test_split(data_list, test_size=0.10, random_state=split_seed)
-
+    train_set = train_list
+    val_set = val_list
     print(f"Training samples: {len(train_set)}, carbons: {sum(s == 'C' for d in train_set for s in d.atom_symbols)}")
     print(f"Validation samples: {len(val_set)}, carbons: {sum(s == 'C' for d in val_set for s in d.atom_symbols)}")
 
@@ -905,6 +899,12 @@ def train_loop(data_list: list, model: nn.Module, device, num_epochs: int = 100,
                     msg += (f" │ valL(c/a/ap)="
                             f"{val_comp['cebe']:.4f}/{val_comp['auger']:.4f}/{val_comp['alpha']:.4f}")
             print(msg)
+
+    # If training finished all epochs without early stopping, the model still
+    # holds last-epoch weights. Restore the best-val checkpoint so the returned
+    # model is always the best-val one, regardless of whether patience fired.
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
 
     # ── Optional multi-task Stage 3: Auger-only fine-tune ────────────────────
     if task_type == 'multi' and mt_finetune_auger and mt_finetune_epochs > 0:
