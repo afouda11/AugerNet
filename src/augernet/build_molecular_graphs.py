@@ -679,7 +679,6 @@ def build_graphs(data_type,
     Process calculated CEBE data using the feature-store approach.
     
     All node features are stored as separate ``data.feat_*`` attributes.
-    ``data.x`` contains only the category_feature.
     """
     mol_dir = os.path.join(DATA_RAW_DIR, data_type)
 
@@ -749,11 +748,11 @@ def build_graphs(data_type,
             _build_node_and_edge_features(mol, all_encoders, cebe)
         
         ###### cat feature debug check
-        if data_type in ['calc_cebe', 'exp_cebe']:
-            n_atoms = mol.GetNumAtoms() 
-            category_feature=np.array([1, 0, 0])
-            cat_feat = np.tile(category_feature, (n_atoms, 1))
-            x = torch.tensor(cat_feat, dtype=torch.float)
+        #if data_type in ['calc_cebe', 'exp_cebe']:
+        #    n_atoms = mol.GetNumAtoms() 
+        #    category_feature=np.array([1, 0, 0])
+        #    cat_feat = np.tile(category_feature, (n_atoms, 1))
+        #    x = torch.tensor(cat_feat, dtype=torch.float)
         ######
 
         # Build targets (same logic as v1)

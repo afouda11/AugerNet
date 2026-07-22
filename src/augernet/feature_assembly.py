@@ -22,10 +22,6 @@ Key  Name            Dim   Description
  6   env_onehot       36   Carbon environment one-hot (NUM_CARBON_CATEGORIES)
  7   morgan_fp       256   Per-atom Morgan fingerprint (ECFP2, radius=1)
 
-Only the ``category_feature`` ([1,0,0], [0,1,0], [0,0,1]) is placed in
-``data.x`` at preparation time.  Everything else lives in ``data.<name>``
-attributes and is assembled here at training time.
-
 Usage
 -----
 >>> from augernet.feature_assembly import assemble_node_features, parse_feature_keys
@@ -97,7 +93,6 @@ def parse_feature_keys(tag: str) -> List[int]:
 def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
     """
     Compute the total node-feature dimension that ``assemble_node_features``
-    will produce (category_feature columns + selected feature columns).
 
     Parameters
     ----------
@@ -111,10 +106,6 @@ def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
     int
         Total ``data.x`` width after assembly.
     """
-    # Use stashed category_feature if available (after first assembly),
-    # otherwise fall back to current data.x (before first assembly).
-    base = getattr(data, '_category_feature', data.x)
-    cat_dim = base.size(1) if base is not None else 0
     feat_dim = 0
     for key in feature_keys:
         attr_name = FEATURE_NAMES[key]
@@ -124,11 +115,8 @@ def get_feature_dim(data, feature_keys: Sequence[int]) -> int:
                 f"Feature key {key} ({FEATURE_NAMES[key]}) not found on Data object. "
                 f"Available attributes: {list(FEATURE_NAMES.values())}"
             )
-        if tensor.dim() == 1:
-            feat_dim += 1
-        else:
-            feat_dim += tensor.size(1)
-    return cat_dim + feat_dim
+        feat_dim += 1 if tensor.dim() == 1 else tensor.size(1)
+    return feat_dim
 
 def compute_feature_stats(data_list, feature_keys):
        import torch
@@ -180,9 +168,6 @@ def assemble_node_features(
     """
     Concatenate selected node features into ``data.x``.
 
-    The existing ``data.x`` (category_feature, shape [N, 3]) is kept as the
-    **first** columns.  Selected features are scaled and appended.
-
     Parameters
     ----------
     data : torch_geometric.data.Data
@@ -206,13 +191,7 @@ def assemble_node_features(
 
     import torch  # noqa: F811 — lazy import to keep module importable without torch
 
-    # On first call, stash the original category_feature so that
-    # subsequent calls (e.g. param search with different feature_keys)
-    # always start from the base columns, not previously assembled ones.
-    if not hasattr(data, '_category_feature'):
-        data._category_feature = data.x.clone()
-
-    parts = [data._category_feature]
+    parts = []
 
     # Features that should NOT be scaled (categorical / pre-normalized)
     no_scale_keys = {0, 1, 2, 6, 7}

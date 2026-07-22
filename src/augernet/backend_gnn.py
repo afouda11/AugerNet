@@ -964,10 +964,11 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
         node_features, x, edge_index, edge_attr, atomic_be, _, _ = \
             _build_node_and_edge_features(
                 mol, all_encoders, dummy_cebe)
-        n_atoms = mol.GetNumAtoms() 
-        category_feature=np.array([1, 0, 0])
-        cat_feat = np.tile(category_feature, (n_atoms, 1))
-        x = torch.tensor(cat_feat, dtype=torch.float)
+        n_atoms = mol.GetNumAtoms()
+        ###### cat feature debug check
+        #category_feature=np.array([1, 0, 0])
+        #cat_feat = np.tile(category_feature, (n_atoms, 1))
+        #x = torch.tensor(cat_feat, dtype=torch.float)
 
         d = Data(
             x=x, edge_index=edge_index, edge_attr=edge_attr,
