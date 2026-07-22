@@ -52,10 +52,8 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     # multi-task
     'mt_warmup_epochs', 'mt_finetune_auger', 'mt_finetune_epochs',
     'mt_log_grad_cosine',
-    'alpha_lambda', 'alpha_weight', 'alpha_peak_method',
-    'beta_soft_argmax', 'anneal_beta_soft_argmax',
     # gnn loss
-    'auger_loss', 'cebe_loss', 'alpha_loss',
+    'auger_loss', 'cebe_loss',
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,13 +153,6 @@ class AugerNetConfig:
     mt_finetune_auger: bool = False              # after joint training, fine-tune on Auger loss only
     mt_finetune_epochs: int = 50                 # epochs of Auger-only fine-tune (if mt_finetune_auger)
     mt_log_grad_cosine: bool = False             # log cosine similarity of task gradients each epoch
-    alpha_lambda: float = 0.0                    # weight for Auger parameter in loss (used when alpha_weight='fixed')
-    alpha_loss: str = 'mae'                      # mae or mse for Auger parameter loss in multi-task setting
-    # Physics-informed alpha constraint options (only active when task_type == 'multi')
-    alpha_peak_method: str = 'soft_argmax'       # soft_argmax | centroid | hard_argmax
-    alpha_weight: str = 'fixed'                  # uw (learned uncertainty weighting) | fixed (lambda_alpha scalar)
-    beta_soft_argmax: int = 30                   # sharpness parameter for soft_argmax peak estimator
-    anneal_beta_soft_argmax: bool = True         # linearly anneal beta_soft_argmax upward during training
 
     # ── CNN specific (auger-cnn) ─────────────────────────────────────────
     architecture: Dict[str, Any] = field(default_factory=dict)  # CNN arch dict
@@ -236,11 +227,6 @@ class AugerNetConfig:
         # model_id = auger_gnn_{fwhm}{task_tag}_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}{de_tag}
         #   task_tag (single) = _{auger_loss}
         #   task_tag (multi)  = _multi_w{mt_warmup_epochs}[_ft{mt_finetune_epochs}]{phys_tag}_l_a{auger_loss}_c{cebe_loss}
-        #     phys_tag = _nophys                                    (alpha off: fixed weighting AND alpha_lambda == 0)
-        #              | _{peak}_{weight}[{beta}]_al{alpha_loss}    (alpha on)
-        #       peak   = sa (soft_argmax) | cen (centroid) | am (hard_argmax)
-        #       weight = uw (learned uncertainty) | a{alpha_lambda} (fixed scalar, dots->pt)
-        #       beta   = _annb (annealed) | _b{beta_soft_argmax}    (soft_argmax only; empty otherwise)
 
         # auger-cnn:
         # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}BE{cebe_augment}_f{filters}_k{kernels}_p{pool}_h{hidden}{de_tag}
@@ -284,38 +270,7 @@ class AugerNetConfig:
                     loss_tag = f'_a{self.auger_loss}_c{self.cebe_loss}'
                     ft_tag = f'_ft{self.mt_finetune_epochs}' if self.mt_finetune_auger else ''
 
-                    # Phys-informed alpha tag, 
-                    _alpha_off = (self.alpha_weight != 'uw'
-                                  and float(self.alpha_lambda) == 0.0)
-                    if _alpha_off:
-                    # setting alpha_weight = fixed and alpha_lambda = 0.0 turns of phys-informed
-                        phys_tag = '_nophys'
-                    else:
-                        # peak estimator: soft_argmax = sa, centroid = cen, hard_argmax = am
-                        _peak_map = {'soft_argmax': 'sa', 'centroid': 'cen',
-                                     'hard_argmax': 'am', 'argmax': 'am'}
-                        _peak_tag = _peak_map.get(self.alpha_peak_method,
-                                                  self.alpha_peak_method)
-
-                        # weighting: learned uncertainty ('uw') vs fixed scalar lambda
-                        if self.alpha_weight == 'uw':
-                            _weight_tag = 'uw'
-                        else:
-                            _weight_tag = 'a' + str(self.alpha_lambda).replace('.', 'pt')
-
-                        # beta only affects soft_argmax: annealed vs fixed sharpness
-                        if self.alpha_peak_method == 'soft_argmax':
-                            if self.anneal_beta_soft_argmax:
-                                _beta_tag = '_annb'
-                            else:
-                                _beta_tag = f'_b{int(self.beta_soft_argmax)}'
-                        else:
-                            _beta_tag = ''
-
-                        # alpha_loss fn only meaningful when the alpha term is active
-                        phys_tag = f'_{_peak_tag}_{_weight_tag}{_beta_tag}_al{self.alpha_loss}'
-
-                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}{phys_tag}_l{loss_tag}'
+                    task_tag = f'_multi_w{self.mt_warmup_epochs}{ft_tag}_l{loss_tag}'
                 else:
                     task_tag = f'_{self.auger_loss}'
                 fwhm_str = str(self.fwhm).replace('.', 'pt')

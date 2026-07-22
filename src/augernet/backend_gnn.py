@@ -182,7 +182,7 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
         I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
 
         for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
-            # use maxE to un-normalize grid for fitting and later alpha loss constraint
+            # use maxE to un-normalize grid for fitting 
             s_e = s_y[c, :, 0] * maxE
             s_i = s_y[c, :, 1]
             t_e = t_y[c, :, 0] * maxE
@@ -213,7 +213,7 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
     # 3 when alpha_weight='uw' (CEBE + Auger + alpha), 2 otherwise (CEBE + Auger).
     # Not a config field -- derived here so the MPNN state_dict is always
     # self-consistent with the loss used during training.
-    n_var = 3 if hp.get('alpha_weight', 'fixed') == 'uw' else 2
+    n_var =  2
     model = gtu.MPNN(
         num_layers=hp['n_layers'], emb_dim=hp['hidden_channels'],
         in_dim=in_channels, edge_dim=edge_dim,
@@ -246,12 +246,6 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         loop_kwargs['mt_warmup_epochs']           = hp.get('mt_warmup_epochs', 10)
         loop_kwargs['mt_finetune_auger']           = hp.get('mt_finetune_auger', False)
         loop_kwargs['mt_finetune_epochs']          = hp.get('mt_finetune_epochs', 50)
-        loop_kwargs['lambda_alpha']               = hp.get('alpha_lambda', 0.0)
-        loop_kwargs['alpha_loss']                 = hp.get('alpha_loss', 'mse')
-        loop_kwargs['alpha_weight']               = hp.get('alpha_weight', 'fixed')
-        loop_kwargs['alpha_peak_method']          = hp.get('alpha_peak_method', 'soft_argmax')
-        loop_kwargs['beta_soft_argmax']           = hp.get('beta_soft_argmax', 30)
-        loop_kwargs['anneal_beta_soft_argmax']    = hp.get('anneal_beta_soft_argmax', True)
 
     train_results = gtu.train_loop(train_data, val_data, model, device, **loop_kwargs)
     model.eval()
@@ -756,7 +750,7 @@ def _model_load_kwargs(cfg):
     if cfg.model == 'cebe-gnn':
         return dict(pred_type='CEBE')
     elif cfg.model == 'auger-gnn':
-        n_var = 3 if getattr(cfg, 'alpha_weight', 'fixed') == 'uw' else 2
+        n_var = 2 
         kw = dict(pred_type='AUGER', task_type=cfg.task_type, n_var=n_var)
         kw['spectrum_dim'] = cfg.n_points
         return kw
@@ -882,7 +876,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             model_id=model_id,
             config_id=config_id,
             param_file_prefix=pfx or None,
-            alpha=cfg.cp_alpha,
+            alpha=cfg.cp_alpha, #split-CP alpha
         )
 
     if split == 'val' and data.get('exp_val_data'):

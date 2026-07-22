@@ -495,63 +495,18 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             return [self.min_lr + lr_range * cosine_decay for _ in self.base_lrs]
 
 ############################################################################ 
-# Auger peak estimators for auger parameter loss constraint
-############################################################################
-
-def soft_argmax_ek(intensity, e_grid, beta=30.0, eps=1e-8):
-    """
-    Softmax-weighted peak energy (differentiable surrogate for argmax).
-    weights = softmax(beta * I_norm), I_norm = I / max(I)
-    where `beta` isthe sharpness in units of the peak height
-    As beta -> inf the weights collapse onto the max bin and this recovers the true peak (argmax)
-    As beta -> 0 it tends to a flat average.
-    Recommended: beta ~ 20-50. Anneal upward during training (see below)
-    """
-    scale = intensity.max(dim=-1, keepdim=True).values + eps
-    logits = beta * intensity / scale
-    w = torch.softmax(logits, dim=-1)
-    return (w * e_grid).sum(dim=-1)
-
-def anneal_beta(epoch, beta_start=15.0, beta_end=80.0, n_epochs=150):
-    """ 
-    Option to control `beta` in soft_argmax
-    Call once per epoch and pass the result as `beta`
-    """
-    t = min(max(epoch / max(n_epochs, 1), 0.0), 1.0)
-    return beta_start + t * (beta_end - beta_start)
-
-def centroid_ek(intensity, e_grid, eps=1e-8):
-    """
-    Intensity-weighted centroid of the spectrum, gives the mean energy
-    Doesnt correspond to the Wagner Auger parameter but can act as a smooth auxiliary regulariser
-    for comparison to soft_argmax_energy
-    """
-    w = intensity.clamp(min=0.0)
-    return (w * e_grid).sum(dim=-1) / (w.sum(dim=-1) + eps)
-
-def hard_argmax_ek(intensity, e_grid):
-    """
-    Exact peak but non-differentiable
-    Only use to report the true Auger parameter and not for training
-    """
-    n = torch.arange(intensity.size(0), device=intensity.device)
-    return e_grid[n, intensity.argmax(dim=-1)]
-
-############################################################################ 
 # Validation run
 ############################################################################
 
 def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_loss_fn,
-                  alpha_loss_fn, task_type='single', lambda_alpha=0.001,
-                  alpha_peak_method='soft_argmax', alpha_weight='fixed',
-                  beta_epoch=30):
+                  task_type='single'):
     """
         One pass over data_loader without gradient to compute mean loss.
     """
 
     model.eval()
     total_loss, n_batches = 0.0, 0
-    run_cebe, run_auger, run_alpha, n_joint = 0.0, 0.0, 0.0, 0
+    run_cebe, run_auger, n_joint = 0.0, 0.0, 0
     with torch.no_grad():
         for data in data_loader:
             data = data.to(device)
@@ -568,45 +523,14 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
                 y_sel = data.y_fitted[idx]
                 loss_auger = auger_loss_fn(out_sel, y_sel)
 
-                # Auger parameter alpha loss
-                cebe_mean  = data.cebe_norm_stats[0]
-                cebe_std   = data.cebe_norm_stats[1]
-                pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                pred_molbe = data.atomic_be_eV[idx].float() - pred_dbe
-                true_molbe = data.true_cebe[idx].float()
-
-                e_grid = data.e_fitted[idx]
-                if alpha_peak_method == 'soft_argmax':
-                    Ek_pred = soft_argmax_ek(out_sel, e_grid, beta=beta_epoch)
-                    Ek_true = soft_argmax_ek(y_sel,   e_grid, beta=beta_epoch)
-                elif alpha_peak_method == 'centroid':
-                    Ek_pred = centroid_ek(out_sel, e_grid)
-                    Ek_true = centroid_ek(y_sel,   e_grid)
-                else:  # 'argmax'
-                    Ek_pred = hard_argmax_ek(out_sel, e_grid)
-                    Ek_true = hard_argmax_ek(y_sel,   e_grid)
-
-                alpha_mean = data.alpha_norm_stats[0]
-                alpha_std  = data.alpha_norm_stats[1]
-                alpha_pred = (Ek_pred + pred_molbe - alpha_mean) / alpha_std
-                alpha_true = (Ek_true + true_molbe - alpha_mean) / alpha_std
-                loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
-
                 run_cebe  += loss_cebe.item()
                 run_auger += loss_auger.item()
-                run_alpha += loss_alpha.item()
                 n_joint   += 1
 
                 # Uncertainty-weighted combined loss
                 lv = model.log_var
-                if alpha_weight == 'uw':
-                    loss = (torch.exp(-lv[0]) * loss_cebe  + lv[0] +
-                            torch.exp(-lv[1]) * loss_auger + lv[1] +
-                            torch.exp(-lv[2]) * loss_alpha + lv[2])
-                else:  # 'fixed'
-                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                            torch.exp(-lv[1]) * loss_auger + lv[1] +
-                            lambda_alpha * loss_alpha)
+                loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                        torch.exp(-lv[1]) * loss_auger + lv[1])
 
             elif task_type == 'single':
                 if isinstance(out, tuple):
@@ -624,8 +548,7 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
             n_batches  += 1
     val_loss = total_loss / n_batches
     comp = ({'cebe':  run_cebe  / n_joint,
-             'auger': run_auger / n_joint,
-             'alpha': run_alpha / n_joint} if n_joint > 0 else None)
+             'auger': run_auger / n_joint} if n_joint > 0 else None)
     return val_loss, comp
 
     #return total_loss / n_batches
@@ -634,16 +557,11 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
 # Training run
 ############################################################################
 
-def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_epochs: int = 100, batch_size=64, max_lr=1e-2,
-                pct_start=0.6, verbose = True, pred_type="AUGER", 
-                cebe_loss='mse', auger_loss='mae', alpha_loss='mse', 
+def train_loop(train_list: list, val_list: list, model: nn.Module, device, 
+                num_epochs: int = 100, batch_size=64, max_lr=1e-2, pct_start=0.6, 
+                verbose = True, pred_type="AUGER", cebe_loss='mse', auger_loss='mae', 
                 patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, 
-                warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine',
-                task_type='single', alpha_peak_method = "soft_argmax", # Options: 'soft_argmax', 'centroid', 'hard_argmax'
-                alpha_weight="uw", # Options 'uw' (learned uncertainty), 'fixed' (used fixed `lambda_alpha` value)
-                # For no phys-informed do alpha_weight = "fixed" and lambda_alpha = 0.0  
-                lambda_alpha=0.001, # For no phys-informed do alpha_weight = "fixed" and lambda_alpha = 0.0  
-                beta_soft_argmax = 30, anneal_beta_soft_argmax = True,
+                warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine', task_type='single', 
                 mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50
                 ):
     """
@@ -673,7 +591,6 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
         min_lr: Minimum learning rate for cosine scheduler (default: 1e-7)
         scheduler_type: 'cosine' (CosineAnnealingWarmup, per-epoch) or
                         'onecycle' (OneCycleLR, per-batch — original AUGER schedule)
-        Phys-informed and multi-task Args (todo):
     """
 
     seed(0)
@@ -683,7 +600,6 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
     _loss_fn = {'mse': F.mse_loss, 'mae': F.l1_loss}
     cebe_loss_fn  = _loss_fn[cebe_loss]
     auger_loss_fn = _loss_fn[auger_loss]
-    alpha_loss_fn = _loss_fn[alpha_loss]
 
     train_set = train_list
     val_set = val_list
@@ -747,13 +663,7 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
 
         model.train()
         running_loss, n_batches = 0.0, 0
-        run_cebe, run_auger, run_alpha, n_joint = 0.0, 0.0, 0.0, 0
-
-        # Compute beta once per epoch so training and validation use the same value
-        if anneal_beta_soft_argmax:
-            beta_epoch = anneal_beta(epoch, n_epochs=num_epochs)
-        else:
-            beta_epoch = float(beta_soft_argmax)
+        run_cebe, run_auger, n_joint = 0.0, 0.0, 0
 
         for data in train_loader:
             optimizer.zero_grad()
@@ -775,50 +685,19 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
                     y_sel = data.y_fitted[idx]
                     loss_auger = auger_loss_fn(out_sel, y_sel)
 
-                    #auger paramter alpha loss
-                    # convert cebe_out back to un-normalized molecular be
-                    cebe_mean  = data.cebe_norm_stats[0]
-                    cebe_std   = data.cebe_norm_stats[1]
-                    pred_dbe   = (cebe_out[idx].squeeze(-1) * cebe_std) + cebe_mean
-                    pred_molbe = data.atomic_be_eV[idx].float() - pred_dbe
-                    true_molbe = data.true_cebe[idx].float()
-                    # get e grid and for energy at peak intensity approximation
-                    e_grid = data.e_fitted[idx]
-
-                    if alpha_peak_method == "soft_argmax":
-                        Ek_pred = soft_argmax_ek(out_sel, e_grid, beta=beta_epoch)
-                        Ek_true = soft_argmax_ek(y_sel, e_grid, beta=beta_epoch)
-                    elif alpha_peak_method == "centroid":
-                        Ek_pred = centroid_ek(out_sel, e_grid)
-                        Ek_true = centroid_ek(y_sel, e_grid)
-                    else: #"argmax"#
-                        Ek_pred = hard_argmax_ek(out_sel, e_grid)
-                        Ek_true = hard_argmax_ek(y_sel, e_grid)
-
-#                   # calculate modified auger paramter alpha and respective loss
-                    alpha_mean = data.alpha_norm_stats[0]
-                    alpha_std  = data.alpha_norm_stats[1]
-                    alpha_pred = (Ek_pred + pred_molbe - alpha_mean) / alpha_std
-                    alpha_true = (Ek_true + true_molbe - alpha_mean) / alpha_std
-                    loss_alpha = alpha_loss_fn(alpha_pred, alpha_true)
-
+                    run_cebe  += loss_cebe.item()
                     run_auger += loss_auger.item()
-                    run_alpha += loss_alpha.item()
                     n_joint   += 1
 
                     # Uncertainty-weighted combined loss
                     lv = model.log_var
-                    if alpha_weight == "uw":
-                        loss = (torch.exp(-lv[0]) * loss_cebe  + lv[0] +
-                                torch.exp(-lv[1]) * loss_auger + lv[1] +
-                                torch.exp(-lv[2]) * loss_alpha + lv[2])
-                    elif alpha_weight == "fixed": 
-                        loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                                torch.exp(-lv[1]) * loss_auger + lv[1] +
-                                lambda_alpha * loss_alpha)
+                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
+                            torch.exp(-lv[1]) * loss_auger + lv[1])
+                            
                     #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
                     if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
                         print(f"  [multi] Switching to joint UW training at epoch {epoch}")
+
             elif pred_type == "CEBE": 
                 loss = cebe_loss_fn(out[idx], data.cebe_y[idx])    
             elif pred_type == "AUGER":
@@ -851,11 +730,8 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
         train_loss = running_loss / n_batches
 
         val_loss, val_comp  = validate_mpnn(val_loader, model, device, pred_type,
-                                   cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
-                                   task_type=task_type, lambda_alpha=lambda_alpha,
-                                   alpha_peak_method=alpha_peak_method,
-                                   alpha_weight=alpha_weight,
-                                   beta_epoch=beta_epoch)
+                                   cebe_loss_fn, auger_loss_fn,
+                                   task_type=task_type)
         
         train_results.append([epoch, train_loss, val_loss])
 
@@ -884,20 +760,20 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
         if verbose:
             #print(f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}")
             msg = f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}"
-            if task_type == 'multi' and (epoch % 10 == 0 or epoch == num_epochs - 1):
+            #if task_type == 'multi' and (epoch % 10 == 0 or epoch == num_epochs - 1):
+            if task_type == 'multi':
                 lv = model.log_var.detach()
                 w  = torch.exp(-lv)
                 c  = run_cebe / max(n_batches, 1)
                 if n_joint > 0:
-                    a, al = run_auger / n_joint, run_alpha / n_joint
-                    wa = w[2].item() if alpha_weight == 'uw' else lambda_alpha
-                    msg += (f" │ trnL(c/a/ap)={c:.4f}/{a:.4f}/{al:.4f}"
-                            f" │ w(c/a/ap)={w[0].item():.3f}/{w[1].item():.3f}/{wa:.4g}")
+                    a = run_auger / n_joint
+                    msg += (f" │ trnL(c/a)={c:.4f}/{a:.4f}"
+                            f" │ w(c/a)={w[0].item():.3f}/{w[1].item():.3f}")
                 else:
                     msg += f" │ trnL(c)={c:.4f} (warmup)"
                 if val_comp is not None:
-                    msg += (f" │ valL(c/a/ap)="
-                            f"{val_comp['cebe']:.4f}/{val_comp['auger']:.4f}/{val_comp['alpha']:.4f}")
+                    msg += (f" │ valL(c/a)="
+                            f"{val_comp['cebe']:.4f}/{val_comp['auger']:.4f}")
             print(msg)
 
     # If training finished all epochs without early stopping, the model still
@@ -938,12 +814,8 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device, num_e
             ft_train = ft_loss / ft_n
 
             ft_val, _  = validate_mpnn(val_loader, model, device, pred_type,
-                                     cebe_loss_fn, auger_loss_fn, alpha_loss_fn,
-                                     task_type='single',   # ft is Auger-only
-                                     lambda_alpha=lambda_alpha,
-                                     alpha_peak_method=alpha_peak_method,
-                                     alpha_weight=alpha_weight,
-                                     beta_epoch=beta_epoch)
+                                     cebe_loss_fn, auger_loss_fn,
+                                     task_type='single')
             
             train_results.append([num_epochs + ft_epoch, ft_train, ft_val])
             if verbose:
