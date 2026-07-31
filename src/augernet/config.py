@@ -117,7 +117,7 @@ class AugerNetConfig:
     patience: int = 30
     batch_size: int = 24
     learning_rate: float = 0.001
-    random_seed: int = 42
+    random_seed: int = 0
 
     # regularisation
     dropout: float = 0.1              # dropout between message-passing layers

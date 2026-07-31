@@ -1,6 +1,8 @@
 import os
+import csv
 import random
 import numpy as np
+import re
 from pathlib import Path
 import torch
 from torch_geometric.data import InMemoryDataset
@@ -8,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 from torch.optim.lr_scheduler import OneCycleLR
-from sklearn.model_selection import train_test_split
 from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter
 from torch.nn import Linear, ReLU, Tanh, Sequential as Seq
@@ -74,6 +75,12 @@ class LoadDataset(InMemoryDataset):
 
     def process(self):               # already processed
         pass
+
+############################################################################ 
+# GNN Architecture: 
+# Invariant or equivariant layer definition and message passing layer stacking
+############################################################################
+
 
 class InvariantMPNNLayer(MessagePassing):
     def __init__(self, emb_dim=64, edge_dim=4, aggr='add'):
@@ -458,6 +465,11 @@ class AutomaticWeightedLoss(nn.Module):
             total = total + 0.5 / (self.params[i] ** 2) * L + torch.log(1 + self.params[i] ** 2)
         return total
 
+############################################################################ 
+# Utility function: 
+# LR warmup, training history write and paramter splitting for weight decay
+############################################################################
+
 class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     """Cosine Annealing with Linear Warmup scheduler.
 
@@ -494,8 +506,136 @@ class CosineAnnealingWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             lr_range = self.base_lrs[0] - self.min_lr
             return [self.min_lr + lr_range * cosine_decay for _ in self.base_lrs]
 
+############################################################################
+# Uncertainty weighting (UW) helpers
+############################################################################
+# Kendall et al. (2018) derive the uncertainty-weighted multi-task loss from a
+# Gaussian likelihood, which pairs with a *squared-error* task loss:
+#
+#     L_uw = 1/(2*sigma^2) * L_mse + log sigma
+#          = 0.5 * ( exp(-s) * L_mse + s ),        s := log sigma^2
+#
+# The Laplace likelihood for L1 loss gives
+#
+#     L_uw = 1/b * L_mae + log b
+#          = 1.0 * ( exp(-s) * L_mae + s ),        s := log b
+#
+# Learnt parameter ``model.log_var`` therefore means log sigma^2 for an MSE head but
+# log b for an MAE head — it is a log scale parameter either way.
+#
+# Weight that actually multiplies a task loss is
+#     w = scale * exp(-log_var)
+
+_UW_SCALE      = {'mse': 0.5, 'mae': 1.0}                 # keyed by loss name
+_UW_SCALE_FN   = {F.mse_loss: 0.5, F.l1_loss: 1.0}        # keyed by loss fn
+_UW_LIKELIHOOD = {'mse': 'Gaussian', 'mae': 'Laplace'}
+
+
+def _uw_scale(loss_spec, task_name=""):
+    """Per-task prefactor of the UW loss term: 0.5 for MSE, 1.0 for MAE.
+
+    ``loss_spec`` may be a loss name ('mse'/'mae') or the corresponding
+    ``torch.nn.functional`` callable (``F.mse_loss``/``F.l1_loss``).
+    """
+    if isinstance(loss_spec, str):
+        if loss_spec in _UW_SCALE:
+            return _UW_SCALE[loss_spec]
+    elif loss_spec in _UW_SCALE_FN:
+        return _UW_SCALE_FN[loss_spec]
+    raise ValueError(
+        f"Unsupported UW loss{' for ' + task_name if task_name else ''}: "
+        f"{loss_spec!r} — must be 'mae'/'mse' or F.l1_loss/F.mse_loss."
+    )
+
+
+def _uw_loss(loss_cebe, loss_auger, log_var, scale_cebe, scale_auger):
+    """Uncertainty-weighted sum of the two task losses.
+
+    Single expression covering all MAE/MSE combinations (including mixed
+    ones):  ``scale * ( exp(-s) * L + s )`` per task.
+    """
+    return (scale_cebe  * (torch.exp(-log_var[0]) * loss_cebe  + log_var[0]) +
+            scale_auger * (torch.exp(-log_var[1]) * loss_auger + log_var[1]))
+
+
+def _uw_weights(log_var, scale_cebe, scale_auger):
+    """Effective task weights actually applied to each loss: scale*exp(-s).
+
+    Returns
+    -------
+    (float, float)
+        ``(w_cebe, w_auger)`` — plain Python floats, detached.
+    """
+    lv = log_var.detach().cpu()
+    return (scale_cebe  * float(torch.exp(-lv[0])),
+            scale_auger * float(torch.exp(-lv[1])))
+
+
+# Loss-history CSV
+# Column order for the per-run loss-history CSV.
+# ``w_cebe`` / ``w_auger`` are the EFFECTIVE weights (scale * exp(-log_var)),
+# consistent with the UW formulation selected by cebe_loss / auger_loss.
+_HISTORY_FIELDS = [
+    "epoch", "stage", "lr",
+    "train_loss", "val_loss",
+    "train_cebe", "val_cebe",
+    "train_auger", "val_auger",
+    "w_cebe", "w_auger",
+    "log_var_cebe", "log_var_auger",
+]
+
+def _write_loss_history(out_dir, run_tag, history):
+    """Write the full per-epoch loss / uncertainty-weight history to one CSV.
+
+    Parameters
+    ----------
+    out_dir : str``cfg.outputs_dir``
+    run_tag : str Run identifier, derived from model_tag
+    history : list[dict] One dict per epoch see ``_HISTORY_FIELDS`` above
+
+    Returns
+    -------
+    str
+        Path of history csv file.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{run_tag}_loss_history.csv")
+    with open(path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_HISTORY_FIELDS,
+                                extrasaction="ignore")
+        writer.writeheader()
+        for row in history:
+            writer.writerow({k: row.get(k, "") for k in _HISTORY_FIELDS})
+    return path
+
+# Recursive function for getting all model parameter names in PyTorch tree structure
+# Taken from Hugging Face github transformers/src/transformers/trainer_pt_utils.py
+def get_parameter_names(model, forbidden_layer_types, forbidden_layer_names=None):
+    """
+    Returns the names of the model parameters that are not inside a forbidden layer.
+    """
+    forbidden_layer_patterns = (
+        [re.compile(pattern) for pattern in forbidden_layer_names] if forbidden_layer_names is not None else []
+    )
+    result = []
+    for name, child in model.named_children():
+        child_params = get_parameter_names(child, forbidden_layer_types, forbidden_layer_names)
+        result += [
+            f"{name}.{n}"
+            for n in child_params
+            if not isinstance(child, tuple(forbidden_layer_types))
+            and not any(pattern.search(f"{name}.{n}".lower()) for pattern in forbidden_layer_patterns)
+        ]
+    # Add model specific parameters that are not in any child
+    result += [
+        k for k in model._parameters if not any(pattern.search(k.lower()) for pattern in forbidden_layer_patterns)
+    ]
+
+    return result
+
+
 ############################################################################ 
-# Validation run
+# validation run
 ############################################################################
 
 def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_loss_fn,
@@ -527,10 +667,13 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
                 run_auger += loss_auger.item()
                 n_joint   += 1
 
-                # Uncertainty-weighted combined loss
-                lv = model.log_var
-                loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                        torch.exp(-lv[1]) * loss_auger + lv[1])
+                # Uncertainty-weighted combined loss.  Same formulation as the
+                # training loop: scale * (exp(-log_var)*L + log_var) per task,
+                # with scale = 0.5 for MSE (Gaussian) / 1.0 for MAE (Laplace).
+                # Mixed MSE/MAE combinations are handled automatically.
+                loss = _uw_loss(loss_cebe, loss_auger, model.log_var,
+                                _uw_scale(cebe_loss_fn,  "CEBE"),
+                                _uw_scale(auger_loss_fn, "Auger"))
 
             elif task_type == 'single':
                 if isinstance(out, tuple):
@@ -553,16 +696,18 @@ def validate_mpnn(data_loader, model, device, pred_type, cebe_loss_fn, auger_los
 
     #return total_loss / n_batches
 
-############################################################################ 
+
+############################################################################
 # Training run
 ############################################################################
 
-def train_loop(train_list: list, val_list: list, model: nn.Module, device, 
+def train_loop(train_list: list, val_list: list, model: nn.Module, device,
                 num_epochs: int = 100, batch_size=64, max_lr=1e-2, pct_start=0.6, 
-                verbose = True, pred_type="AUGER", cebe_loss='mse', auger_loss='mae', 
-                patience=50, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, 
+                verbose = True, pred_type="AUGER", cebe_loss='mse', auger_loss='mse', 
+                patience=50, random_seed=0, optimizer_type='adamw', weight_decay=1e-4, gradient_clip_norm=0.5, 
                 warmup_epochs=10, min_lr=1e-7, scheduler_type='cosine', task_type='single', 
-                mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50
+                mt_warmup_epochs=10, mt_finetune_auger=False, mt_finetune_epochs=50,
+                out_dir=None, run_tag=None
                 ):
     """
     Training loop with gradient clipping, configurable optimizer and LR scheduler.
@@ -591,15 +736,26 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
         min_lr: Minimum learning rate for cosine scheduler (default: 1e-7)
         scheduler_type: 'cosine' (CosineAnnealingWarmup, per-epoch) or
                         'onecycle' (OneCycleLR, per-batch — original AUGER schedule)
+        out_dir: directory for the per-epoch loss-history CSV.  If None
+                 (or run_tag is None) no history file is written.
+        run_tag: run identifier used as the CSV stem, i.e.
+                 ``{out_dir}/{run_tag}_loss_history.csv``.  Should match the
+                 model ``.pth`` stem — see ``_write_loss_history``.
     """
 
-    seed(0)
+    seed(random_seed)
     gen = torch.Generator().manual_seed(0)
 
     # dict to toggle loss function options
     _loss_fn = {'mse': F.mse_loss, 'mae': F.l1_loss}
     cebe_loss_fn  = _loss_fn[cebe_loss]
     auger_loss_fn = _loss_fn[auger_loss]
+
+    # UW prefactors implied by the chosen task losses (0.5 MSE / 1.0 MAE).
+    # Resolved once here so the objective, the history CSV and the epoch
+    # printout all use the same formulation.  Raises for anything unsupported.
+    uw_scale_cebe  = _uw_scale(cebe_loss,  "CEBE")
+    uw_scale_auger = _uw_scale(auger_loss, "Auger")
 
     train_set = train_list
     val_set = val_list
@@ -611,17 +767,27 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
     val_loader   = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=0, generator=gen,
                                 pin_memory=(device.type == "cuda"))
 
-    # ============================================================================
-    # OPTIMIZER SETUP - Use AdamW for better generalization
-    # ============================================================================
-    if optimizer_type == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr, weight_decay=weight_decay, betas=(0.9, 0.999))
-    else:
-        optimizer = torch.optim.Adam(model.parameters(), lr=max_lr, weight_decay=weight_decay)
+    #Split model paramters into:
+    #   Those which should under weight decay in AdamW Optimizer: model weights
+    #   Those which should not: LayerNrom, bias, log_var (for multitask)
+    #   Uses recursive get_parametr_names I copied in from hugging face transformers
+    decay_names  = get_parameter_names(model, [nn.LayerNorm])
+    decay_names  = [n for n in decay_names if "bias" not in n and n != "log_var"]
 
-    # ============================================================================
-    # SCHEDULER SETUP
-    # ============================================================================
+    param_groups = [
+        {"params": [p for n, p in model.named_parameters() if n in decay_names],
+            "weight_decay": weight_decay},
+        {"params": [p for n, p in model.named_parameters() if n not in decay_names],
+            "weight_decay": 0.0},
+    ]
+
+    # Optimizer 
+    if optimizer_type == 'adamw':
+        optimizer = torch.optim.AdamW(param_groups, lr=max_lr, betas=(0.9, 0.999))
+    else:
+        optimizer = torch.optim.Adam(param_groups,  lr=max_lr)
+
+    # Scheduler
     # Determine whether scheduler steps per-batch or per-epoch
     scheduler_per_batch = False
 
@@ -641,7 +807,7 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
             print(f"  Scheduler: OneCycleLR  (per-batch, {total_steps} total steps, "
                   f"pct_start={pct_start})")
     else:
-        # CosineAnnealingWarmup: steps per EPOCH — smoother schedule.
+        # CosineAnnealingWarmup: steps per epoch — smoother schedule.
         scheduler = CosineAnnealingWarmupScheduler(
             optimizer,
             warmup_epochs=warmup_epochs,
@@ -654,6 +820,8 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
                   f"warmup={warmup_epochs} epochs)")
 
     train_results = []
+    history = []          # per-epoch records for the loss-history CSV
+    write_history = bool(out_dir) and bool(run_tag)
     best_val_loss = float('inf')
     patience_counter = 0
     patience = patience  # Early stopping patience
@@ -662,6 +830,9 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
     for epoch in range(num_epochs):
 
         model.train()
+        # LR the epoch starts on.  With OneCycleLR (per-batch) this drifts
+        # within the epoch; recorded here as the representative value.
+        epoch_lr = optimizer.param_groups[0]['lr']
         running_loss, n_batches = 0.0, 0
         run_cebe, run_auger, n_joint = 0.0, 0.0, 0
 
@@ -685,18 +856,32 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
                     y_sel = data.y_fitted[idx]
                     loss_auger = auger_loss_fn(out_sel, y_sel)
 
-                    run_cebe  += loss_cebe.item()
+                    # NOTE: loss_cebe is accumulated into run_cebe once, above,
+                    # for every batch in both stages.  Do not accumulate it
+                    # again here — doing so doubled the reported train CEBE
+                    # loss in the joint stage.
                     run_auger += loss_auger.item()
                     n_joint   += 1
 
-                    # Uncertainty-weighted combined loss
-                    lv = model.log_var
-                    loss = (torch.exp(-lv[0]) * loss_cebe + lv[0] +
-                            torch.exp(-lv[1]) * loss_auger + lv[1])
-                            
+                    # Uncertainty-weighted combined loss.
+                    #   scale * ( exp(-log_var) * L + log_var )   per task
+                    # with scale = 0.5 for an MSE head (Gaussian likelihood,
+                    # log_var = log sigma^2) and 1.0 for an MAE head (Laplace
+                    # likelihood, log_var = log b).  Mixed MSE/MAE combinations
+                    # fall out of the same expression.
+                    # See Kendall et al. for the UW derivation.
+                    loss = _uw_loss(loss_cebe, loss_auger, model.log_var,
+                                    uw_scale_cebe, uw_scale_auger)
+
                     #loss = model.awl(loss_cebe, loss_auger, loss_alpha)
                     if epoch == mt_warmup_epochs and n_batches == 0 and verbose:
-                        print(f"  [multi] Switching to joint UW training at epoch {epoch}")
+                        print(f"  [multi] Switching to joint UW training at epoch {epoch}"
+                              f" │ UW form: cebe={cebe_loss}/{_UW_LIKELIHOOD[cebe_loss]}"
+                              f" (scale {uw_scale_cebe}),"
+                              f" auger={auger_loss}/{_UW_LIKELIHOOD[auger_loss]}"
+                              f" (scale {uw_scale_auger})")
+                        print("           reported w(c/a) = scale * exp(-log_var)"
+                              " (effective weight on each task loss)")
 
             elif pred_type == "CEBE": 
                 loss = cebe_loss_fn(out[idx], data.cebe_y[idx])    
@@ -735,6 +920,44 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
         
         train_results.append([epoch, train_loss, val_loss])
 
+        # ── Loss-history record ──────────────────────────────────────────
+        # Built here (rather than next to the verbose print) so that the
+        # epoch that trips early stopping is still recorded, matching
+        # train_results exactly.
+        if write_history:
+            row = {"epoch": epoch, "lr": epoch_lr,
+                   "train_loss": train_loss, "val_loss": val_loss}
+            if task_type == 'multi':
+                lv_rec = model.log_var.detach().cpu()
+                # Effective weights: scale * exp(-log_var), i.e. what actually
+                # multiplies each task loss under the selected UW formulation
+                # (0.5 for an MSE head, 1.0 for an MAE head).
+                w_cebe_eff, w_auger_eff = _uw_weights(model.log_var,
+                                                      uw_scale_cebe,
+                                                      uw_scale_auger)
+                row["stage"] = ("warmup" if epoch < mt_warmup_epochs
+                                else "joint")
+                row["train_cebe"]    = run_cebe / max(n_batches, 1)
+                row["w_cebe"]        = w_cebe_eff
+                row["w_auger"]       = w_auger_eff
+                row["log_var_cebe"]  = lv_rec[0].item()
+                row["log_var_auger"] = lv_rec[1].item()
+                if n_joint > 0:
+                    row["train_auger"] = run_auger / n_joint
+                if val_comp is not None:
+                    row["val_cebe"]  = val_comp["cebe"]
+                    row["val_auger"] = val_comp["auger"]
+            else:
+                # Single-task: mirror the loss into its component column so
+                # the CSV is parsed uniformly across run types.
+                row["stage"] = pred_type.lower()
+                if pred_type == "CEBE":
+                    row["train_cebe"],  row["val_cebe"]  = train_loss, val_loss
+                else:
+                    row["train_auger"], row["val_auger"] = train_loss, val_loss
+            history.append(row)
+            _write_loss_history(out_dir, run_tag, history)
+
         # CosineAnnealingWarmup steps per epoch
         if not scheduler_per_batch:
             scheduler.step()
@@ -762,18 +985,20 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
             msg = f"Epoch {epoch:03d} │ train {train_loss:.5f} │ val {val_loss:.5f}"
             #if task_type == 'multi' and (epoch % 10 == 0 or epoch == num_epochs - 1):
             if task_type == 'multi':
-                lv = model.log_var.detach()
-                w  = torch.exp(-lv)
+                # Effective UW weights (scale * exp(-log_var)) so the printed
+                # w(c/a) matches the objective for MAE, MSE and mixed runs.
+                w_c, w_a = _uw_weights(model.log_var,
+                                       uw_scale_cebe, uw_scale_auger)
                 c  = run_cebe / max(n_batches, 1)
-                if n_joint > 0:
+                if epoch < mt_warmup_epochs:
+                    msg += f" │ trnL(c)={c:.4f} (warmup)"
+                elif n_joint > 0:
                     a = run_auger / n_joint
                     msg += (f" │ trnL(c/a)={c:.4f}/{a:.4f}"
-                            f" │ w(c/a)={w[0].item():.3f}/{w[1].item():.3f}")
-                else:
-                    msg += f" │ trnL(c)={c:.4f} (warmup)"
-                if val_comp is not None:
-                    msg += (f" │ valL(c/a)="
-                            f"{val_comp['cebe']:.4f}/{val_comp['auger']:.4f}")
+                            f" │ w(c/a)={w_c:.3f}/{w_a:.3f}")
+                    if val_comp is not None:
+                        msg += (f" │ valL(c/a)="
+                                f"{val_comp['cebe']:.4f}/{val_comp['auger']:.4f}")
             print(msg)
 
     # If training finished all epochs without early stopping, the model still
@@ -790,10 +1015,22 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
         for name, p in model.named_parameters():
             if 'adapter_cebe' in name or 'lin_pred' in name:
                 p.requires_grad_(False)
+        ft_decay, ft_no_decay = [], []
+        for n, p in model.named_parameters():
+            if not p.requires_grad:          # adapter_cebe / lin_pred are frozen here
+                continue
+            (ft_decay if n in decay_names else ft_no_decay).append(p)
+
+#         ft_optimizer = torch.optim.AdamW(
+#             filter(lambda p: p.requires_grad, model.parameters()),
+#             lr=max_lr * 0.1, weight_decay=weight_decay
+#         )
         ft_optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=max_lr * 0.1, weight_decay=weight_decay
+            [{"params": ft_decay,    "weight_decay": weight_decay},
+            {"params": ft_no_decay, "weight_decay": 0.0}],
+            lr=max_lr * 0.1, betas=(0.9, 0.999),
         )
+
         for ft_epoch in range(mt_finetune_epochs):
             model.train()
             ft_loss, ft_n = 0.0, 0
@@ -818,13 +1055,42 @@ def train_loop(train_list: list, val_list: list, model: nn.Module, device,
                                      task_type='single')
             
             train_results.append([num_epochs + ft_epoch, ft_train, ft_val])
+
+            if write_history:
+                lv_rec = model.log_var.detach().cpu()
+                w_cebe_eff, w_auger_eff = _uw_weights(model.log_var,
+                                                      uw_scale_cebe,
+                                                      uw_scale_auger)
+                # Stage 3 optimises the plain Auger MAE, so train_loss /
+                # val_loss are Auger-only here and the CEBE columns are left
+                # empty.  log_var is frozen but recorded for continuity.
+                history.append({
+                    "epoch": num_epochs + ft_epoch,
+                    "stage": "finetune",
+                    "lr": ft_optimizer.param_groups[0]['lr'],
+                    "train_loss": ft_train, "val_loss": ft_val,
+                    "train_auger": ft_train, "val_auger": ft_val,
+                    "w_cebe": w_cebe_eff, "w_auger": w_auger_eff,
+                    "log_var_cebe": lv_rec[0].item(),
+                    "log_var_auger": lv_rec[1].item(),
+                })
+                _write_loss_history(out_dir, run_tag, history)
+
             if verbose:
                 print(f"  FT Epoch {ft_epoch:03d} │ train {ft_train:.5f} │ val {ft_val:.5f}")
         # Re-enable all parameters
         for p in model.parameters():
             p.requires_grad_(True)
 
+    if write_history and verbose:
+        print(f"\n  Loss history ({len(history)} epochs) written to "
+              f"{os.path.join(out_dir, f'{run_tag}_loss_history.csv')}")
+
     return train_results
+
+############################################################################
+# Permuation, translation and rotation tests
+############################################################################
 
 def permute_graph(data, perm):
     """Helper function for permuting PyG Data object attributes consistently.

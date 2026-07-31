@@ -165,14 +165,13 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
     triplet stick spectra and Gaussian-broadening onto a common energy grid.
 
     Each atom's ``y`` is a 600-vector = [energies(300), intensities(300)].
-    Energies are normalised by ``max_ke``; intensities by per-atom max.
+    Energies are normalised by ``max_ke``; 
     ``spec_len`` gives the number of valid entries in each half.
 
     After this call every element in *sing_data* has a new attribute
     ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
     """
     maxE = auger_norm_stats['maxE']
-    maxI = auger_norm_stats['maxI']
 
     for data in calc_data:
         n_atoms = data.x.size(0)
@@ -206,9 +205,14 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
 
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
-                     pred_type='CEBE', spectrum_dim=300, task_type='single'):
-    
-    """Build, train, and return a single MPNN model + train_results."""
+                     pred_type='CEBE', spectrum_dim=300, task_type='single',
+                     out_dir=None, run_tag=None):
+
+    """Build, train, and return a single MPNN model + train_results.
+
+    ``out_dir`` / ``run_tag`` are forwarded to ``gtu.train_loop`` and control
+    the per-epoch loss-history CSV.  If either is None no history is written.
+    """
     # n_var: number of learnable log-variance terms for uncertainty weighting.
     # 3 when alpha_weight='uw' (CEBE + Auger + alpha), 2 otherwise (CEBE + Auger).
     # Not a config field -- derived here so the MPNN state_dict is always
@@ -233,12 +237,14 @@ def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
         verbose=True, pred_type=pred_type,
         cebe_loss=hp['cebe_loss'], 
         patience=hp['patience'],
+        random_seed=hp['random_seed'],
         optimizer_type=hp['optimizer_type'], weight_decay=hp['weight_decay'],
         gradient_clip_norm=hp['gradient_clip_norm'],
         warmup_epochs=hp['warmup_epochs'], min_lr=hp['min_lr'],
         scheduler_type=hp.get('scheduler_type', 'cosine'),
         pct_start=hp.get('pct_start', 0.3),
         task_type=task_type,
+        out_dir=out_dir, run_tag=run_tag,
     )
     if pred_type == 'AUGER':
         loop_kwargs['auger_loss'] = hp.get('auger_loss', 'mse')
@@ -609,15 +615,22 @@ def train_single_run(
     # ── Dispatch to model-specific training ──────────────────────────────
     # Each _train_* helper returns a result dict with trained model(s) and
     # metrics but does NOT save anything to disk — saving is done below.
+    # Loss-history tag: derived from the model .pth stem rather than rebuilt
+    # from model_id/fold, so the CSV always matches its checkpoint — including
+    # the param-search `prefix` and `config_id` that _build_save_paths adds.
+    run_tag = os.path.splitext(os.path.basename(save_paths['model']))[0]
+
     if cfg.model == 'cebe-gnn':
         result = _train_cebe(
             data, train_idx, val_idx, in_channels, edge_dim,
             device, hp, fold, verbose,
+            out_dir=output_dir, run_tag=run_tag,
         )
     else:
         result = _train_auger(
             data, train_idx, val_idx, in_channels, edge_dim,
             device, hp, fold, verbose, cfg,
+            out_dir=output_dir, run_tag=run_tag,
         )
 
     # ── Save model(s) to disk ────────────────────────────────────────────
@@ -634,15 +647,19 @@ def train_single_run(
 # ── CEBE training ────────────────────────────────────────────────────────────
 
 def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
-                device, hp, fold, verbose):
-    """Train a single CEBE GNN and return metrics (no file I/O)."""
+                device, hp, fold, verbose, out_dir=None, run_tag=None):
+    """Train a single CEBE GNN and return metrics.
+
+    The only file written here is the loss-history CSV (streamed per epoch by
+    ``gtu.train_loop``); model saving still happens in ``train_single_run``.
+    """
     calc_data = data['calc_data']
     train_data = [calc_data[i] for i in train_idx]
     val_data   = [calc_data[i] for i in val_idx]
 
     model, train_results = _train_one_model(
         train_data, val_data, in_channels, edge_dim, device, hp,
-        pred_type='CEBE',
+        pred_type='CEBE', out_dir=out_dir, run_tag=run_tag,
     )
 
     bvl, btl, bve, ftl, fvl, n_ep = _extract_results(train_results)
@@ -661,7 +678,8 @@ def _train_cebe(data, train_idx, val_idx, in_channels, edge_dim,
     }
 
 def _train_auger(data, train_idx, val_idx, in_channels, edge_dim,
-                        device, hp, fold, verbose, cfg):
+                        device, hp, fold, verbose, cfg,
+                        out_dir=None, run_tag=None):
     """Train a single auger GNN on one fold."""
     calc_data = data['calc_data']
     train_data = [calc_data[i] for i in train_idx]
@@ -670,6 +688,7 @@ def _train_auger(data, train_idx, val_idx, in_channels, edge_dim,
     model, train_results = _train_one_model(
         train_data, val_data, in_channels, edge_dim, device, hp,
         pred_type='AUGER', spectrum_dim=cfg.n_points, task_type=cfg.task_type,
+        out_dir=out_dir, run_tag=run_tag,
     )
 
     bvl, btl, bve, ftl, fvl, n_ep = _extract_results(train_results)
