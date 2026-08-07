@@ -603,12 +603,7 @@ def train_single_run(data: Dict[str, Any],
     # Calc hold-out (data['test_df'], removed from training by train_driver)
     holdout_df_raw = data.get('test_df')
     if holdout_df_raw is not None and len(holdout_df_raw) > 0:
-        holdout_df = holdout_df_raw.copy()
-        if merge_scheme != 'none':
-            holdout_df = apply_label_merging(holdout_df, merge_scheme)
-            holdout_df = holdout_df[holdout_df['carbon_env_index'] >= 0].reset_index(drop=True)
-        else:
-            holdout_df = holdout_df.reset_index(drop=True)
+        holdout_df = holdout_df_raw.copy().reset_index(drop=True)
         holdout_idx = list(range(len(holdout_df)))
         holdout_dataset = _build_eval_dataset(holdout_df, norm_stats)
         accs_holdout, _, _ = _per_class_accuracy(

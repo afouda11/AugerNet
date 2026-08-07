@@ -21,15 +21,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Dict, Any
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import accuracy_score, f1_score
 
-from augernet import carbon_dataframe as cdf
 from augernet.carbon_environment import (
     CARBON_ENVIRONMENT_PATTERNS,
-    CARBON_ENV_TO_IDX,
-    IDX_TO_CARBON_ENV,
     NUM_CARBON_CATEGORIES,
 )
 
