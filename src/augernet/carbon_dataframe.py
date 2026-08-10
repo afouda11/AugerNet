@@ -61,17 +61,19 @@ class CarbonDataset(Dataset):
         self,
         df: pd.DataFrame,
         include_augmentation: bool = False,
-        normalize_intensity: bool = True,
+        normalize_intensity: bool = False,
         broadening_fwhm: float = 1.6,
         energy_min: float = 200.0,
-        energy_max: float = 273.0, 
+        energy_max: float = 273.0,
         n_points: int = 731,
-        norm_stats: dict | None = None
+        norm_stats: dict | None = None,
+        i_scale: float | None = None,
     ):
         self.df = df.reset_index(drop=True)
         self.include_augmentation = include_augmentation
         self.normalize_intensity = normalize_intensity
         self.broadening_fwhm = broadening_fwhm
+        self.i_scale = i_scale
 
         n_atoms = len(self.df)
 
@@ -91,6 +93,10 @@ class CarbonDataset(Dataset):
             intensities = np.concatenate([si, ti])
 
             if len(energies) > 0:
+                # Same convention as the GNN targets: area-normalised kernel on
+                # raw sticks divided by the global i_scale.  ``normalize_intensity``
+                # switches to the legacy per-carbon max-normalisation, which
+                # discards the global scale -- kept as an ablation.
                 _, intensity_grid = fit_spectrum_to_grid(
                     energies, intensities,
                     fwhm=broadening_fwhm,
@@ -98,12 +104,16 @@ class CarbonDataset(Dataset):
                     energy_max=energy_max,
                     n_points=n_points,
                     normalize=self.normalize_intensity,
+                    kernel='area',
+                    i_scale=None if self.normalize_intensity else i_scale,
                 )
                 self._spectra[i] = intensity_grid
 
         elapsed = _time.time() - t0
+        scale_desc = ('per-carbon max-normalised'
+                      if self.normalize_intensity else f'global i_scale={i_scale}')
         print(f"  Pre-broadened {n_atoms} spectra "
-              f"(FWHM={broadening_fwhm} eV) in {elapsed:.1f}s")
+              f"(FWHM={broadening_fwhm} eV, {scale_desc}) in {elapsed:.1f}s")
 
         # for eval and hold out data, get z norm stats from train data for FiLM arguments
         if norm_stats is not None:

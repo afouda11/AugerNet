@@ -45,6 +45,71 @@ def _get_backend(cfg):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Evaluation-metric contract
+# ─────────────────────────────────────────────────────────────────────────────
+#  Backends return a flat dict of scalars from ``run_evaluation``.  Every key
+#  prefixed 'eval_' or 'test_' is recorded verbatim on the fold/config entry by
+#  ``_run_entry`` and aggregated to mean +/- std by ``_build_summary``.
+#
+#    cebe-gnn   evaluate_cebe_model  -> mae, r2, std  (legacy names, mapped below)
+#    auger-gnn  evaluate_auger_model -> eval_gvx_pcc, test_gvc_mse, ...
+#                 set          eval = experimental evaluation molecules
+#                              test = calc hold-out molecules
+#                 comparison   gvx  = GNN vs experiment
+#                              gvc  = GNN vs calc
+#                              cvx  = calc vs experiment (reference ceiling)
+#
+#  Adding a metric downstream requires no change here: it is picked up
+#  automatically provided it is a scalar carrying one of the prefixes.
+
+_EVAL_PREFIXES = ('eval_', 'test_')
+
+# Historical CEBE key names, kept so existing summary JSONs stay readable.
+_LEGACY_EVAL_ALIASES = {'mae': 'eval_mae', 'r2': 'eval_r2', 'std': 'eval_std'}
+
+# Console columns per model type: (entry key, header, width, format)
+_EVAL_COLUMNS = {
+    'cebe-gnn':  [('eval_mae',     'Exp MAE (eV)', 12, '.4f'),
+                  ('eval_r2',      'Exp R2',        8, '.4f')],
+    'auger-gnn': [('eval_gvx_pcc', 'PCC G-Exp',    10, '.4f'),
+                  ('eval_cvx_pcc', 'PCC C-Exp',    10, '.4f'),
+                  ('eval_gvc_pcc', 'PCC G-Calc',   10, '.4f'),
+                  ('test_gvc_pcc', 'PCC G-Calc HO', 13, '.4f'),
+                  # scale-preserving: not computed on max-normalised spectra
+                  ('test_mean_area_ratio', 'Area ratio',  10, '.4f'),
+                  ('test_mean_share_mae',  'Share MAE',   10, '.4f')],
+}
+
+
+def _collect_eval_metrics(eval_metrics) -> dict:
+    """Extract the flat scalar metrics from a backend evaluation result.
+
+    Non-scalars (``per_env``, ``per_molecule``, the nested eval/test summaries)
+    are dropped -- they already live in ``{file_stem}_eval_results.json``.
+    NaN becomes None so ``json.dump`` stays valid and the aggregation in
+    ``_aggregate_eval_metrics`` can skip it.
+    """
+    if not isinstance(eval_metrics, dict):
+        return {}
+    out = {}
+    for key, val in eval_metrics.items():
+        key = _LEGACY_EVAL_ALIASES.get(key, key)
+        if not key.startswith(_EVAL_PREFIXES):
+            continue
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        val = float(val)
+        out[key] = None if val != val else val        # NaN -> None
+    return out
+
+
+def _eval_columns(cfg, entries):
+    """Console columns for the metrics actually present in *entries*."""
+    return [c for c in _EVAL_COLUMNS.get(cfg.model, [])
+            if any(isinstance(r.get(c[0]), float) for r in entries)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Filename construction (single source of truth for .pth paths)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -171,14 +236,18 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
     best = min(fold_results, key=lambda r: r['best_val_loss'])
 
     # ── Print summary table ──────────────────────────────────────────────
-    has_eval = any(r.get('eval_mae') is not None for r in fold_results)
-    _print_cv_summary(fold_results, n_folds, best, has_eval=has_eval)
+    eval_cols = _eval_columns(cfg, fold_results)
+    _print_cv_summary(fold_results, n_folds, best, eval_cols=eval_cols)
 
+    # Mean +/- std over folds -- these are the manuscript CV-table values.
     combined = [r['best_val_loss'] for r in fold_results]
-    print(f"\n  Mean Val Loss: {np.mean(combined):.6f} +/- {np.std(combined):.6f}")
-    if has_eval:
-        eval_maes = [r['eval_mae'] for r in fold_results if r.get('eval_mae') is not None]
-        print(f"  Mean Exp MAE:  {np.mean(eval_maes):.4f} +/- {np.std(eval_maes):.4f} eV")
+    print(f"\n  {'Val Loss':<16s} {np.mean(combined):.6f} +/- "
+          f"{np.std(combined, ddof=1):.6f}  (n={len(combined)})")
+    for key, header, _w, fmt in eval_cols:
+        vals = [r[key] for r in fold_results if isinstance(r.get(key), float)]
+        if vals:
+            print(f"  {header:<16s} {np.mean(vals):{fmt}} +/- "
+                  f"{np.std(vals, ddof=1):{fmt}}  (n={len(vals)})")
     print(f"  Best fold: Fold {best['fold']}  (loss={best['best_val_loss']:.6f})")
 
     # ── Save JSON summary ────────────────────────────────────────────────
@@ -324,17 +393,19 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
         r['rank'] = rank + 1
 
     # ── Leaderboard ──────────────────────────────────────────────────────
-    has_eval = any(r.get('eval_mae') is not None for r in results)
+    eval_cols = _eval_columns(cfg, results)
     _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
-                             has_eval=has_eval)
+                             eval_cols=eval_cols)
 
     best = results[0]
     print(f"\n  Best config: {best['config_id']}")
     for k in sorted(param_grid.keys()):
         print(f"      {k}: {best.get(k)}")
     print(f"      val_loss: {best['best_val_loss']:.6f}")
-    if has_eval and best.get('eval_mae') is not None:
-        print(f"      exp_mae:  {best['eval_mae']:.4f} eV")
+    for key, header, _w, fmt in eval_cols:
+        v = best.get(key)
+        if isinstance(v, float):
+            print(f"      {header}: {v:{fmt}}")
 
     # ── Save JSON summary ────────────────────────────────────────────────
     summary = _build_summary(results, cfg)
@@ -588,28 +659,69 @@ def _run_predict(cfg):
     )
 
 
+def _aggregate_eval_metrics(entries: List[dict]) -> dict:
+    """Mean / std / n over folds (or configs) for every recorded eval metric.
+
+    Picks up any scalar key carrying an ``_EVAL_PREFIXES`` prefix, so a metric
+    added downstream needs no change here.  The prefix filter is also what
+    keeps param-search grid values (merged into the entry by ``**config``)
+    out of the aggregation.
+
+    Notes
+    -----
+    - ``ddof=1``: a k-fold spread is a sample estimate, not a population one.
+      With ``n_folds=10`` the population std understates it by ~5%.
+    - Folds where a metric is missing or NaN are skipped, and ``n_<key>`` is
+      reported so a partially-populated metric is visible rather than silent.
+    """
+    keys: List[str] = []
+    for r in entries:
+        for k, v in r.items():
+            if (k.startswith(_EVAL_PREFIXES) and k not in keys
+                    and isinstance(v, (int, float)) and not isinstance(v, bool)):
+                keys.append(k)
+
+    agg: Dict[str, Any] = {}
+    for k in keys:
+        vals = [float(r[k]) for r in entries
+                if isinstance(r.get(k), (int, float))
+                and not isinstance(r[k], bool)
+                and r[k] == r[k]]                       # drop NaN
+        if not vals:
+            continue
+        agg[f'mean_{k}'] = float(np.mean(vals))
+        agg[f'std_{k}']  = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+        agg[f'n_{k}']    = len(vals)
+    return agg
+
+
 def _build_summary(entries: List[dict], cfg) -> dict:
     """Build the common top-level JSON summary shared by CV and param search.
 
-    Computes aggregate statistics (mean/std of val loss, train loss, and
-    eval MAE when available) and returns an ``OrderedDict``-style dict.
-    Callers add mode-specific keys (``n_folds``, ``param_grid``, etc.)
-    after this returns.
+    Computes aggregate statistics (mean/std of val loss, train loss, and every
+    evaluation metric recorded by ``_collect_eval_metrics``) and returns an
+    ``OrderedDict``-style dict.  Callers add mode-specific keys (``n_folds``,
+    ``param_grid``, etc.) after this returns.
+
+    All spreads use ``ddof=1`` (sample std) -- these are the mean +/- std
+    values reported in the manuscript CV table.
     """
     val_losses = [r['best_val_loss'] for r in entries]
     train_losses = [r['best_train_loss'] for r in entries
                     if r.get('best_train_loss') is not None]
-    has_eval = any(r.get('eval_mae') is not None for r in entries)
 
     summary: Dict[str, Any] = {
         'model': cfg.model,
         'model_id': cfg.model_id,
         'feature_keys': cfg.feature_keys,
         'split_method': cfg.split_method,
+        'n_runs':          len(entries),
         'mean_val_loss':   float(np.mean(val_losses)),
-        'std_val_loss':    float(np.std(val_losses)),
+        'std_val_loss':    float(np.std(val_losses, ddof=1)) if len(val_losses) > 1 else 0.0,
         'mean_train_loss': float(np.mean(train_losses)) if train_losses else None,
-        'std_train_loss':  float(np.std(train_losses))  if train_losses else None,
+        'std_train_loss':  (float(np.std(train_losses, ddof=1))
+                            if len(train_losses) > 1 else
+                            (0.0 if train_losses else None)),
         'best_val_loss':   float(min(val_losses)),
         'best_train_loss': None,
     }
@@ -618,11 +730,8 @@ def _build_summary(entries: List[dict], cfg) -> dict:
     best_idx = int(np.argmin(val_losses))
     summary['best_train_loss'] = entries[best_idx].get('best_train_loss')
 
-    if has_eval:
-        eval_maes = [r['eval_mae'] for r in entries
-                     if r.get('eval_mae') is not None]
-        summary['mean_eval_mae'] = float(np.mean(eval_maes))
-        summary['std_eval_mae']  = float(np.std(eval_maes))
+    # ── Aggregate every recorded evaluation metric (mean +/- std over folds) ──
+    summary.update(_aggregate_eval_metrics(entries))
 
     summary['runs'] = entries
     return summary
@@ -633,7 +742,7 @@ def _run_entry(result: dict, eval_metrics: dict = None) -> dict:
 
     Both CV folds and param-search configs share this base structure.
     Callers add ``fold`` or ``config_id`` / ``rank`` as needed.
-    """
+"""
     entry = {
         'model_id': result.get('model_id', ''),
         'best_val_loss': result.get('best_val_loss', float('inf')),
@@ -644,61 +753,67 @@ def _run_entry(result: dict, eval_metrics: dict = None) -> dict:
         'final_train_loss': result.get('final_train_loss'),
         'final_val_loss': result.get('final_val_loss'),
     }
-    if eval_metrics is not None:
-        entry['eval_mae'] = eval_metrics.get('mae')
-        entry['eval_r2']  = eval_metrics.get('r2')
-        entry['eval_std'] = eval_metrics.get('std')
+
+    entry.update(_collect_eval_metrics(eval_metrics))
+
     return entry
 
 
-def _print_cv_summary(fold_results, n_folds, best, has_eval=False):
-    """Print CV summary table."""
-    print(f"\n{'=' * 90}")
-    print(f"  K-FOLD CROSS-VALIDATION SUMMARY  ({n_folds} folds)")
-    print(f"{'=' * 90}")
+def _print_cv_summary(fold_results, n_folds, best, eval_cols=()):
+    """Print CV summary table.
 
-    if has_eval:
-        print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}  {'Exp MAE (eV)':>12}  {'Exp R2':>8}")
-        print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*8}")
-    else:
-        print(f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}")
-        print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}")
+    ``eval_cols`` comes from ``_eval_columns(cfg, fold_results)`` -- a list of
+    ``(entry_key, header, width, format)`` for the metrics actually populated,
+    so the table adapts to cebe-gnn / auger-gnn without a boolean flag.
+    """
+    width = max(90, 40 + sum(w + 2 for _k, _h, w, _f in eval_cols))
+    print(f"\n{'=' * width}")
+    print(f"  K-FOLD CROSS-VALIDATION SUMMARY  ({n_folds} folds)")
+    print(f"{'=' * width}")
+
+    hdr = f"  {'Fold':>4}  {'Epochs':>6}  {'TrnLoss':>12}  {'ValLoss':>12}"
+    sep = f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*12}"
+    for _key, header, w, _fmt in eval_cols:
+        hdr += f"  {header:>{w}}"
+        sep += f"  {'─'*w}"
+    print(hdr)
+    print(sep)
 
     for r in fold_results:
         m = ' best' if r['fold'] == best['fold'] else ''
         trn = f"{r['best_train_loss']:>12.6f}" if r.get('best_train_loss') is not None else f"{'—':>12}"
         line = (f"  {r['fold']:>4}  {r['n_epochs']:>6}  "
                 f"{trn}  {r['best_val_loss']:>12.6f}")
-        if has_eval:
-            mae_str = f"{r['eval_mae']:>12.4f}" if r.get('eval_mae') is not None else f"{'—':>12}"
-            r2_str  = f"{r['eval_r2']:>8.4f}"   if r.get('eval_r2')  is not None else f"{'—':>8}"
-            line += f"  {mae_str}  {r2_str}"
+        for key, _h, w, fmt in eval_cols:
+            v = r.get(key)
+            line += f"  {v:>{w}{fmt}}" if isinstance(v, float) else f"  {'—':>{w}}"
         print(f"{line}{m}")
 
-    print(f"{'=' * 90}")
+    print(f"{'=' * width}")
 
 
 def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
-                             has_eval=False):
+                             eval_cols=()):
     """Print the top results from a param search."""
-    print(f"\n{'=' * 110}")
+    width = max(110, 60 + 12 * len(param_grid)
+                + sum(w + 2 for _k, _h, w, _f in eval_cols))
+    print(f"\n{'=' * width}")
     print(f"  HYPERPARAMETER SEARCH LEADERBOARD  ({n_configs} configs)")
     print(f"  Total time: {total_elapsed/60:.1f} minutes")
-    print(f"{'=' * 110}")
+    print(f"{'=' * width}")
 
     grid_keys = sorted(param_grid.keys())
     header = f"  {'Rank':>4}  {'ID':>6}"
     for k in grid_keys:
         header += f"  {k:>10}"
     header += f"  {'TrnLoss':>10}  {'ValLoss':>10}  {'Epochs':>6}  {'Time':>6}"
-    if has_eval:
-        header += f"  {'Exp MAE (eV)':>10}  {f'Exp R2':>8}"
-    print(header)
     sep = (f"  {'─'*4}  {'─'*6}" +
            ''.join(f"  {'─'*10}" for _ in grid_keys) +
            f"  {'─'*10}  {'─'*10}  {'─'*6}  {'─'*6}")
-    if has_eval:
-        sep += f"  {'─'*10}  {'─'*8}"
+    for _key, hdr_label, w, _fmt in eval_cols:
+        header += f"  {hdr_label:>{w}}"
+        sep    += f"  {'─'*w}"
+    print(header)
     print(sep)
 
     for r in results:
@@ -715,13 +830,12 @@ def _print_param_leaderboard(results, n_configs, total_elapsed, param_grid,
         line += (f"  {trn}  {r['best_val_loss']:>10.6f}  "
                  f"{r.get('n_epochs',0):>6}  "
                  f"{r['elapsed_sec']:>5.0f}s")
-        if has_eval:
-            mae_str = f"{r['eval_mae']:>10.4f}" if r.get('eval_mae') is not None else f"{'—':>10}"
-            r2_str  = f"{r['eval_r2']:>8.4f}"   if r.get('eval_r2')  is not None else f"{'—':>8}"
-            line += f"  {mae_str}  {r2_str}"
+        for key, _h, w, fmt in eval_cols:
+            v = r.get(key)
+            line += f"  {v:>{w}{fmt}}" if isinstance(v, float) else f"  {'—':>{w}}"
         print(line)
 
-    print(f"{'=' * 110}")
+    print(f"{'=' * width}")
 
 
 def _param_search_id(param_grid: dict) -> str:

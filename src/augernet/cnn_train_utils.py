@@ -16,6 +16,7 @@ import random
 import warnings
 import numpy as np
 import pandas as pd
+import inspect
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -79,6 +80,20 @@ def get_device(device_str: str = 'auto', verbose: bool = True) -> torch.device:
             print(f"Using device: {device_str}")
     return device
 
+def validate_architecture(architecture: dict, model_cls=None) -> None:
+    """
+    Fail loudly if `architecture` contains a key AugerCNN1D_FiLMd's
+    constructor doesn't recognize, instead of silently ignoring it (which is
+    what let the old conv_filters/conv_kernels/... yml fields do nothing).
+    """
+    model_cls = model_cls or AugerCNN1D_FiLMd
+    valid_keys = set(inspect.signature(model_cls.__init__).parameters) - {'self'}
+    unknown = set(architecture) - valid_keys
+    if unknown:
+        raise ValueError(
+            f"Unknown architecture key(s): {sorted(unknown)}\n"
+            f"Valid keys for {model_cls.__name__}: {sorted(valid_keys)}"
+        )
 
 # =============================================================================
 # MODEL ARCHITECTURE
@@ -224,59 +239,19 @@ class AugerCNN1D_FiLMd(nn.Module):
 
         return x
 
-
-class AugerCNN1D(nn.Module):
-    def __init__(self,
-                 input_length: int, 
-                 num_classes: int,
-                 parralel_kernal_size: tuple = (5, 10, 15),
-                 parralel_filters: tuple = (12, 12, 12),
-                 sequential_kernel_size: tuple = (15, 15),
-                 sequential_filters: tuple = (12, 12),
-                 conv_dropout: float = 0.2,
-                 pool_kernel:         int = 2,
-                 pool_stride:         int = 2,
-                 ):
-        super().__init__()
-        self.parallel_convs = nn.ModuleList([
-            nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
-                      stride=1, padding='same') for f, k in zip(parralel_filters, parralel_kernal_size)
-        ])
-
-        concat_channels = sum(parralel_filters)
-
-        self.seqconv1 = nn.Conv1d(in_channels=concat_channels, out_channels=sequential_filters[0], 
-                             kernel_size=sequential_kernel_size[0], stride=1, padding='same')
-        self.seqconv2 = nn.Conv1d(in_channels=sequential_filters[0], out_channels=sequential_filters[1], 
-                             kernel_size=sequential_kernel_size[1], stride=1, padding='same')
-
-        self.conv_dropout = nn.Dropout(conv_dropout)
-        self.pool = nn.AvgPool1d(kernel_size=pool_kernel, stride=pool_stride)
-        pooled_length = (input_length - pool_kernel) // pool_stride + 1
-        flat_size = sequential_filters[1] * pooled_length
-        self.fc = nn.Linear(flat_size, num_classes)
-
-        self.seq_block = nn.Sequential(
-            self.seqconv1,
-            nn.ReLU(),
-            self.conv_dropout,
-            self.seqconv2,
-            nn.ReLU(),
-            self.conv_dropout,
-            self.pool,
-            nn.Flatten(),
-            self.fc,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        parralel_outs = [F.relu(conv(x)) for conv in self.parallel_convs]
-        x = torch.cat(parralel_outs, dim=1)
-        x = self.conv_dropout(x)
-        x = self.seq_block(x)
-        return x
-
-
+ARCHITECTURE_PRESETS: Dict[str, Dict[str, Any]] = {
+    # Matches AugerCNN1D_FiLMd's built-in defaults / the paper architecture
+    'legacy_3block': dict(
+        parallel_kernel_sizes=(5, 10, 15),
+        parallel_filters=(12, 12, 12),
+        sequential_kernel_size=(15, 15),
+        sequential_filters=(12, 12),
+        conv_dropout=0.2,
+        pool_kernel=32,
+        pool_stride=2,
+        film_hidden=64,
+    ),
+}
 
 # =============================================================================
 # TRAINER CLASS

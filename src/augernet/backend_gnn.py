@@ -170,8 +170,21 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
 
     After this call every element in *sing_data* has a new attribute
     ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
+
+    Normalisation: the stored sticks are energy/maxE and intensity/maxI, so both
+    are restored to raw calc units here, broadened with an area-normalised
+    Gaussian, and divided by the single global constant ``i_scale``.  Targets
+    therefore land in [0, 1] with every inter-carbon and inter-molecular
+    intensity ratio preserved, and their magnitude no longer drifts with fwhm.
     """
     maxE = auger_norm_stats['maxE']
+    maxI = auger_norm_stats['maxI']
+    if 'i_scale' not in auger_norm_stats:
+        raise KeyError(
+            "auger_norm_stats.pt predates the global-intensity-scale correction "
+            "(no 'i_scale' key). Re-run scripts/prepare_data.py to regenerate it."
+        )
+    i_scale = auger_norm_stats['i_scale']
 
     for data in calc_data:
         n_atoms = data.x.size(0)
@@ -181,11 +194,11 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
         I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
 
         for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
-            # use maxE to un-normalize grid for fitting 
+            # use maxE / maxI to un-normalize the sticks back to raw calc units
             s_e = s_y[c, :, 0] * maxE
-            s_i = s_y[c, :, 1]
+            s_i = s_y[c, :, 1] * maxI
             t_e = t_y[c, :, 0] * maxE
-            t_i = t_y[c, :, 1]
+            t_i = t_y[c, :, 1] * maxI
 
             energy_stick = np.concatenate([s_e, t_e])
             intensity_stick = np.concatenate([s_i, t_i])
@@ -193,7 +206,8 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
             E_fitted[c], I_fitted[c] = fit_spectrum_to_grid(
                 energy_stick, intensity_stick, fwhm=cfg.fwhm,
                 energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points, normalize=False
+                n_points=cfg.n_points, normalize=False,
+                kernel='area', i_scale=i_scale,
             )
 
         data.y_fitted = torch.tensor(I_fitted, dtype=torch.float32)
@@ -1109,8 +1123,14 @@ def _predict_auger(model, device, data_list, mol_names,
           f"|  {cfg.n_points} points")
     print(f"{'=' * 80}")
 
-    energy_grid = np.linspace(cfg.min_ke, cfg.max_ke, cfg.n_points)
+    # Same KE calibration as evaluation, so predict output shares the axis of
+    # the reported metrics and the published figures.
+    energy_grid = np.linspace(cfg.min_ke, cfg.max_ke, cfg.n_points) + cfg.ke_shift_calc
     loader = DataLoader(data_list, batch_size=1, shuffle=False)
+
+    # Return spectra in raw calc intensity units rather than max-normalised, so
+    # relative intensities between molecules survive (needed for unfitting).
+    i_scale = torch.load(cfg.auger_norm_stats_file, weights_only=False)['i_scale']
 
     model.eval()
     spectra = {}
@@ -1121,17 +1141,17 @@ def _predict_auger(model, device, data_list, mol_names,
             if getattr(model, 'task_type', 'single') == 'multi':
                 out = out[1]
 
-            # node_mask identifies carbon atoms with predictions
-            node_mask = d.node_mask.squeeze()
-            valid_nodes = node_mask.nonzero(as_tuple=True)[0]
+            # predict-mode graphs carry no node_mask (no reference CEBE exists),
+            # so identify carbons from the atom symbols instead
+            atom_syms = [str(s).strip() for s in (d.atom_symbols[0]
+                         if isinstance(d.atom_symbols, list) else d.atom_symbols)]
+            valid_nodes = [j for j, s in enumerate(atom_syms) if s == 'C']
 
             mol_spectrum = np.zeros(cfg.n_points)
             for nidx in valid_nodes:
                 mol_spectrum += out[nidx].cpu().numpy()
 
-            if mol_spectrum.max() > 0:
-                mol_spectrum /= mol_spectrum.max()
-            spectra[mol_names[mol_idx]] = mol_spectrum
+            spectra[mol_names[mol_idx]] = mol_spectrum * i_scale
 
     # Write one output file per molecule: two-column [energy, intensity]
     print(f"\n  Writing spectra to {output_dir}/")
@@ -1139,15 +1159,18 @@ def _predict_auger(model, device, data_list, mol_names,
         out_path = os.path.join(output_dir, f"{file_stem}_{mol_name}_spectrum.txt")
         np.savetxt(out_path,
                    np.column_stack([energy_grid, spectrum]),
-                   header=f"energy_eV  intensity  (model={cfg.model_id}, fwhm={cfg.fwhm})",
-                   fmt="%.6f")
+                   header=(f"energy_eV  intensity  (model={cfg.model_id}, "
+                           f"fwhm={cfg.fwhm}, ke_shift={cfg.ke_shift_calc}, "
+                           f"i_scale={i_scale}, raw calc intensity units)"),
+                   fmt="%.6e")
 
     # Summary table
     print(f"\n{'Molecule':<22s} {'N_C':>5s} {'Peak KE (eV)':>14s}")
     print("-" * 45)
     for mol_name, spectrum in spectra.items():
         d = data_list[mol_names.index(mol_name)]
-        n_c = int(d.node_mask.sum().item()) if hasattr(d, 'node_mask') else 0
+        n_c = sum(1 for s in (d.atom_symbols[0] if isinstance(d.atom_symbols, list)
+                              else d.atom_symbols) if str(s).strip() == 'C')
         peak_ke = float(energy_grid[np.argmax(spectrum)]) if spectrum.max() > 0 else float('nan')
         print(f"{mol_name:<22s} {n_c:>5d} {peak_ke:>14.2f}")
 

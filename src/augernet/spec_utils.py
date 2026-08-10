@@ -9,25 +9,59 @@ from sklearn.preprocessing import normalize
 # Suppress RDKit deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-def gaussian1D(yo, xo, x, d):
-    return yo * np.exp(-1.0 * ((x - xo) ** 2) / (2.0 * (d ** 2)))
+def gaussian1D(yo, xo, x, d, area_normalised=True):
+    """Gaussian of integrated area ``yo`` (default) or of peak height ``yo``.
+
+    ``area_normalised=False`` is the legacy peak-preserving kernel, kept only
+    for reproducing pre-correction results.
+    """
+    g = yo * np.exp(-1.0 * ((x - xo) ** 2) / (2.0 * (d ** 2)))
+    return g / (d * np.sqrt(2.0 * np.pi)) if area_normalised else g
 
 
-def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5, 
-                         energy_min=200.0, energy_max=270.0, n_points=1401, normalize=False):
-    
+def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5,
+                         energy_min=200.0, energy_max=270.0, n_points=1401, normalize=False,
+                         i_scale=None, kernel='area'):
+    """Convolve a stick spectrum onto a uniform energy grid.
+
+    Normalisation convention (used identically for training targets, the
+    calculated reference in evaluation, and predict-mode output):
+
+        broaden the RAW sticks with an area-normalised Gaussian, then divide
+        by the single global constant ``i_scale``.
+
+    ``kernel='area'`` makes the kernel integrate to the stick intensity, so
+    ``integral I(E) dE == sum(I_stick)`` independently of ``fwhm`` and of the
+    grid spacing.  The legacy ``kernel='peak'`` preserved peak height instead,
+    which made the total target intensity grow ~linearly with sigma and put
+    every point of an FWHM scan on a different loss scale.
+
+    ``i_scale`` is a single dataset-wide scalar (see
+    ``build_molecular_graphs._compute_auger_intensity_scale``), so all
+    inter-carbon and inter-molecular intensity ratios are preserved exactly.
+
+    ``normalize=True`` max-normalises the spectrum and therefore destroys that
+    global scale -- use it for figures only, never for targets or metrics.
+    """
     energy_grid = np.linspace(energy_min, energy_max, n_points)
-    sigma = fwhm / 2.355 
-    intensity_grid = np.zeros(n_points, dtype=np.float32)
-    
+    sigma = fwhm / 2.355
+    intensity_grid = np.zeros(n_points, dtype=np.float64)
+
     for energy_peak, intensity_peak in zip(energy_peaks, intensity_peaks):
-        intensity_grid += gaussian1D(intensity_peak, energy_peak, energy_grid, sigma)
+        if intensity_peak == 0.0:
+            continue                      # zero-padded row, contributes nothing
+        intensity_grid += gaussian1D(intensity_peak, energy_peak, energy_grid, sigma,
+                                     area_normalised=(kernel == 'area'))
+
+    if i_scale is not None:
+        intensity_grid = intensity_grid / i_scale
 
     if normalize:
         max_intensity = intensity_grid.max()
-        intensity_grid = intensity_grid / max_intensity
-    
-    return energy_grid, intensity_grid
+        if max_intensity > 0:             # guard: all-zero spectrum stays zero
+            intensity_grid = intensity_grid / max_intensity
+
+    return energy_grid, intensity_grid.astype(np.float32)
 
 def get_maxI_maxE(
     data_type: str,

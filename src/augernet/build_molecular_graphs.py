@@ -597,6 +597,69 @@ def _compute_auger_normalization_stats(data_type, auger_dir, mol_list, max_spec_
 
     return maxE_arr.max(), maxI_arr.max()
 
+
+# Reference conditions for the global Auger intensity scale.  Fixed constants:
+# i_scale must NOT be recomputed per FWHM, per fold or per grid, otherwise the
+# target magnitude drifts and losses stop being comparable between runs.
+AUGER_FWHM_REF = 1.6            # eV, the broadening used in the publication
+AUGER_KE_REF   = (200.0, 275.0, 751)   # (min_ke, max_ke, n_points)
+
+
+def _compute_auger_intensity_scale(data_type, auger_dir, mol_list):
+    """Global broadened-intensity scale for the Auger targets.
+
+    ``i_scale`` = max over all training carbons of the area-normalised,
+    singlet+triplet broadened spectrum of the RAW sticks, at ``AUGER_FWHM_REF``.
+
+    It is defined on the broadened spectrum -- the quantity the model actually
+    regresses -- rather than on the largest single stick, which was a one-sample
+    extremum and left the targets overshooting 1.  Being a single dataset-wide
+    scalar, it preserves every inter-carbon and inter-molecular intensity ratio,
+    which is what makes downstream unfitting of gas mixtures possible.
+    """
+    energy_min, energy_max, n_points = AUGER_KE_REF
+    peak = 0.0
+    n_carbons = 0
+
+    for mol_name in mol_list:
+        mapped_file = os.path.join(auger_dir, f"{mol_name}_out_map.txt")
+        carbon_idx_mapping = np.loadtxt(mapped_file)[:, 0].astype(int)
+
+        for c_idx in carbon_idx_mapping:
+            if c_idx == 0:
+                continue
+            if data_type == 'calc_auger':
+                stem = f"{mol_name}_auger"
+            else:   # eval_auger
+                stem = f"{mol_name}_mcpdft_hybrid_rcc"
+
+            sticks = []
+            for state in ('singlet', 'triplet'):
+                path = os.path.join(
+                    auger_dir, f"{stem}_{state}_c{c_idx}.auger.spectrum.out")
+                arr = np.atleast_2d(np.loadtxt(path))
+                if arr.size:
+                    sticks.append(arr)
+            if not sticks:
+                continue
+
+            all_sticks = np.vstack(sticks)
+            _, broadened = spec_utils.fit_spectrum_to_grid(
+                all_sticks[:, 0], all_sticks[:, 1],
+                fwhm=AUGER_FWHM_REF,
+                energy_min=energy_min, energy_max=energy_max, n_points=n_points,
+                kernel='area',
+            )
+            peak = max(peak, float(broadened.max()))
+            n_carbons += 1
+
+    print(f"Auger intensity scale across {n_carbons} carbon atoms:")
+    print(f"  Reference FWHM: {AUGER_FWHM_REF} eV (area-normalised kernel)")
+    print(f"  Reference grid: [{energy_min}, {energy_max}] eV, {n_points} points")
+    print(f"  i_scale: {peak}")
+
+    return peak
+
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
@@ -640,7 +703,19 @@ def build_graphs(data_type,
         auger_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'auger_norm_stats.pt')
         if data_type == 'calc_auger':
             maxE, maxI = _compute_auger_normalization_stats(data_type, mol_dir, mol_list, auger_max_spec_len)
-            auger_norm_stats = {'maxE': float(maxE), 'maxI': float(maxI)}
+            i_scale = _compute_auger_intensity_scale(data_type, mol_dir, mol_list)
+            auger_norm_stats = {
+                'maxE': float(maxE), 'maxI': float(maxI),
+                # Global broadened-intensity scale + the conditions it was
+                # derived under, so downstream code can assert provenance
+                # instead of silently assuming a matching convention.
+                'i_scale':  float(i_scale),
+                'fwhm_ref': AUGER_FWHM_REF,
+                'kernel':   'area',
+                'min_ke':   AUGER_KE_REF[0],
+                'max_ke':   AUGER_KE_REF[1],
+                'n_points': AUGER_KE_REF[2],
+            }
             print("Auger Normalization statistics:", auger_norm_stats)
             torch.save(auger_norm_stats, auger_norm_stats_path)
         else:  # use auger calc norm throughout

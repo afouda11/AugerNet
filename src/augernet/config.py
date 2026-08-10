@@ -280,14 +280,15 @@ class AugerNetConfig:
                 )
             if self.model == 'auger-cnn':
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
-                # Build filter and kernel strings from architecture
-                filters_str = 'f' + '_'.join(str(f) for f in self.architecture.get('conv_filters', []))
-                kernels_str = 'k' + '_'.join(str(k) for k in self.architecture.get('conv_kernels', []))
-                pool_str    = 'p' + '_'.join(str(p) for p in self.architecture.get('pool_size', []))
-                hidden_str  = 'h' + '_'.join(str(h) for h in self.architecture.get('fc_hidden', []))
+                # Build tag strings from the real AugerCNN1D_FiLMd architecture keys
+                pf_str = 'pf' + '_'.join(str(f) for f in self.architecture.get('parallel_filters', []))
+                pk_str = 'pk' + '_'.join(str(k) for k in self.architecture.get('parallel_kernel_sizes', []))
+                sf_str = 'sf' + '_'.join(str(f) for f in self.architecture.get('sequential_filters', []))
+                sk_str = 'sk' + '_'.join(str(k) for k in self.architecture.get('sequential_kernel_size', []))
+                pool_str = f"pool{self.architecture.get('pool_kernel', '')}"
                 self.model_id = (
                     f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
-                    f"BE{self.cebe_augment}_{filters_str}_{kernels_str}_{pool_str}_{hidden_str}{de_tag}"
+                    f"BE{self.cebe_augment}_{pf_str}_{pk_str}_{sf_str}_{sk_str}_{pool_str}{de_tag}"
                 )
 
         # results sub dirs: outputs files, train loss and eval pngs, and models 
