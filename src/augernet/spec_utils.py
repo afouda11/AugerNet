@@ -1,48 +1,20 @@
 #!/usr/bin/env python3
 
-import os, argparse, shutil, string, pathlib
+import os
 import numpy as np
 import warnings
 
-from sklearn.preprocessing import normalize
 
 # Suppress RDKit deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-def gaussian1D(yo, xo, x, d, area_normalised=True):
-    """Gaussian of integrated area ``yo`` (default) or of peak height ``yo``.
-
-    ``area_normalised=False`` is the legacy peak-preserving kernel, kept only
-    for reproducing pre-correction results.
-    """
-    g = yo * np.exp(-1.0 * ((x - xo) ** 2) / (2.0 * (d ** 2)))
-    return g / (d * np.sqrt(2.0 * np.pi)) if area_normalised else g
+def gaussian1D(yo, xo, x, sigma):
+    return yo * np.exp(-1.0 * ((x - xo) ** 2) / (2.0 * (sigma ** 2)))
 
 
 def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5,
-                         energy_min=200.0, energy_max=270.0, n_points=1401, normalize=False,
-                         i_scale=None, kernel='area'):
-    """Convolve a stick spectrum onto a uniform energy grid.
-
-    Normalisation convention (used identically for training targets, the
-    calculated reference in evaluation, and predict-mode output):
-
-        broaden the RAW sticks with an area-normalised Gaussian, then divide
-        by the single global constant ``i_scale``.
-
-    ``kernel='area'`` makes the kernel integrate to the stick intensity, so
-    ``integral I(E) dE == sum(I_stick)`` independently of ``fwhm`` and of the
-    grid spacing.  The legacy ``kernel='peak'`` preserved peak height instead,
-    which made the total target intensity grow ~linearly with sigma and put
-    every point of an FWHM scan on a different loss scale.
-
-    ``i_scale`` is a single dataset-wide scalar (see
-    ``build_molecular_graphs._compute_auger_intensity_scale``), so all
-    inter-carbon and inter-molecular intensity ratios are preserved exactly.
-
-    ``normalize=True`` max-normalises the spectrum and therefore destroys that
-    global scale -- use it for figures only, never for targets or metrics.
-    """
+                         energy_min=200.0, energy_max=270.0, n_points=1401, normalize=False):
+                         
     energy_grid = np.linspace(energy_min, energy_max, n_points)
     sigma = fwhm / 2.355
     intensity_grid = np.zeros(n_points, dtype=np.float64)
@@ -50,11 +22,7 @@ def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5,
     for energy_peak, intensity_peak in zip(energy_peaks, intensity_peaks):
         if intensity_peak == 0.0:
             continue                      # zero-padded row, contributes nothing
-        intensity_grid += gaussian1D(intensity_peak, energy_peak, energy_grid, sigma,
-                                     area_normalised=(kernel == 'area'))
-
-    if i_scale is not None:
-        intensity_grid = intensity_grid / i_scale
+        intensity_grid += gaussian1D(intensity_peak, energy_peak, energy_grid, sigma)
 
     if normalize:
         max_intensity = intensity_grid.max()
@@ -63,92 +31,10 @@ def fit_spectrum_to_grid(energy_peaks, intensity_peaks, fwhm=1.5,
 
     return energy_grid, intensity_grid.astype(np.float32)
 
-def get_maxI_maxE(
-    data_type: str,
-    mol_dir: str,
-    mol_name: str,
-    max_spec_len: int
-    ):
-    """
-    Load singlet and triplet spectra for every carbon in *mol_id*,
-    using _out_map.txt file to correctly map spectrum indices
-    to atom positions in the XYZ file.
-    
-    The mapping file contains:
-    - Column 1: Carbon index (c1, c2, c3, ...) or 0 for non-carbon atoms
-    - Column 2: Binding energy or -1.0 for non-carbon atoms
-    - Row order: Same as atoms in XYZ file (and thus same as node features order)
-    
-    Returns
-    -------
-    spec_out  : list[np.ndarray]
-        Per-atom node labels (zero-padded spectra for carbons, zeros for non-carbons).
-    spec_len : int
-        Actual spectrum lengths before padding.
-    """
-    
-    sing_spec_out = []
-    trip_spec_out = []
-    
-    # ---- Load mapping from node_features_mapped.txt or cebe_mapped.txt ----
-    # Try node_features_mapped.txt first (calc data naming)
-    mapped_file = os.path.join(mol_dir, f"{mol_name}_out_map.txt")
-    mapped_data = np.loadtxt(mapped_file)
-    
-    # mapped_data[:, 0] contains the carbon indices (c_idx+1) or 0 for non-carbons
-    # Each row corresponds to an atom in XYZ order
-    carbon_idx_mapping = mapped_data[:, 0].astype(int)  # Column 1: carbon index
-    
-    maxI = []
-    maxE = []
-    # Determine max carbon index in this molecule
-    for c_idx in carbon_idx_mapping:
-        
-        if c_idx == 0.0:
-            empty_spec = np.zeros((max_spec_len, 2))
-            sing_spec_out.append(empty_spec)
-            trip_spec_out.append(empty_spec)
-        else:
-            #print(f"[{mol_id}] loading spectra for carbon c{c_idx}...")
-            if data_type == 'calc_auger':
-                sing_spec_path = os.path.join(
-                    mol_dir, f"{mol_name}_auger_singlet_c{c_idx}.auger.spectrum.out"
-                )
-                trip_spec_path = os.path.join(
-                    mol_dir, f"{mol_name}_auger_triplet_c{c_idx}.auger.spectrum.out"
-                )
-            if data_type == 'eval_auger':
-                sing_spec_path = os.path.join(
-                    mol_dir, f"{mol_name}_mcpdft_hybrid_rcc_singlet_c{c_idx}.auger.spectrum.out"
-                )
-                trip_spec_path = os.path.join(
-                    mol_dir, f"{mol_name}_mcpdft_hybrid_rcc_triplet_c{c_idx}.auger.spectrum.out"
-                )
-            
-            # ---- read both spectra (skip on any error) -----------------------------
-            sing_spec_arr = np.loadtxt(sing_spec_path)
-            if sing_spec_arr.size == 0 :
-                raise ValueError("empty singlet spectrum")
-
-            trip_spec_arr = np.loadtxt(trip_spec_path)
-            if trip_spec_arr.size == 0 :
-                raise ValueError("empty triplet spectrum")
-
-            sing_spec_arr = sing_spec_arr[sing_spec_arr[:, 0].argsort()]
-            trip_spec_arr = trip_spec_arr[trip_spec_arr[:, 0].argsort()]
-
-            maxE.append([sing_spec_arr[:, 0].max(), trip_spec_arr[:, 0].max()])
-            maxI.append([sing_spec_arr[:, 1].max(), trip_spec_arr[:, 1].max()])
-
-    return maxE, maxI
-
-
 def extract_spectra(
     data_type: str,
     mol_dir: str,
     mol_name: str,
-    maxE: float,
-    maxI: float,
     max_spec_len: int
     ):
 
@@ -209,12 +95,6 @@ def extract_spectra(
             sing_spec_arr = sing_spec_arr[sing_spec_arr[:, 0].argsort()]
             trip_spec_arr = trip_spec_arr[trip_spec_arr[:, 0].argsort()]
 
-            # ---- normalize spectra ----
-            sing_spec_arr[:, 0] /= maxE             # norm KE
-            trip_spec_arr[:, 0] /= maxE             # norm KE
-            sing_spec_arr[:, 1] /= maxI             # norm I
-            trip_spec_arr[:, 1] /= maxI             # norm I
-
             sing_spec_len = sing_spec_arr.shape[0]
             trip_spec_len = trip_spec_arr.shape[0]
 
@@ -231,4 +111,4 @@ def extract_spectra(
             sing_spec_out.append(sing_spec_pad)
             trip_spec_out.append(trip_spec_pad)
 
-    return sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len, carbon_idx_mapping
+    return sing_spec_out, trip_spec_out, carbon_idx_mapping

@@ -26,12 +26,12 @@ CLI Reference
 -------------
   python prepare_data.py [OPTIONS]
 
-    --from-zenodo       Download pre-built processed data files from Zenodo (skips local graph building)
-    --with-raw          Also download and unpack raw data archives from Zenodo 
-                        (use with --from-zenodo to also regenerate graphs locally)
-    --debug             Only generate first 5 in mol_list.txt for testing
-    --verbose, -v       Print detailed per-molecule environment tables
-    --max_spec_len       Max number of final states in auger spec, default 300
+    --from-zenodo   Download pre-built processed data files from Zenodo (skips local graph building)
+    --with-raw      Also download and unpack raw data archives from Zenodo 
+                    (use with --from-zenodo to also regenerate graphs locally)
+    --debug         Only generate first 5 in mol_list.txt for testing
+    --verbose, -v   Print detailed per-molecule environment tables
+    --max_spec_len  Max number of final states in auger spec, default 300
 
 """
 
@@ -236,7 +236,7 @@ def prepare_auger_gnn(args):
 # AUGER CNN
 # =============================================================================
 
-def auger_gnn_to_cnn_dataframe(data_type, pt_path, auger_max_spec_len=300):
+def auger_gnn_to_cnn_dataframe(data_type, pt_path):
     """
     Extract a per-carbon DataFrame from a saved Auger GNN .pt file.
 
@@ -261,11 +261,6 @@ def auger_gnn_to_cnn_dataframe(data_type, pt_path, auger_max_spec_len=300):
     collated, slices = torch.load(pt_path, weights_only=False)
     dataset = []
     n_mols = len(slices['x']) - 1
-
-    auger_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'auger_norm_stats.pt')
-    auger_norm_stats = torch.load(auger_norm_stats_path, weights_only=False)
-    maxE = float(auger_norm_stats['maxE'])
-    maxI = float(auger_norm_stats['maxI'])
 
     for i in range(n_mols):
         # Node-level slices (for node_mask, carbon_env, atomic_be, etc.)
@@ -294,10 +289,10 @@ def auger_gnn_to_cnn_dataframe(data_type, pt_path, auger_max_spec_len=300):
             trip_spec = trip_y_spec[j]                      # (max_spec_len, 2)
 
             #un-normalize
-            sing_energies = sing_spec[:, 0].numpy() * maxE   
-            trip_energies = trip_spec[:, 0].numpy() * maxE   
-            sing_intensities = sing_spec[:, 1].numpy() * maxI
-            trip_intensities = trip_spec[:, 1].numpy() * maxI
+            sing_energies = sing_spec[:, 0].numpy() 
+            trip_energies = trip_spec[:, 0].numpy() 
+            sing_intensities = sing_spec[:, 1].numpy() 
+            trip_intensities = trip_spec[:, 1].numpy() 
 
             cebe_val = true_cebe[j].item()
             be_val = atomic_be[j].item()
@@ -357,12 +352,8 @@ def prepare_auger_cnn(args):
     calc_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['calc'])
     eval_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['eval'])
 
-    calc_df = auger_gnn_to_cnn_dataframe('calc',
-            calc_pt_path, auger_max_spec_len=args.max_spec_len
-        )
-    eval_df = auger_gnn_to_cnn_dataframe('eval',
-            eval_pt_path, auger_max_spec_len=args.max_spec_len,
-        )
+    calc_df = auger_gnn_to_cnn_dataframe('calc', calc_pt_path)
+    eval_df = auger_gnn_to_cnn_dataframe('eval', eval_pt_path)
     
     calc_out_path = _debug_suffix("cnn_auger_calc.pkl", args.debug)
     eval_out_path = _debug_suffix("cnn_auger_eval.pkl", args.debug)

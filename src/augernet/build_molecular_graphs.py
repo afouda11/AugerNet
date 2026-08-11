@@ -17,9 +17,6 @@ Usage:
 Key differences between graph types:
     - CEBE graphs:  y = normalized (delta_be - mean) / std for binding energies
     - Auger graphs: y = flattened spectra [n_atoms, max_spec_len * 2]
-    - Auger be_feature uses either molecular CEBE for carbons and atomic for others (be_feat = 'mol')
-        or uses atomic reference values for all atoms (be_feat = 'atom')
-    - CEBE be_feature uses atomic reference values for all atoms (be_feat = 'atom')
 """
 
 import os
@@ -49,8 +46,6 @@ _EN_MAT = ed.get_eleneg_diff_mat(num_elements=100)
 
 # Constants
 au2eV = 27.21139
-
-
 
 # Permitted bond types for edge encoding
 # Default: AUGER-NET (4 types)
@@ -303,9 +298,8 @@ def _build_node_and_edge_features(mol, all_encoders, cebe_values):
     n_atoms = mol.GetNumAtoms()
 
     # ── electronegativity scores ──
-    # Compute directly from the mol object to guarantee atom-index consistency
-    # with the XYZ/graph ordering.  (The old SMILES-based path used canonical
-    # ordering which disagrees with XYZ ordering for ~84% of molecules.)
+    # Compute from the mol object to guarantee atom-index consistency
+    # with the XYZ/graph ordering.
     e_score = _e_neg_scores_from_mol(mol)
 
     orbital_energy_file = os.path.join(DATA_RAW_DIR, 'orbitalenergy.json')
@@ -377,16 +371,16 @@ def _build_node_and_edge_features(mol, all_encoders, cebe_values):
             np.array(onehot_list), dtype=torch.float)
 
     node_features['atomic_be'] = torch.tensor(
-        atomic_be_feat_list, dtype=torch.float)          # (N,)
+        atomic_be_feat_list, dtype=torch.float)          
 
     node_features['mol_be'] = torch.tensor(
-        mol_be_feat_list, dtype=torch.float)              # (N,)
+        mol_be_feat_list, dtype=torch.float)             
 
     node_features['e_score'] = torch.tensor(
-        e_score_list, dtype=torch.float)                  # (N,)
+        e_score_list, dtype=torch.float)                 
 
     node_features['env_onehot'] = torch.tensor(
-        env_onehot_np, dtype=torch.float)                 # (N, NUM_CARBON_CATEGORIES)
+        env_onehot_np, dtype=torch.float)                
 
     # ── edge features ──
     adj_mat = rdmolops.GetAdjacencyMatrix(mol)
@@ -572,94 +566,6 @@ def _compute_cebe_normalization_stats(cebe_dir, mol_list):
     
     return mean, std
 
-def _compute_auger_normalization_stats(data_type, auger_dir, mol_list, max_spec_len):
-
-    maxI_list = []
-    maxE_list = []
-
-    for mol_name in mol_list:
-
-        maxE, maxI = spec_utils.get_maxI_maxE(data_type, auger_dir, mol_name, max_spec_len) 
-        maxE_list.extend(maxE)   # [sing_max_ke, trip_max_ke]
-        maxI_list.extend(maxI)   # [sing_max, trip_max]
-
-    maxI_arr = np.array(maxI_list)   # shape (n_carbons_total, 2): col0=singlet, col1=triplet
-    maxE_arr = np.array(maxE_list)   # shape (n_carbons_total, 2): col0=singlet, col1=triplet (norm KE)
-    print(f"Intensity maximum across {maxI_arr.shape[0]} carbon atoms:")
-    print(f"  Singlet max: {maxI_arr[:, 0].max()}")
-    print(f"  Triplet max: {maxI_arr[:, 1].max()}")
-    print(f"  Intensity scale factor: {maxI_arr.max()}")
-
-    print(f"Kinet energy maximum across {maxE_arr.shape[0]} carbon atoms:")
-    print(f"  Singlet max: {maxE_arr[:, 0].max()}")
-    print(f"  Triplet max: {maxE_arr[:, 1].max()}")
-    print(f"  Energy scale factor: {maxE_arr.max()}")
-
-    return maxE_arr.max(), maxI_arr.max()
-
-
-# Reference conditions for the global Auger intensity scale.  Fixed constants:
-# i_scale must NOT be recomputed per FWHM, per fold or per grid, otherwise the
-# target magnitude drifts and losses stop being comparable between runs.
-AUGER_FWHM_REF = 1.6            # eV, the broadening used in the publication
-AUGER_KE_REF   = (200.0, 275.0, 751)   # (min_ke, max_ke, n_points)
-
-
-def _compute_auger_intensity_scale(data_type, auger_dir, mol_list):
-    """Global broadened-intensity scale for the Auger targets.
-
-    ``i_scale`` = max over all training carbons of the area-normalised,
-    singlet+triplet broadened spectrum of the RAW sticks, at ``AUGER_FWHM_REF``.
-
-    It is defined on the broadened spectrum -- the quantity the model actually
-    regresses -- rather than on the largest single stick, which was a one-sample
-    extremum and left the targets overshooting 1.  Being a single dataset-wide
-    scalar, it preserves every inter-carbon and inter-molecular intensity ratio,
-    which is what makes downstream unfitting of gas mixtures possible.
-    """
-    energy_min, energy_max, n_points = AUGER_KE_REF
-    peak = 0.0
-    n_carbons = 0
-
-    for mol_name in mol_list:
-        mapped_file = os.path.join(auger_dir, f"{mol_name}_out_map.txt")
-        carbon_idx_mapping = np.loadtxt(mapped_file)[:, 0].astype(int)
-
-        for c_idx in carbon_idx_mapping:
-            if c_idx == 0:
-                continue
-            if data_type == 'calc_auger':
-                stem = f"{mol_name}_auger"
-            else:   # eval_auger
-                stem = f"{mol_name}_mcpdft_hybrid_rcc"
-
-            sticks = []
-            for state in ('singlet', 'triplet'):
-                path = os.path.join(
-                    auger_dir, f"{stem}_{state}_c{c_idx}.auger.spectrum.out")
-                arr = np.atleast_2d(np.loadtxt(path))
-                if arr.size:
-                    sticks.append(arr)
-            if not sticks:
-                continue
-
-            all_sticks = np.vstack(sticks)
-            _, broadened = spec_utils.fit_spectrum_to_grid(
-                all_sticks[:, 0], all_sticks[:, 1],
-                fwhm=AUGER_FWHM_REF,
-                energy_min=energy_min, energy_max=energy_max, n_points=n_points,
-                kernel='area',
-            )
-            peak = max(peak, float(broadened.max()))
-            n_carbons += 1
-
-    print(f"Auger intensity scale across {n_carbons} carbon atoms:")
-    print(f"  Reference FWHM: {AUGER_FWHM_REF} eV (area-normalised kernel)")
-    print(f"  Reference grid: [{energy_min}, {energy_max}] eV, {n_points} points")
-    print(f"  i_scale: {peak}")
-
-    return peak
-
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
@@ -698,30 +604,6 @@ def build_graphs(data_type,
         cebe_norm_stats = torch.load(cebe_norm_stats_path, weights_only=False)
         mean = cebe_norm_stats['mean']
         std = cebe_norm_stats['std']
-
-    if data_type in ['calc_auger', 'eval_auger']:
-        auger_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'auger_norm_stats.pt')
-        if data_type == 'calc_auger':
-            maxE, maxI = _compute_auger_normalization_stats(data_type, mol_dir, mol_list, auger_max_spec_len)
-            i_scale = _compute_auger_intensity_scale(data_type, mol_dir, mol_list)
-            auger_norm_stats = {
-                'maxE': float(maxE), 'maxI': float(maxI),
-                # Global broadened-intensity scale + the conditions it was
-                # derived under, so downstream code can assert provenance
-                # instead of silently assuming a matching convention.
-                'i_scale':  float(i_scale),
-                'fwhm_ref': AUGER_FWHM_REF,
-                'kernel':   'area',
-                'min_ke':   AUGER_KE_REF[0],
-                'max_ke':   AUGER_KE_REF[1],
-                'n_points': AUGER_KE_REF[2],
-            }
-            print("Auger Normalization statistics:", auger_norm_stats)
-            torch.save(auger_norm_stats, auger_norm_stats_path)
-        else:  # use auger calc norm throughout
-            auger_norm_stats = torch.load(auger_norm_stats_path, weights_only=False)
-            maxE = auger_norm_stats['maxE']
-            maxI = auger_norm_stats['maxI']
 
     data_list = []
 
@@ -787,10 +669,10 @@ def build_graphs(data_type,
 
         if data_type in ['calc_auger', 'eval_auger']:
 
-            sing_spec_out, trip_spec_out, sing_spec_len, trip_spec_len, carbon_idx_mapping = \
+            sing_spec_out, trip_spec_out, carbon_idx_mapping = \
                                         spec_utils.extract_spectra(
                                             data_type, mol_dir, mol_name,
-                                            maxE, maxI, auger_max_spec_len
+                                            auger_max_spec_len
                                         )
             # pass openmolcas to xyz index map to data object for evalution
             carbon_spec_idx = torch.tensor(np.asarray(carbon_idx_mapping), dtype=torch.long)
@@ -812,8 +694,6 @@ def build_graphs(data_type,
                 trip_y=trip_y,
                 sing_mask_bin=sing_mask_rows,
                 trip_mask_bin=trip_mask_rows,
-                sing_spec_len=sing_spec_len,
-                trip_spec_len=trip_spec_len,
                 pos=torch.tensor(pos, dtype=torch.float), 
                 atomic_be_eV=atomic_be,
                 true_cebe=true_cebe,
@@ -824,7 +704,6 @@ def build_graphs(data_type,
                 carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
                 carbon_spec_idx=carbon_spec_idx,
                 cebe_norm_stats=torch.tensor([mean, std], dtype=torch.float),
-                auger_norm_stats=torch.tensor([maxE, maxI], dtype=torch.float),
             )
 
         # Store all features as separate attributes

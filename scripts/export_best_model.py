@@ -41,7 +41,7 @@ import re
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog='export_best_model'examples/gnn_cebe_configs/train.yml,
+        prog='export_best_model',
         description='Export the best model weights and plots to artifacts/.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,

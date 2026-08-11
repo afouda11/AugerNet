@@ -66,14 +66,12 @@ class CarbonDataset(Dataset):
         energy_min: float = 200.0,
         energy_max: float = 273.0,
         n_points: int = 731,
-        norm_stats: dict | None = None,
-        i_scale: float | None = None,
+        norm_stats=None
     ):
         self.df = df.reset_index(drop=True)
         self.include_augmentation = include_augmentation
         self.normalize_intensity = normalize_intensity
         self.broadening_fwhm = broadening_fwhm
-        self.i_scale = i_scale
 
         n_atoms = len(self.df)
 
@@ -104,14 +102,11 @@ class CarbonDataset(Dataset):
                     energy_max=energy_max,
                     n_points=n_points,
                     normalize=self.normalize_intensity,
-                    kernel='area',
-                    i_scale=None if self.normalize_intensity else i_scale,
                 )
                 self._spectra[i] = intensity_grid
 
         elapsed = _time.time() - t0
-        scale_desc = ('per-carbon max-normalised'
-                      if self.normalize_intensity else f'global i_scale={i_scale}')
+        scale_desc = ('per-carbon max-normalised')
         print(f"  Pre-broadened {n_atoms} spectra "
               f"(FWHM={broadening_fwhm} eV, {scale_desc}) in {elapsed:.1f}s")
 
@@ -134,15 +129,8 @@ class CarbonDataset(Dataset):
             [mol_to_natoms.get(n, 0) for n in self.df['mol_name']], dtype=np.float32
         )
 
-        if norm_stats is not None:
-            sz_mu, sz_std = norm_stats['sz_mu'], norm_stats['sz_std']
-        else:  # calc global z norm stats for train data
-            sz_mu = raw_sizes.mean()
-            sz_std = raw_sizes.std() + 1e-8
-
         self._delta_be_norm = ((self.df['delta_be'] - be_mu) / be_std).values
-        self._mol_size_norm = (raw_sizes - sz_mu) / sz_std
-        self.norm_stats = {'be_mu': be_mu, 'be_std': be_std, 'sz_mu': sz_mu, 'sz_std': sz_std}
+        self.norm_stats = {'be_mu': be_mu, 'be_std': be_std}
 
         print(f"CarbonDataset: {n_atoms} atoms, "
               f"augment={include_augmentation}")
@@ -158,14 +146,13 @@ class CarbonDataset(Dataset):
         spectrum = torch.from_numpy(self._spectra[idx].copy())
 
         dbe = float(self._delta_be_norm[idx])
-        mol_size = float(self._mol_size_norm[idx])
         # Optional delta_be augmentation (prepend to spectrum)
         if self.include_augmentation:
             spectrum = torch.cat([torch.tensor([dbe]), spectrum])
 
         label = torch.tensor(row['carbon_env_index'], dtype=torch.long)
 
-        return spectrum, dbe, mol_size, label
+        return spectrum, dbe, label
 
     # -------------------------------------------------------------------
     def get_class_weights_and_counts(self, num_classes: int) -> Tuple[torch.Tensor, Dict[int, int]]:

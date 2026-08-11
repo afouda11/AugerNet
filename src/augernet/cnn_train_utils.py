@@ -147,16 +147,16 @@ class AugerCNN1D_FiLMd(nn.Module):
         pool_kernel=32,
         pool_stride=2,
         film_hidden=64,
-        film_inputs='both',   # 'none' | 'be' | 'mol_size' | 'both'
+        film_inputs='none',   # 'none' | 'be'
     ):
         super().__init__()
 
         # FiLM conditioning mode
-        _valid = ('none', 'be', 'mol_size', 'both')
+        _valid = ('none', 'be')
         if film_inputs not in _valid:
             raise ValueError(f"film_inputs must be one of {_valid}, got '{film_inputs}'")
         self.film_inputs = film_inputs
-        film_dim = {'none': 0, 'be': 1, 'mol_size': 1, 'both': 2}[film_inputs]
+        film_dim = {'none': 0, 'be': 1}[film_inputs]
 
         self.parallel_convs = nn.ModuleList([
             nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
@@ -189,17 +189,10 @@ class AugerCNN1D_FiLMd(nn.Module):
 
     def forward(self, x: torch.Tensor, film_cond: torch.Tensor) -> torch.Tensor:
 
-        # x: (B, 1, spec)
-        # film_cond: (B, 2) = [delta_be_norm, mol_size_norm]  (always passed full)
-        # Select the conditioning columns based on film_inputs config:
         if self.film_inputs == 'none':
             cond = None
         elif self.film_inputs == 'be':
             cond = film_cond[:, 0:1]   # (B, 1)
-        elif self.film_inputs == 'mol_size':
-            cond = film_cond[:, 1:2]   # (B, 1)
-        else:  # 'both'
-            cond = film_cond           # (B, 2)
 
         film = self.film_generator(cond) if cond is not None else None
 

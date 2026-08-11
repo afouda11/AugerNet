@@ -441,7 +441,7 @@ def train_single_run(data: Dict[str, Any],
     normalize_intensity = _g('normalize_intensity', False)
     label_smoothing     = _g('label_smoothing', 0.1)
     noise_std           = _g('augment_noise_std', 0.0)
-    film_inputs         = _g('film_inputs', 'both')
+    film_inputs         = _g('film_inputs', 'none')
 
     # New: splitting params
     split_method   = _g('split_method', 'random')
@@ -463,18 +463,6 @@ def train_single_run(data: Dict[str, Any],
             df = df[df['carbon_env_index'] >= 0].reset_index(drop=True)
     else:
         df = data['train_df']
-
-    # Global Auger intensity scale, shared with the GNN targets so both branches
-    # broaden with the same convention.  normalize_intensity=True falls back to
-    # the legacy per-carbon max-normalisation and ignores it.
-    _auger_stats = torch.load(
-        os.path.join(DATA_PROCESSED_DIR, 'auger_norm_stats.pt'), weights_only=False)
-    if 'i_scale' not in _auger_stats:
-        raise KeyError(
-            "auger_norm_stats.pt predates the global-intensity-scale correction "
-            "(no 'i_scale' key). Re-run scripts/prepare_data.py to regenerate it."
-        )
-    auger_i_scale = _auger_stats['i_scale']
 
     ctu.seed(random_seed)
     device = ctu.get_device(device_str, verbose=verbose)
@@ -534,7 +522,6 @@ def train_single_run(data: Dict[str, Any],
         broadening_fwhm=broadening_fwhm,
         energy_min=energy_min, energy_max=energy_max,
         n_points=n_spectrum_points,
-        i_scale=auger_i_scale,
     )
     # get z norm stats from train data to apply across data
     norm_stats = train_ds.norm_stats
@@ -547,7 +534,6 @@ def train_single_run(data: Dict[str, Any],
         broadening_fwhm=broadening_fwhm,
         energy_min=energy_min, energy_max=energy_max,
         n_points=n_spectrum_points,
-        i_scale=auger_i_scale,
         norm_stats=norm_stats,
     )
 
@@ -615,7 +601,6 @@ def train_single_run(data: Dict[str, Any],
             energy_min=energy_min, energy_max=energy_max,
             n_points=n_spectrum_points,
             norm_stats=norm_stats,
-            i_scale=auger_i_scale,
         )
 
     holdout_df_raw = data.get('test_df')
@@ -742,7 +727,7 @@ def _load_model_from_path(model_path, data, cfg, *, architecture=None,
 
     device = ctu.get_device(device_str, verbose=True)
     num_classes = _resolve_num_classes(cfg, merge_scheme_override=ms)
-    film_inputs = getattr(cfg, 'film_inputs', 'both')
+    film_inputs = getattr(cfg, 'film_inputs', 'none')
     ctu.validate_architecture(arch)
     model = ctu.AugerCNN1D_FiLMd(
         input_length, num_classes,

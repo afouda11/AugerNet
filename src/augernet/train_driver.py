@@ -68,16 +68,24 @@ _EVAL_PREFIXES = ('eval_', 'test_')
 _LEGACY_EVAL_ALIASES = {'mae': 'eval_mae', 'r2': 'eval_r2', 'std': 'eval_std'}
 
 # Console columns per model type: (entry key, header, width, format)
+#
+# Printout only -- this does NOT control what is recorded.  Every scalar metric
+# returned by run_evaluation is still written to the fold entries and to the CV
+# summary JSON by _aggregate_eval_metrics, which filters on _EVAL_PREFIXES and
+# ignores this table.  Add a column here purely to make a metric visible on the
+# console; remove one and the metric is still in the JSON.
+#
+# Auger columns are deliberately calc-referenced only.  The experiment-referenced
+# metrics (eval_gvx_*, eval_cvx_*) are recorded but not printed: the models
+# predict broader spectra than the 1.6 eV-broadened calculation, and the
+# experimental spectra are broader again, so agreement with experiment is
+# confounded by that broadening and is not a basis for ranking models.
 _EVAL_COLUMNS = {
     'cebe-gnn':  [('eval_mae',     'Exp MAE (eV)', 12, '.4f'),
                   ('eval_r2',      'Exp R2',        8, '.4f')],
-    'auger-gnn': [('eval_gvx_pcc', 'PCC G-Exp',    10, '.4f'),
-                  ('eval_cvx_pcc', 'PCC C-Exp',    10, '.4f'),
-                  ('eval_gvc_pcc', 'PCC G-Calc',   10, '.4f'),
+    'auger-gnn': [('eval_gvc_pcc', 'PCC G-Calc',    10, '.4f'),
                   ('test_gvc_pcc', 'PCC G-Calc HO', 13, '.4f'),
-                  # scale-preserving: not computed on max-normalised spectra
-                  ('test_mean_area_ratio', 'Area ratio',  10, '.4f'),
-                  ('test_mean_share_mae',  'Share MAE',   10, '.4f')],
+                  ('test_gvc_mse', 'MSE G-Calc HO', 13, '.5f')],
 }
 
 

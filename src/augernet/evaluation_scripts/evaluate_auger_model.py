@@ -165,10 +165,6 @@ def _print_pcc_summary(title, pcc_data, show_exp=True, train_env_counts=None):
     _med = lambda lst: float(np.median(lst)) if lst else None
 
     # -- Scale-preserving summary (not max-normalised; see _compute_molecule_results) --
-    area_ratios = [e['gnn_vs_calc_area_ratio'] for e in pcc_data
-                   if e.get('gnn_vs_calc_area_ratio') is not None]
-    share_maes  = [e['gnn_vs_calc_share_mae'] for e in pcc_data
-                   if e.get('gnn_vs_calc_share_mae') is not None]
     a_c_p, a_c_s, a_c_a = _avg(calc_pccs), _avg(calc_mses), _avg(calc_maes)
     a_v_p, a_v_s, a_v_a = _avg(gvc_pccs),  _avg(gvc_mses),  _avg(gvc_maes)
     a_g_p, a_g_s, a_g_a = _avg(gnn_pccs),  _avg(gnn_mses),  _avg(gnn_maes)
@@ -181,13 +177,6 @@ def _print_pcc_summary(title, pcc_data, show_exp=True, train_env_counts=None):
     else:
         print(f"{'AVERAGE':<22}  {_fmt(a_v_p,a_v_s,a_v_a):>{C}}")
         print(f"{'MEDIAN':<22}  {_fmt(m_v_p,m_v_s,m_v_a):>{C}}")
-    if area_ratios or share_maes:
-        print(dash)
-        print("Scale-preserving (GNN vs Calc, not max-normalised):")
-        if area_ratios:
-            print(f"  {'intensity area ratio':<34} {_avg(area_ratios):.4f}   (ideal 1.0)")
-        if share_maes:
-            print(f"  {'per-carbon intensity share MAE':<34} {_avg(share_maes):.4f}   (ideal 0.0)")
     print(sep)
 
     # -- Per-environment-type summary (GNN vs Calc) --
@@ -272,8 +261,6 @@ def _print_pcc_summary(title, pcc_data, show_exp=True, train_env_counts=None):
         'mean_gnn_pcc':  _avg(gnn_pccs),  'mean_gnn_mse':  _avg(gnn_mses),  'mean_gnn_mae':  _avg(gnn_maes),
         'mean_calc_pcc': _avg(calc_pccs), 'mean_calc_mse': _avg(calc_mses), 'mean_calc_mae': _avg(calc_maes),
         'mean_gvc_pcc':  _avg(gvc_pccs),  'mean_gvc_mse':  _avg(gvc_mses),  'mean_gvc_mae':  _avg(gvc_maes),
-        'mean_area_ratio': _avg(area_ratios),
-        'mean_share_mae':  _avg(share_maes),
         'macro_avg_pcc':           float(macro_avg) if macro_avg is not None else None,
         'macro_std_pcc':           float(macro_std) if macro_std is not None else None,
         'inv_freq_weighted_pcc':   float(inv_freq_pcc) if inv_freq_pcc is not None else None,
@@ -324,7 +311,7 @@ def _compute_molecule_results(
     carbon_env_labels=None,
     calc_method='mcpdft_hybrid_rcc',
     carbon_spec_idx=None,
-    i_scale=None,
+    maxI=None,
 ):
     """Compute broadened spectra and PCCs for one molecule.
 
@@ -380,8 +367,9 @@ def _compute_molecule_results(
             _, calc_c_i = su.fit_spectrum_to_grid(
                 calc_c[:, 0] + ke_shift, calc_c[:, 1],
                 fwhm, display_grid[0], display_grid[-1], n_points,
-                kernel='area', i_scale=i_scale,
             )
+            if maxI:
+                calc_c_i = calc_c_i / maxI
             calc_per_carbon[c] = calc_c_i
             calc_total += calc_c_i
 
@@ -395,30 +383,8 @@ def _compute_molecule_results(
         gnn_pcc=None, gnn_mse=None, gnn_mae=None,
         calc_pcc=None, calc_mse=None, calc_mae=None,
         gnn_vs_calc_pcc=None, gnn_vs_calc_mse=None, gnn_vs_calc_mae=None,
-        # Scale-preserving metrics -- see below
-        gnn_vs_calc_area_ratio=None, gnn_vs_calc_share_mae=None,
         per_carbon_pccs=[],
     )
-
-    # -- Scale-preserving metrics (computed BEFORE any max-normalisation) --
-    # The PCC/MSE/MAE below are lineshape metrics: each spectrum is divided by
-    # its own maximum, so they say nothing about absolute or relative intensity.
-    # These two do, and are what supports using the model for spectral unfitting:
-    #   area_ratio  molecular integrated intensity, predicted / calculated (-> 1)
-    #   share_mae   mean |predicted - calculated| per-carbon share of the
-    #               molecular intensity, i.e. how well the model splits the
-    #               total between inequivalent sites (-> 0)
-    if calc_total.sum() > 0:
-        result['gnn_vs_calc_area_ratio'] = float(gnn_total.sum() / calc_total.sum())
-    if gnn_total.sum() > 0 and calc_total.sum() > 0:
-        shares = []
-        for c in range(1, n_carbons + 1):
-            g = gnn_per_carbon.get(c - 1)
-            k = calc_per_carbon.get(c)
-            if g is not None and k is not None:
-                shares.append(abs(g.sum() / gnn_total.sum() - k.sum() / calc_total.sum()))
-        if shares:
-            result['gnn_vs_calc_share_mae'] = float(np.mean(shares))
 
     # -- Total PCCs (interpolated onto exp energy axis) --
     if gnn_total.max() > 0 and calc_total.max() > 0:
@@ -651,11 +617,6 @@ def _predict_spectra(model, eval_data, device):
 #  metrics.  Scale-preserving metrics are added separately.
 
 _COMPARISONS = (('gvx', 'gnn'), ('gvc', 'gvc'), ('cvx', 'calc'))
-# mean_area_ratio / mean_share_mae are the scale-preserving metrics: unlike the
-# PCC/MSE/MAE above they are NOT computed on max-normalised spectra.
-_EXTRAS      = ('macro_avg_pcc', 'macro_std_pcc', 'inv_freq_weighted_pcc',
-                'mean_area_ratio', 'mean_share_mae')
-
 
 def _flatten_auger_metrics(eval_summary, test_summary=None):
     """Flatten the nested eval/test summaries into single-level scalars."""
@@ -668,10 +629,6 @@ def _flatten_auger_metrics(eval_summary, test_summary=None):
                 v = summary.get(f'mean_{long}_{metric}')
                 if v is not None:
                     out[f'{set_name}_{short}_{metric}'] = float(v)
-        for extra in _EXTRAS:
-            v = summary.get(extra)
-            if v is not None:
-                out[f'{set_name}_{extra}'] = float(v)
     return out
 
 def _evaluate_spectra(
@@ -680,6 +637,7 @@ def _evaluate_spectra(
     output_dir, png_dir, file_stem,
     n_points, min_ke, max_ke, fwhm, ke_shift,
     train_results=None,
+    maxI=None,
 ):
     """
     The model predicts per-atom intensity on a common energy grid.
@@ -695,19 +653,6 @@ def _evaluate_spectra(
     eval_dir = os.path.join(DATA_RAW_DIR, 'eval_auger')
     calc_dir = os.path.join(DATA_RAW_DIR, 'calc_auger')
     energy_grid = np.linspace(min_ke, max_ke, n_points)
-
-    # Global intensity scale -- the calculated reference must be put on the same
-    # scale as the model output, which was trained against sticks divided by it.
-    import torch as _torch
-    from augernet import DATA_PROCESSED_DIR
-    _stats = _torch.load(os.path.join(DATA_PROCESSED_DIR, 'auger_norm_stats.pt'),
-                         weights_only=False)
-    if 'i_scale' not in _stats:
-        raise KeyError(
-            "auger_norm_stats.pt predates the global-intensity-scale correction "
-            "(no 'i_scale' key). Re-run scripts/prepare_data.py to regenerate it."
-        )
-    i_scale = _stats['i_scale']
 
     # Build training-set class counts from carbon_env_labels.
     # carbon_env_labels is per-ALL-atom; filter to carbons only via node_mask
@@ -752,7 +697,7 @@ def _evaluate_spectra(
             carbon_env_labels=env_labels_i,
             calc_method='mcpdft_hybrid_rcc',
             carbon_spec_idx=spec_idx_i,
-            i_scale=i_scale,
+            maxI=maxI
         )
         results.append(r)
 
@@ -769,8 +714,6 @@ def _evaluate_spectra(
             gnn_vs_calc_pcc=r['gnn_vs_calc_pcc'],
             gnn_vs_calc_mse=r.get('gnn_vs_calc_mse'),
             gnn_vs_calc_mae=r.get('gnn_vs_calc_mae'),
-            gnn_vs_calc_area_ratio=r.get('gnn_vs_calc_area_ratio'),
-            gnn_vs_calc_share_mae=r.get('gnn_vs_calc_share_mae'),
             per_carbon_pccs=r['per_carbon_pccs'],
         )
         for r in results
@@ -800,7 +743,7 @@ def _evaluate_spectra(
                 carbon_env_labels=env_labels_i,
                 calc_method='auger',
                 carbon_spec_idx=spec_idx_i,
-                i_scale=i_scale,
+                maxI=maxI
             )
             test_results.append(r)
 
@@ -866,7 +809,8 @@ def run_evaluation(
     config_id: str = None,
     param_file_prefix: str = None,
     train_calc_data=None,
-    test_calc_data=None
+    test_calc_data=None,
+    maxI=None,
 ):
     """Evaluate an Auger GNN model after training.
 
@@ -918,4 +862,5 @@ def run_evaluation(
         n_points=cfg.n_points, min_ke=cfg.min_ke, max_ke=cfg.max_ke,
         fwhm=cfg.fwhm, ke_shift=cfg.ke_shift_calc,
         train_results=train_results,
+        maxI=maxI
     )

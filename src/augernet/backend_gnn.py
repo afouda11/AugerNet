@@ -140,52 +140,32 @@ def _rebuild_y_fitted(data, cfg, hp):
     always trains against self-consistent targets.
     """
     spectrum_keys = ('fwhm', 'n_points', 'min_ke', 'max_ke', 'max_spec_len')
-    needs_rebuild = any(
-        hp.get(k, getattr(cfg, k)) != getattr(cfg, k)
-        for k in spectrum_keys
-        if k in hp
-    )
-    if not needs_rebuild:
-        return
 
     import types
     tmp = types.SimpleNamespace()
     for k in spectrum_keys:
         setattr(tmp, k, hp.get(k, getattr(cfg, k)))
 
-    auger_norm_stats = data['auger_norm_stats']
     print(f"  [param override] Rebuilding y_fitted "
           f"(fwhm={tmp.fwhm}, n_points={tmp.n_points}, "
           f"ke=[{tmp.min_ke}, {tmp.max_ke}])")
-    _attach_y_fitted(data['calc_data'], auger_norm_stats, tmp)
+    data['auger_maxI'] = _attach_y_fitted(data['calc_data'], tmp)
 
-def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
+def _attach_y_fitted(calc_data, cfg):
 
     """Create ``y_fitted`` on each singlet Data object by combining singlet +
     triplet stick spectra and Gaussian-broadening onto a common energy grid.
 
     Each atom's ``y`` is a 600-vector = [energies(300), intensities(300)].
-    Energies are normalised by ``max_ke``; 
     ``spec_len`` gives the number of valid entries in each half.
 
     After this call every element in *sing_data* has a new attribute
     ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
 
-    Normalisation: the stored sticks are energy/maxE and intensity/maxI, so both
-    are restored to raw calc units here, broadened with an area-normalised
-    Gaussian, and divided by the single global constant ``i_scale``.  Targets
-    therefore land in [0, 1] with every inter-carbon and inter-molecular
-    intensity ratio preserved, and their magnitude no longer drifts with fwhm.
+    Normalisation: Scale by the fitted maxI 
     """
-    maxE = auger_norm_stats['maxE']
-    maxI = auger_norm_stats['maxI']
-    if 'i_scale' not in auger_norm_stats:
-        raise KeyError(
-            "auger_norm_stats.pt predates the global-intensity-scale correction "
-            "(no 'i_scale' key). Re-run scripts/prepare_data.py to regenerate it."
-        )
-    i_scale = auger_norm_stats['i_scale']
-
+    all_fitted = []
+    maxI_fitted, maxI_carbon = 0.0, None
     for data in calc_data:
         n_atoms = data.x.size(0)
         s_y = data.sing_y
@@ -194,11 +174,10 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
         I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
 
         for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
-            # use maxE / maxI to un-normalize the sticks back to raw calc units
-            s_e = s_y[c, :, 0] * maxE
-            s_i = s_y[c, :, 1] * maxI
-            t_e = t_y[c, :, 0] * maxE
-            t_i = t_y[c, :, 1] * maxI
+            s_e = s_y[c, :, 0]
+            s_i = s_y[c, :, 1]
+            t_e = t_y[c, :, 0]
+            t_i = t_y[c, :, 1]
 
             energy_stick = np.concatenate([s_e, t_e])
             intensity_stick = np.concatenate([s_i, t_i])
@@ -206,17 +185,24 @@ def _attach_y_fitted(calc_data, auger_norm_stats, cfg):
             E_fitted[c], I_fitted[c] = fit_spectrum_to_grid(
                 energy_stick, intensity_stick, fwhm=cfg.fwhm,
                 energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points, normalize=False,
-                kernel='area', i_scale=i_scale,
-            )
+                n_points=cfg.n_points, normalize=False)
+            
+            if I_fitted[c].max() > maxI_fitted:
+                maxI_fitted = float(I_fitted[c].max())
+                maxI_carbon = (getattr(data, 'mol_name', '?'), c)
 
-        data.y_fitted = torch.tensor(I_fitted, dtype=torch.float32)
+        all_fitted.append((data, E_fitted, I_fitted))
+
+    for data, E_fitted, I_fitted in all_fitted:
+        data.y_fitted = torch.tensor(I_fitted / maxI_fitted, dtype=torch.float32)
         data.e_fitted = torch.tensor(E_fitted, dtype=torch.float32)
 
     print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
           f"fwhm={cfg.fwhm})")
+    print(f"  Fitted maxI = {maxI_fitted:.6e}  (set by {maxI_carbon[0]} carbon {maxI_carbon[1]}); "
+          f"targets in (0, 1]")
 
-
+    return maxI_fitted 
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
                      pred_type='CEBE', spectrum_dim=300, task_type='single',
@@ -514,19 +500,17 @@ def load_data(cfg) -> Dict[str, Any]:
         ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.train_data_file)
         calc_data = [ds[i] for i in range(len(ds))]
 
-        auger_norm_stats = torch.load(cfg.auger_norm_stats_file, weights_only=False)
-
         print(f"  Loaded {len(calc_data)} molecules")
-        _attach_y_fitted(calc_data, auger_norm_stats, cfg)
+        auger_maxI = _attach_y_fitted(calc_data, cfg)
         assemble_dataset(calc_data, feature_keys)
         print(f"  x.shape[1]={calc_data[0].x.size(1)}\n"
                 f"  y_fitted.shape={calc_data[0].y_fitted.shape} (fitted intensity)\n"
                 f"  e_fitted.shape={calc_data[0].e_fitted.shape} (fitted energy)")
         return {
                 'calc_data': calc_data,
+                'auger_maxI': auger_maxI,
                 'assembled_feature_keys': cfg.feature_keys,
                 'cebe_norm_stats': cebe_norm_stats,
-                'auger_norm_stats': auger_norm_stats
         }
     else:
         raise ValueError(
@@ -859,6 +843,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             param_file_prefix=param_file_prefix,
             train_calc_data=data['calc_data'],
             test_calc_data=data['test_data'],
+            maxI=data.get('auger_maxI'),
         )
 
         # ── Multi-task: also evaluate CEBE head on experimental CEBE data ──
@@ -1114,7 +1099,9 @@ def _predict_cebe(model_path, data_list, mol_names, *, cfg, output_dir, file_ste
 
 def _predict_auger(model, device, data_list, mol_names,
                            *, cfg, output_dir, file_stem):
-    """Run auger-gnn inference and write per-molecule spectrum files."""
+    """Run auger-gnn inference and write per-molecule spectrum files.
+        Predicts normalized spectra with relative intensities between 
+        carbons and molecules."""
     from torch_geometric.loader import DataLoader
 
     print(f"\n{'=' * 80}")
@@ -1127,10 +1114,6 @@ def _predict_auger(model, device, data_list, mol_names,
     # the reported metrics and the published figures.
     energy_grid = np.linspace(cfg.min_ke, cfg.max_ke, cfg.n_points) + cfg.ke_shift_calc
     loader = DataLoader(data_list, batch_size=1, shuffle=False)
-
-    # Return spectra in raw calc intensity units rather than max-normalised, so
-    # relative intensities between molecules survive (needed for unfitting).
-    i_scale = torch.load(cfg.auger_norm_stats_file, weights_only=False)['i_scale']
 
     model.eval()
     spectra = {}
@@ -1151,7 +1134,7 @@ def _predict_auger(model, device, data_list, mol_names,
             for nidx in valid_nodes:
                 mol_spectrum += out[nidx].cpu().numpy()
 
-            spectra[mol_names[mol_idx]] = mol_spectrum * i_scale
+            spectra[mol_names[mol_idx]] = mol_spectrum
 
     # Write one output file per molecule: two-column [energy, intensity]
     print(f"\n  Writing spectra to {output_dir}/")
@@ -1160,8 +1143,7 @@ def _predict_auger(model, device, data_list, mol_names,
         np.savetxt(out_path,
                    np.column_stack([energy_grid, spectrum]),
                    header=(f"energy_eV  intensity  (model={cfg.model_id}, "
-                           f"fwhm={cfg.fwhm}, ke_shift={cfg.ke_shift_calc}, "
-                           f"i_scale={i_scale}, raw calc intensity units)"),
+                           f"fwhm={cfg.fwhm}, ke_shift={cfg.ke_shift_calc}, ",
                    fmt="%.6e")
 
     # Summary table
