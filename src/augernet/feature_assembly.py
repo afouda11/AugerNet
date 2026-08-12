@@ -52,7 +52,6 @@ FEATURE_NAMES = {
     4: 'mol_be',          # (N, 1)
     5: 'e_score',         # (N, 1)
     6: 'env_onehot',      # (N, NUM_CARBON_CATEGORIES)
-    7: 'morgan_fp',       # (N, MORGAN_N_BITS) — per-atom Morgan FP (ECFP2)
 }
 
 
@@ -74,8 +73,6 @@ def parse_feature_keys(tag: str) -> List[int]:
 
     >>> parse_feature_keys('035')
     [0, 3, 5]
-    >>> parse_feature_keys('7')
-    [7]
     """
     tag = str(tag).strip()
     if not tag:
@@ -237,14 +234,16 @@ def assemble_dataset(
     feature_keys : sequence of int
         Which features to include.
     norm_stats : dict, optional
-        Dataset-wide CEBE normalisation stats forwarded to
-        ``assemble_node_features`` for ``mol_be`` scaling.
+        Dataset-wide CEBE normalisation stats
 
     Returns the same list for convenience.
     """
+    if scale_mode == 'data' and feature_stats is None:
+        raise ValueError("Feature scale mode = 'data' but no dataset wide feature_stats present.")
+
     for data in data_list:
         assemble_node_features(data, feature_keys, inplace=True, 
-                               scale_mode=scale_mode, feature_stats=None)
+                               scale_mode=scale_mode, feature_stats=feature_stats)
     return data_list
 
 def describe_features(feature_keys: Sequence[int]) -> str:

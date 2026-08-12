@@ -61,10 +61,17 @@ class TestCebeGnnConfigResolve:
         cfg.resolve()
         assert cfg.feature_keys_parsed == [0, 3, 5]
 
-    def test_norm_stats_file_set(self):
+    def test_no_dataset_wide_norm_stats_file(self):
+        """Normalisation is per-fold; no global stats file may reappear.
+
+        The constants are fitted in backend_gnn._fit_fold_norm from the
+        training molecules of each fold and saved to '{model}_norm.json'
+        beside the checkpoint.  A config field pointing at a dataset-wide
+        file would reintroduce the leak this replaced.
+        """
         cfg = AugerNetConfig(model="cebe-gnn")
         cfg.resolve()
-        assert "cebe_norm_stats.pt" in cfg.cebe_norm_stats_file
+        assert not hasattr(cfg, "cebe_norm_stats_file")
 
 
 # -- resolve() param mode (requires torch) ------------------------------------

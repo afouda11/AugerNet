@@ -87,10 +87,11 @@ class TestBuildNodeEdgeFeatures:
         row_sums = real_mol_graph.edge_attr.sum(dim=1)
         assert (row_sums == 1.0).all()
 
-    def test_x_is_empty_placeholder(self, real_mol_graph):
-        # category_feature removed: x is an empty placeholder until
-        # feature_assembly populates it per feature_keys
-        assert real_mol_graph.x.shape == (N_ATOMS, 0)
+    def test_x_is_empty_placeholder(self, real_mol_graph_raw):
+        # category_feature removed: the builder emits a zero-width x, which
+        # feature_assembly populates per feature_keys at runtime.  Asserted on
+        # the RAW fixture — real_mol_graph is assembled and has 202 columns.
+        assert real_mol_graph_raw.x.shape == (N_ATOMS, 0)
 
     def test_pos_shape(self, real_mol_graph):
         assert real_mol_graph.pos.shape == (N_ATOMS, 3)

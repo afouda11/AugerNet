@@ -29,7 +29,6 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from augernet import gnn_train_utils as gtu
 from augernet.feature_assembly import (
     assemble_dataset, 
 )
@@ -360,10 +359,6 @@ def _compute_molecule_results(
                 sticks.append(s)
         if sticks:
             calc_c = np.vstack(sticks)
-            # Same convention as the training targets (backend_gnn._attach_y_fitted):
-            # area-normalised kernel on raw sticks, divided by the global i_scale.
-            # Without this the reference sits on a different intensity scale from
-            # the prediction and only the max-normalisation below hides it.
             _, calc_c_i = su.fit_spectrum_to_grid(
                 calc_c[:, 0] + ke_shift, calc_c[:, 1],
                 fwhm, display_grid[0], display_grid[-1], n_points,
@@ -614,7 +609,6 @@ def _predict_spectra(model, eval_data, device):
 #                  cvx  = calc vs experiment   (for reference)
 #     metric       pcc | mse | mae
 #  All are computed on per-molecule max-normalised spectra -- i.e. LINESHAPE
-#  metrics.  Scale-preserving metrics are added separately.
 
 _COMPARISONS = (('gvx', 'gnn'), ('gvc', 'gvc'), ('cvx', 'calc'))
 
@@ -811,6 +805,8 @@ def run_evaluation(
     train_calc_data=None,
     test_calc_data=None,
     maxI=None,
+    scale_mode='graph',
+    feature_stats=None
 ):
     """Evaluate an Auger GNN model after training.
 
@@ -846,12 +842,12 @@ def run_evaluation(
 
     # Load evaluation data
     feature_keys = cfg.feature_keys_parsed
-
+    from augernet import gnn_train_utils as gtu
     eval_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.auger_eval_data_file)
     eval_data = [eval_ds[i] for i in range(len(eval_ds))]
     test_data = test_calc_data
     train_data = train_calc_data
-    assemble_dataset(eval_data, feature_keys)
+    assemble_dataset(eval_data, feature_keys, scale_mode=scale_mode, feature_stats=feature_stats)
     print(f'  Loaded {len(eval_data)} eval molecules')
 
     model = model_result.get('model') if isinstance(model_result, dict) else model_result

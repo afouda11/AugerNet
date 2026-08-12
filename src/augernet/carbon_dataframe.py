@@ -91,10 +91,6 @@ class CarbonDataset(Dataset):
             intensities = np.concatenate([si, ti])
 
             if len(energies) > 0:
-                # Same convention as the GNN targets: area-normalised kernel on
-                # raw sticks divided by the global i_scale.  ``normalize_intensity``
-                # switches to the legacy per-carbon max-normalisation, which
-                # discards the global scale -- kept as an ablation.
                 _, intensity_grid = fit_spectrum_to_grid(
                     energies, intensities,
                     fwhm=broadening_fwhm,
@@ -116,18 +112,6 @@ class CarbonDataset(Dataset):
         else: # calc global z norm stats for train data
             #binding energy
             be_mu = self.df['delta_be'].mean(); be_std = self.df['delta_be'].std() + 1e-8
-
-        # mol size
-        from rdkit import Chem
-        mol_to_natoms: dict = {}
-        first_row = self.df.drop_duplicates('mol_name').set_index('mol_name')
-        for name in first_row.index:
-            smi = first_row.loc[name, 'smiles']
-            rdmol = Chem.MolFromSmiles(str(smi)) if smi else None
-            mol_to_natoms[name] = rdmol.GetNumAtoms() if rdmol is not None else 0
-        raw_sizes = np.array(
-            [mol_to_natoms.get(n, 0) for n in self.df['mol_name']], dtype=np.float32
-        )
 
         self._delta_be_norm = ((self.df['delta_be'] - be_mu) / be_std).values
         self.norm_stats = {'be_mu': be_mu, 'be_std': be_std}

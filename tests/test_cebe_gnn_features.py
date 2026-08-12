@@ -99,11 +99,11 @@ class TestAssembleNodeFeatures:
 
     def test_single_key_shape(self, mock_data):
         data = assemble_node_features(mock_data, feature_keys=[3], inplace=False)
-        assert data.x.shape == (4, 3 + 1)  # base 3 + atomic_be 1
+        assert data.x.shape == (4, 1)  # atomic_be 1; x is replaced, not appended
 
     def test_035_shape(self, mock_data):
         data = assemble_node_features(mock_data, feature_keys=[0, 3, 5], inplace=False)
-        assert data.x.shape == (4, 3 + 200 + 1 + 1)
+        assert data.x.shape == (4, 200 + 1 + 1)
 
     def test_inplace_false_preserves_original(self, mock_data):
         original_shape = mock_data.x.shape
@@ -112,7 +112,7 @@ class TestAssembleNodeFeatures:
 
     def test_inplace_true_modifies(self, mock_data):
         assemble_node_features(mock_data, feature_keys=[3], inplace=True)
-        assert mock_data.x.shape == (4, 3 + 1)
+        assert mock_data.x.shape == (4, 1)
 
     def test_missing_feature_raises(self, mock_data):
         delattr(mock_data, "atomic_be")
@@ -122,8 +122,7 @@ class TestAssembleNodeFeatures:
     def test_skipatom_not_scaled(self, mock_data):
         orig = mock_data.skipatom_200.clone()
         data = assemble_node_features(mock_data, feature_keys=[0], inplace=False)
-        assembled = data.x[:, 3:]
-        assert torch.allclose(assembled.float(), orig.float())
+        assert torch.allclose(data.x.float(), orig.float())
 
 
 # -- assemble_dataset ---------------------------------------------------------
@@ -141,4 +140,4 @@ class TestAssembleDataset:
         data_list = [make_mock_data() for _ in range(3)]
         assemble_dataset(data_list, feature_keys=[3])
         for d in data_list:
-            assert d.x.shape[1] == 3 + 1
+            assert d.x.shape[1] == 1

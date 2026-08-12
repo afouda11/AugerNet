@@ -14,6 +14,7 @@ Provides the routines for train_driver:
 from __future__ import annotations
 
 import os
+import json
 import numpy as np
 import torch
 from typing import Any, Dict, List, Tuple
@@ -36,23 +37,40 @@ from augernet import DATA_DIR, DATA_PROCESSED_DIR
 def _extract_overrides(cfg, overrides: dict) -> dict:
     """Resolve hyperparameters from cfg + per-config overrides.
 
-    Returns a flat dict of all HP values needed by the training loop.
-    Any key listed in ``OVERRIDABLE_FIELDS`` can be overridden; values
-    fall back to the base config.
+    ``hp`` contains every value the training loop reads, not just the
+    searchable ones.  ``OVERRIDABLE_FIELDS`` is the ``param_grid`` whitelist
+
+
+    Parameters
+    ----------
+    cfg : AugerNetConfig
+    overrides : dict
+        Per-config values from a param search.  Every key must be in
+        ``OVERRIDABLE_FIELDS``; anything else is a programming error rather
+        than a config error, since ``load_config`` already validates
+        ``param_grid`` against the same set.
     """
     from augernet.config import OVERRIDABLE_FIELDS
 
-    hp = {}
-    for key in OVERRIDABLE_FIELDS:
-        if key in overrides:
-            hp[key] = overrides[key]
-        elif hasattr(cfg, key):
-            hp[key] = getattr(cfg, key)
+    # Start from the complete config, so the training loop can never be handed
+    # a partial set regardless of what is currently searchable.
+    hp = {name: getattr(cfg, name) for name in cfg.__dataclass_fields__}
+
+    for key, value in overrides.items():
+        if key not in OVERRIDABLE_FIELDS:
+            raise ValueError(
+                f"'{key}' was passed as a per-config override but is not in "
+                f"OVERRIDABLE_FIELDS, so it cannot be varied by param search.\n"
+                f"  Add it to OVERRIDABLE_FIELDS in config.py to make it "
+                f"searchable, or remove it from the override."
+            )
+        hp[key] = value
+
     return hp
 
 
 def _get_fold_split(calc_data, fold, n_folds, split_method, random_seed,
-                    verbose=False):
+                    cutoff=0.65, verbose=False):
     """Compute molecule-level train/val indices for a single fold.
 
     Returns ``(train_idx, val_idx)`` as Python lists.
@@ -64,7 +82,7 @@ def _get_fold_split(calc_data, fold, n_folds, split_method, random_seed,
     elif split_method == 'butina':
         from augernet.build_molecular_graphs import get_butina_clusters
         smiles_list = [d.smiles for d in calc_data]
-        cluster_ids = get_butina_clusters(smiles_list, cutoff=0.65)
+        cluster_ids = get_butina_clusters(smiles_list, cutoff=cutoff)
         if verbose:
             print(f"  Butina clustering: {len(set(cluster_ids))} clusters "
                   f"(cutoff=0.65)")
@@ -101,108 +119,287 @@ def _extract_results(train_results):
     )
 
 
-def _handle_feature_override(data, cfg, overrides):
-    """Re-assemble node features in-place if param search overrides feature_keys.
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-fold normalisation  
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Compares the requested feature_keys against what is currently assembled
-    on the data objects.  If they differ, calls ``assemble_dataset`` to
-    rebuild ``x`` on every graph in-place.  This is a side-effect-only
-    helper — it modifies *data* and returns nothing.
-    """
-    override_fk = overrides.get('feature_keys')
-    if override_fk is not None:
-        fk_parsed = parse_feature_keys(override_fk)
-        fk_tag = compute_feature_tag(fk_parsed)
-        if fk_tag != data.get('assembled_feature_keys', cfg.feature_keys):
-            print(f"  Re-assembling features for key override: {fk_tag}")
-            mode = getattr(cfg, 'node_feature_norm', 'graph')
-            fs = compute_feature_stats(data['calc_data'], fk_parsed) if mode == 'data' else None
-            assemble_dataset(data['calc_data'], fk_parsed, scale_mode=mode, feature_stats=fs)
-            if data.get('exp_data'):
-                #assemble_dataset(data['exp_data'], fk_parsed)
-                assemble_dataset(data['exp_data'], fk_parsed, scale_mode=mode, feature_stats=fs)
-            #data['assembled_feature_keys'] = fk_tag
-            data['feature_stats'] = fs
+_SPECTRUM_KEYS = ('fwhm', 'n_points', 'min_ke', 'max_ke', 'max_spec_len')
 
 
-
-def _rebuild_y_fitted(data, cfg, hp):
-    """Rebuild ``y_fitted`` in-place when any spectrum parameter is overridden.
-
-    Called from ``train_single_run`` for ``auger-gnn`` mode so that
-    param searches over ``fwhm``, ``n_points``, ``min_ke``, or ``max_ke``
-    train against targets built with the correct overridden values instead
-    of the base ``cfg`` values that were used in ``load_data``.
-
-    The rebuild mutates the shared ``data['calc_data']`` list in-place (each
-    Data object's ``y_fitted`` attribute is replaced).  Subsequent configs
-    will call this function again with their own overrides, so each config
-    always trains against self-consistent targets.
-    """
-    spectrum_keys = ('fwhm', 'n_points', 'min_ke', 'max_ke', 'max_spec_len')
-
+def _spectrum_params(cfg, hp):
+    """Resolve the spectrum-grid parameters, honouring param-search overrides."""
     import types
-    tmp = types.SimpleNamespace()
-    for k in spectrum_keys:
-        setattr(tmp, k, hp.get(k, getattr(cfg, k)))
+    spec = types.SimpleNamespace()
+    for k in _SPECTRUM_KEYS:
+        spec.__dict__[k] = hp.get(k, getattr(cfg, k)) if hp else getattr(cfg, k)
+    return spec
 
-    print(f"  [param override] Rebuilding y_fitted "
-          f"(fwhm={tmp.fwhm}, n_points={tmp.n_points}, "
-          f"ke=[{tmp.min_ke}, {tmp.max_ke}])")
-    data['auger_maxI'] = _attach_y_fitted(data['calc_data'], tmp)
 
-def _attach_y_fitted(calc_data, cfg):
+# ── CEBE target scale ────────────────────────────────────────────────────────
 
-    """Create ``y_fitted`` on each singlet Data object by combining singlet +
-    triplet stick spectra and Gaussian-broadening onto a common energy grid.
+def _cebe_delta(d):
+    """Raw CEBE target in eV: isolated-atom 1s BE minus the molecular CEBE.
 
-    Each atom's ``y`` is a 600-vector = [energies(300), intensities(300)].
-    ``spec_len`` gives the number of valid entries in each half.
-
-    After this call every element in *sing_data* has a new attribute
-    ``y_fitted`` of shape ``(n_atoms, cfg.n_points)``.
-
-    Normalisation: Scale by the fitted maxI 
+    Reconstructed from ``atomic_be_eV`` and ``true_cebe``, both stored raw at
+    graph-build time.  This is the same quantity ``build_graphs`` forms before
+    normalising, so the target can be re-normalised per fold without
+    regenerating any ``.pt`` file — and the value stored in ``cebe_y`` at prep
+    time is never trusted.
     """
-    all_fitted = []
-    maxI_fitted, maxI_carbon = 0.0, None
-    for data in calc_data:
-        n_atoms = data.x.size(0)
-        s_y = data.sing_y
-        t_y = data.trip_y
-        E_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
-        I_fitted = np.zeros((n_atoms, cfg.n_points), dtype=np.float32)
+    return d.atomic_be_eV.view(-1).float() - d.true_cebe.view(-1).float()
 
-        for c in data.node_mask.nonzero(as_tuple=True)[0].tolist():
-            s_e = s_y[c, :, 0]
-            s_i = s_y[c, :, 1]
-            t_e = t_y[c, :, 0]
-            t_i = t_y[c, :, 1]
 
-            energy_stick = np.concatenate([s_e, t_e])
-            intensity_stick = np.concatenate([s_i, t_i])
+def _fit_cebe_norm(calc_data, train_idx):
+    """Fit the CEBE target mean/std on the training molecules of this fold."""
+    vals = []
+    for i in train_idx:
+        d = calc_data[i]
+        mask = d.node_mask.view(-1) > 0.5
+        vals.append(_cebe_delta(d)[mask])
+    if not vals:
+        raise ValueError("_fit_cebe_norm: no training molecules supplied.")
+    v = torch.cat(vals)
+    if v.numel() < 2:
+        raise ValueError(
+            f"_fit_cebe_norm: only {v.numel()} carbon(s) in the training fold — "
+            f"cannot fit a standard deviation."
+        )
+    # ddof=1, matching the historical np.std(..., ddof=1)
+    return {'mean': float(v.mean()), 'std': float(v.std(unbiased=True)),
+            'n_carbons': int(v.numel())}
 
+
+def _apply_cebe_norm(data_lists, norm):
+    """Rewrite ``cebe_y`` in place from the raw delta using *norm*.
+
+    Non-carbon nodes keep the -1 sentinel that downstream code masks on.
+    """
+    mean, std = norm['mean'], norm['std']
+    for lst in data_lists:
+        for d in lst or ():
+            mask = d.node_mask.view(-1) > 0.5
+            y = torch.full((d.node_mask.numel(),), -1.0, dtype=torch.float32)
+            y[mask] = (_cebe_delta(d)[mask] - mean) / std
+            d.cebe_y = y.view(-1, 1)
+
+
+# ── Auger target scale ───────────────────────────────────────────────────────
+
+def _broaden_sticks(data_list, spec):
+    """Gaussian-broaden singlet+triplet sticks onto the common grid.
+
+    Returns ``[(data_obj, E_fitted, I_fitted), ...]`` with RAW intensities — no
+    cross-molecule constant is involved at this stage.
+    """
+    out = []
+    for d in data_list or ():
+        n_atoms = d.node_mask.numel()
+        s_y, t_y = d.sing_y, d.trip_y
+        E_fitted = np.zeros((n_atoms, spec.n_points), dtype=np.float32)
+        I_fitted = np.zeros((n_atoms, spec.n_points), dtype=np.float32)
+        for c in d.node_mask.nonzero(as_tuple=True)[0].tolist():
+            energy_stick = np.concatenate([s_y[c, :, 0], t_y[c, :, 0]])
+            intensity_stick = np.concatenate([s_y[c, :, 1], t_y[c, :, 1]])
             E_fitted[c], I_fitted[c] = fit_spectrum_to_grid(
-                energy_stick, intensity_stick, fwhm=cfg.fwhm,
-                energy_min=cfg.min_ke, energy_max=cfg.max_ke,
-                n_points=cfg.n_points, normalize=False)
-            
-            if I_fitted[c].max() > maxI_fitted:
-                maxI_fitted = float(I_fitted[c].max())
-                maxI_carbon = (getattr(data, 'mol_name', '?'), c)
+                energy_stick, intensity_stick, fwhm=spec.fwhm,
+                energy_min=spec.min_ke, energy_max=spec.max_ke,
+                n_points=spec.n_points, normalize=False)
+        out.append((d, E_fitted, I_fitted))
+    return out
 
-        all_fitted.append((data, E_fitted, I_fitted))
 
-    for data, E_fitted, I_fitted in all_fitted:
-        data.y_fitted = torch.tensor(I_fitted / maxI_fitted, dtype=torch.float32)
-        data.e_fitted = torch.tensor(E_fitted, dtype=torch.float32)
+def _fit_apply_auger_maxI(calc_data, train_idx, other_lists, spec, verbose=True):
+    """Fit the Auger intensity scale on training molecules; apply it everywhere.
 
-    print(f"  Built y_fitted on-the-fly ({cfg.n_points}-pt grid, "
-          f"fwhm={cfg.fwhm})")
-    print(f"  Fitted maxI = {maxI_fitted:.6e}  (set by {maxI_carbon[0]} carbon {maxI_carbon[1]}); "
-          f"targets in (0, 1]")
+    ``maxI`` is the largest broadened per-carbon peak height over the TRAINING
+    molecules.  Every split — including the validation fold and the calculated
+    hold-out — is then divided by that one number, so all ``y_fitted`` tensors
+    share a single scale.
+    """
+    fitted = _broaden_sticks(calc_data, spec)
+    others = [_broaden_sticks(lst, spec) for lst in other_lists if lst]
 
-    return maxI_fitted 
+    train_set = set(train_idx)
+    maxI, where = 0.0, None
+    for i, (d, _E, I) in enumerate(fitted):
+        if i not in train_set:
+            continue
+        for c in d.node_mask.nonzero(as_tuple=True)[0].tolist():
+            peak = float(I[c].max())
+            if peak > maxI:
+                maxI, where = peak, (getattr(d, 'mol_name', '?'), c)
+    if maxI <= 0.0:
+        raise ValueError(
+            "_fit_apply_auger_maxI: fitted maxI is 0 — the training molecules "
+            "produced no intensity on the "
+            f"[{spec.min_ke}, {spec.max_ke}] eV grid."
+        )
+
+    for group in [fitted, *others]:
+        for d, E, I in group:
+            d.y_fitted = torch.tensor(I / maxI, dtype=torch.float32)
+            d.e_fitted = torch.tensor(E, dtype=torch.float32)
+
+    if verbose:
+        n_other = sum(len(g) for g in others)
+        print(f"  Auger maxI = {maxI:.6e}  (fitted on {len(train_set)} training "
+              f"molecules; set by {where[0]} carbon {where[1]})")
+        print(f"  Applied to {len(fitted)} train+val and {n_other} hold-out "
+              f"molecules; training targets in (0, 1]")
+    return maxI
+
+
+# ── Node-feature statistics + assembly ───────────────────────────────────────
+
+def _serialise_feature_stats(fs):
+    """``{name: (mu, sigma)}`` tensors -> JSON-safe nested lists."""
+    if not fs:
+        return None
+    return {name: {'mu': mu.view(-1).tolist(), 'sigma': sigma.view(-1).tolist()}
+            for name, (mu, sigma) in fs.items()}
+
+
+def _deserialise_feature_stats(blob):
+    """Inverse of ``_serialise_feature_stats``."""
+    if not blob:
+        return None
+    return {name: (torch.tensor(v['mu'], dtype=torch.float).view(1, -1),
+                   torch.tensor(v['sigma'], dtype=torch.float).view(1, -1))
+            for name, v in blob.items()}
+
+
+# ── The one fitting site ─────────────────────────────────────────────────────
+
+def _fit_fold_norm(data, cfg, hp, train_idx, verbose=True):
+    """Fit every cross-molecule constant on this fold's training molecules and
+    apply it to every split held in *data*.
+
+    Returns a JSON-serialisable dict describing the transforms, which
+    ``train_single_run`` writes beside the checkpoint.
+    """
+    calc_data = data['calc_data']
+    feature_keys = parse_feature_keys(hp.get('feature_keys', cfg.feature_keys))
+    fk_tag = compute_feature_tag(feature_keys)
+    mode = hp.get('node_feature_norm', cfg.node_feature_norm)
+
+    # Every other split that must be transformed by the fitted constants.
+    aux = [data.get('test_data'), data.get('exp_data')]
+    aux = [lst for lst in aux if lst]
+
+    norm: Dict[str, Any] = {
+        'model':               cfg.model,
+        'feature_keys':        fk_tag,
+        'node_feature_norm':   mode,
+        'n_train_molecules':   len(train_idx),
+    }
+
+    # 1. CEBE target scale — the training target for cebe-gnn and for the CEBE
+    #    head of a multi-task auger-gnn; a reporting scale otherwise.
+    cebe = _fit_cebe_norm(calc_data, train_idx)
+    _apply_cebe_norm([calc_data, *aux], cebe)
+    norm['cebe'] = cebe
+    if verbose:
+        print(f"  CEBE norm: mean={cebe['mean']:.6f} std={cebe['std']:.6f} "
+              f"(fitted on {cebe['n_carbons']} carbons in {len(train_idx)} "
+              f"training molecules)")
+
+    # 2. Auger target scale.
+    if cfg.model == 'auger-gnn':
+        spec = _spectrum_params(cfg, hp)
+        stick_lists = [lst for lst in aux if lst and hasattr(lst[0], 'sing_y')]
+        norm['auger_maxI'] = _fit_apply_auger_maxI(
+            calc_data, train_idx, stick_lists, spec, verbose=verbose)
+        norm['spectrum'] = {k: getattr(spec, k) for k in _SPECTRUM_KEYS}
+        data['auger_maxI'] = norm['auger_maxI']
+
+    # 3. Node features.  'graph' scaling is per-molecule and involves no
+    #    cross-molecule statistic, so there is nothing to leak in that mode.
+    fs = None
+    if mode == 'data':
+        fs = compute_feature_stats([calc_data[i] for i in train_idx], feature_keys)
+    assemble_dataset(calc_data, feature_keys, scale_mode=mode, feature_stats=fs)
+    for lst in aux:
+        assemble_dataset(lst, feature_keys, scale_mode=mode, feature_stats=fs)
+
+    data['feature_stats'] = fs
+    data['assembled_feature_keys'] = fk_tag
+    data['node_feature_norm'] = mode
+    data['cebe_norm'] = cebe
+    norm['feature_stats'] = _serialise_feature_stats(fs)
+
+    if verbose:
+        print(f"  Features: {fk_tag} ({describe_features(feature_keys)}), "
+              f"{mode} scaling, x.shape[1]={calc_data[0].x.size(1)}")
+    return norm
+
+
+# ── Sidecar persistence ──────────────────────────────────────────────────────
+# Mechanics live in augernet.norm_sidecar so backend_gnn and backend_cnn share
+# one implementation of the naming and the mismatch reporting.  Re-exported
+# here because callers (and tests) import them from the backend.
+
+from augernet.norm_sidecar import (            # noqa: E402  (re-export)
+    norm_sidecar_path,
+    save_norm_sidecar,
+    collect_mismatches,
+    raise_on_mismatch,
+)
+from augernet.norm_sidecar import load_norm_sidecar as _load_sidecar
+
+# Every GNN sidecar carries a 'cebe' block: it is the target scale for cebe-gnn
+# and for the CEBE head of a multi-task auger-gnn, and the reporting scale
+# otherwise.  Requiring it rejects a CNN sidecar handed to a GNN by mistake.
+_GNN_SIDECAR_BLOCKS = ('cebe',)
+
+
+def load_norm_sidecar(model_path: str) -> dict:
+    """Load the normalisation constants fitted when *model_path* was trained."""
+    return _load_sidecar(model_path, require=_GNN_SIDECAR_BLOCKS)
+
+
+def apply_saved_norm(data, cfg, model_path, verbose=True):
+    """Apply a checkpoint's saved constants to freshly loaded data.
+
+    Used by ``evaluate`` mode, which loads raw graphs and has no training split
+    of its own.  Mirrors ``_fit_fold_norm`` exactly, minus the fitting.
+    """
+    norm = load_norm_sidecar(model_path)
+    feature_keys = parse_feature_keys(norm.get('feature_keys', cfg.feature_keys))
+    mode = norm.get('node_feature_norm', 'graph')
+    fs = _deserialise_feature_stats(norm.get('feature_stats'))
+
+    lists = [data.get('calc_data'), data.get('test_data'), data.get('exp_data')]
+    lists = [lst for lst in lists if lst]
+
+    _apply_cebe_norm(lists, norm['cebe'])
+
+    if cfg.model == 'auger-gnn' and 'auger_maxI' in norm:
+        import types
+        spec = types.SimpleNamespace(**norm.get(
+            'spectrum', {k: getattr(cfg, k) for k in _SPECTRUM_KEYS}))
+        maxI = float(norm['auger_maxI'])
+        for lst in lists:
+            if not lst or not hasattr(lst[0], 'sing_y'):
+                continue
+            for d, E, I in _broaden_sticks(lst, spec):
+                d.y_fitted = torch.tensor(I / maxI, dtype=torch.float32)
+                d.e_fitted = torch.tensor(E, dtype=torch.float32)
+        data['auger_maxI'] = maxI
+
+    for lst in lists:
+        assemble_dataset(lst, feature_keys, scale_mode=mode, feature_stats=fs)
+
+    data['feature_stats'] = fs
+    data['node_feature_norm'] = mode
+    data['assembled_feature_keys'] = compute_feature_tag(feature_keys)
+    data['cebe_norm'] = norm['cebe']
+    if verbose:
+        print(f"  Loaded fold normalisation from {norm_sidecar_path(model_path)}")
+        print(f"    CEBE mean={norm['cebe']['mean']:.6f} "
+              f"std={norm['cebe']['std']:.6f}"
+              + (f", auger maxI={norm['auger_maxI']:.6e}"
+                 if 'auger_maxI' in norm else ''))
+    return norm
 
 def _train_one_model(train_data, val_data, in_channels, edge_dim, device, hp,
                      pred_type='CEBE', spectrum_dim=300, task_type='single',
@@ -438,19 +635,14 @@ def load_data(cfg) -> Dict[str, Any]:
     """Load training data for any model type.
 
     cebe-gnn: calculated + experimental data with val/eval split.
-    auger-gnn: singlet + triplet stick data to y_fitted built on-the-fly.
+    auger-gnn: singlet + triplet stick data; y_fitted built per fold.
 
-    Feature assembly is deferred to ``train_single_run`` / ``run_evaluation``
-    so that param-search can override ``feature_keys`` per configuration.
+    Consequently the returned graphs carry an unassembled ``x`` and no
+    ``y_fitted``; both appear once ``_fit_fold_norm`` has run.
     """
     print(f"\nLoading training data from: {DATA_PROCESSED_DIR}")
     print(f"Feature keys: {cfg.feature_keys}  ({describe_features(cfg.feature_keys_parsed)})")
     print(f"Model ID:     {cfg.model_id}")
-
-    feature_keys = cfg.feature_keys_parsed
-
-    # Load dataset-wide CEBE norm stats for mol_be scaling (key 4)
-    cebe_norm_stats = torch.load(cfg.cebe_norm_stats_file, weights_only=False)
 
     # ── CEBE-GNN ─────────────────────────────────────────────────────────
     if cfg.model == 'cebe-gnn':
@@ -471,27 +663,13 @@ def load_data(cfg) -> Dict[str, Any]:
             print(f"  Exp split: {exp_split}  "
                   f"(val={len(exp_val)}, eval={len(exp_eval)})")
 
-        feature_stats = None
-        if cfg.node_feature_norm == 'data':
-            feature_stats = compute_feature_stats(calc_data, feature_keys)
-
-        print(f"  Assembling features {cfg.feature_keys}, with {cfg.node_feature_norm} normalization")
-        assemble_dataset(calc_data, feature_keys,
-                    scale_mode=cfg.node_feature_norm, feature_stats=feature_stats)
-        assemble_dataset(exp_data_all, feature_keys,
-                    scale_mode=cfg.node_feature_norm, feature_stats=feature_stats)
-        
-        print(f"  Calculated data: {len(calc_data)} molecules, "
-              f"x.shape[1]={calc_data[0].x.size(1)}")
+        print(f"  Calculated data: {len(calc_data)} molecules "
+              f"(features and target scale fitted per fold)")
         return {
             'calc_data': calc_data,
             'exp_data': exp_data_all,
             'exp_val_data': exp_val,
             'exp_eval_data': exp_eval,
-            'assembled_feature_keys': cfg.feature_keys,
-            'norm_stats': cebe_norm_stats,
-            'feature_stats': feature_stats,
-            'node_feature_norm': cfg.node_feature_norm
         }
 
     # ── Auger-GNN ────────────────────────────────────────────────────────
@@ -500,17 +678,10 @@ def load_data(cfg) -> Dict[str, Any]:
         ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.train_data_file)
         calc_data = [ds[i] for i in range(len(ds))]
 
-        print(f"  Loaded {len(calc_data)} molecules")
-        auger_maxI = _attach_y_fitted(calc_data, cfg)
-        assemble_dataset(calc_data, feature_keys)
-        print(f"  x.shape[1]={calc_data[0].x.size(1)}\n"
-                f"  y_fitted.shape={calc_data[0].y_fitted.shape} (fitted intensity)\n"
-                f"  e_fitted.shape={calc_data[0].e_fitted.shape} (fitted energy)")
+        print(f"  Loaded {len(calc_data)} molecules "
+              f"(spectra broadened and scaled per fold)")
         return {
                 'calc_data': calc_data,
-                'auger_maxI': auger_maxI,
-                'assembled_feature_keys': cfg.feature_keys,
-                'cebe_norm_stats': cebe_norm_stats,
         }
     else:
         raise ValueError(
@@ -549,15 +720,6 @@ def train_single_run(
     """
     hp = _extract_overrides(cfg, overrides)
 
-    # If param search overrides feature_keys, re-assemble node features
-    # in-place on the shared data dict before training starts.
-    _handle_feature_override(data, cfg, overrides)
-
-    # For auger-gnn: rebuild y_fitted targets if spectrum params
-    # (fwhm, n_points, min_ke, max_ke) were overridden for this config.
-    if cfg.model == 'auger-gnn':
-        _rebuild_y_fitted(data, cfg, hp)
-
     model_id = cfg.model_id
 
     gtu.seed(hp['random_seed'])
@@ -573,7 +735,9 @@ def train_single_run(
     calc_data = data['calc_data']
     train_idx, val_idx = _get_fold_split(
         calc_data, fold, n_folds,
-        hp['split_method'], hp['random_seed'], verbose=verbose,
+        hp['split_method'], hp['random_seed'], 
+        cfg.butina_cutoff,
+        verbose=verbose,
     )
 
     # training-set subsampling for data-efficiency sweep
@@ -587,6 +751,16 @@ def train_single_run(
         if verbose:
             print(f"  [data-eff] train_frac={frac}  seed={hp.get('train_subsample_seed',0)}  "
               f" {k}/{n} train molecules kept")
+
+    # ── Fit every cross-molecule constant on THIS fold's training molecules ──
+    # Runs after the fold split and after the train_frac subsample, so the
+    # molecules that define the constants are exactly the ones trained on.
+    # Also builds y_fitted and assembles node features, so it must precede the
+    # in_channels read below.
+    if verbose:
+        print(f"\n  Fitting fold normalisation ({len(train_idx)} training molecules)")
+    norm = _fit_fold_norm(data, cfg, hp, train_idx, verbose=verbose)
+    norm['fold'] = fold
 
     if verbose:
         print(f"\n{'=' * 70}")
@@ -637,6 +811,14 @@ def train_single_run(
     torch.save(result['model'].state_dict(), save_paths['model'])
     print(f"  Saved model to {save_paths['model']}")
     result['model_path'] = save_paths['model']
+
+    # The fold's normalisation constants travel with the checkpoint.  evaluate
+    # and predict have no training split and cannot re-derive them, and there
+    # is deliberately no dataset-wide fallback to substitute.
+    sidecar = save_norm_sidecar(save_paths['model'], norm)
+    print(f"  Saved fold normalisation to {sidecar}")
+    result['norm'] = norm
+    result['norm_path'] = sidecar
 
     result['model_id'] = model_id
     return result
@@ -824,6 +1006,16 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                             experimental CEBE dataset via evaluate_cebe_model,
                             identical to the CEBE-GNN evaluation path.
     """
+    # Constants fitted for this fold.  Present because train_single_run ran
+    # _fit_fold_norm, or because _run_evaluate applied a saved sidecar.
+    cebe_norm = data.get('cebe_norm')
+    if cebe_norm is None:
+        raise RuntimeError(
+            "Normalization stats for the given fold are not available on the "
+            "data dict.  run_evaluation must be preceded by _fit_fold_norm "
+            "(training) or apply_saved_norm (evaluate mode)."
+        )
+
     # ── Auger-GNN evaluation ─────────────────────────────────────────────
     if cfg.model == 'auger-gnn':
         from .evaluation_scripts.evaluate_auger_model import (
@@ -844,6 +1036,8 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             train_calc_data=data['calc_data'],
             test_calc_data=data['test_data'],
             maxI=data.get('auger_maxI'),
+            scale_mode=data.get('node_feature_norm','graph'),
+            feature_stats=data.get('feature_stats')
         )
 
         # ── Multi-task: also evaluate CEBE head on experimental CEBE data ──
@@ -852,20 +1046,33 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             from .evaluation_scripts.evaluate_cebe_model import (
                 run_evaluation as _run_cebe_eval,
             )
-            # Load and assemble experimental CEBE data on-the-fly
+            # Load experimental CEBE data on-the-fly, then transform it with
+            # THIS fold's constants — the same ones the CEBE head was trained
+            # against.
             exp_ds = gtu.LoadDataset(DATA_DIR, file_name=cfg.cebe_eval_data_file)
             exp_data_mt = [exp_ds[i] for i in range(len(exp_ds))]
-            assemble_dataset(exp_data_mt, cfg.feature_keys_parsed)
-            _run_cebe_eval(
+
+            _apply_cebe_norm([exp_data_mt], cebe_norm)
+            assemble_dataset(exp_data_mt, cfg.feature_keys_parsed,
+                            scale_mode=data.get('node_feature_norm', 'graph'),
+                            feature_stats=data.get('feature_stats'))
+
+            cebe_metrics = _run_cebe_eval(
                 cebe_model, device_a, exp_data_mt,
                 output_dir=output_dir, fold=fold,
                 png_dir=png_dir,
                 train_results=train_results,
-                norm_stats_file=cfg.cebe_norm_stats_file,
+                norm_stats=cebe_norm,
                 model_id=model_id,
                 config_id=config_id,
                 param_file_prefix=param_file_prefix,
             )
+            if isinstance(cebe_metrics, dict):
+                auger_metrics.update({
+                    'eval_cebe_mae': cebe_metrics.get('mae'),
+                    'eval_cebe_r2':  cebe_metrics.get('r2'),
+                    'eval_cebe_std': cebe_metrics.get('std'),
+                })
 
         return auger_metrics
 
@@ -890,7 +1097,7 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
             output_dir=output_dir, fold=fold,
             png_dir=png_dir,
             train_results=train_results,
-            norm_stats_file=cfg.cebe_norm_stats_file,
+            norm_stats=cebe_norm,
             model_id=model_id,
             config_id=config_id,
             param_file_prefix=pfx or None,
@@ -902,9 +1109,24 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
     elif split == 'eval' and data.get('exp_eval_data'):
         return _call(data['exp_eval_data'])
     elif split == 'both' and data.get('exp_val_data') and data.get('exp_eval_data'):
-        val_metrics = _call(data['exp_val_data'], suffix='expval')
-        _call(data['exp_eval_data'], suffix='expeval')
-        return val_metrics
+        # Both splits are evaluated, so both must be reported.  Returning only
+        # the val metrics meant eval_mae / eval_r2 in the CV summary -- and the
+        # mean +/- std quoted from it -- were the 63-molecule VALIDATION
+        # numbers, while the 50-molecule held-out evaluation existed only in
+        # the per-fold *_expeval_*_labels.txt files.
+        #
+        # Keys: eval_*     = validation split   (legacy names, unchanged so
+        #                     existing summary JSONs stay readable)
+        #       expeval_*  = held-out evaluation split
+        # 'expeval_' is registered in train_driver._EVAL_PREFIXES, so these
+        # aggregate to mean +/- std over folds exactly like eval_*.
+        val_metrics  = _call(data['exp_val_data'],  suffix='expval')
+        eval_metrics = _call(data['exp_eval_data'], suffix='expeval')
+
+        merged = dict(val_metrics or {})
+        for key, value in (eval_metrics or {}).items():
+            merged[f'expeval_{key}'] = value
+        return merged
     else:
         # 'all' or lists not available use full experimental set
         if data.get('exp_data'):
@@ -933,6 +1155,44 @@ def run_unit_tests(model, data, cfg):
 #  Predict: from user defined .xyz dir
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _check_predict_config(cfg, norm, model_path):
+    """Fail if the predict config disagrees with the checkpoint's sidecar.
+
+    Only some mismatches are caught by the state-dict load: a different
+    ``feature_keys`` of a DIFFERENT total width, or a different ``n_points``,
+    change a layer shape and raise.  Same-width feature sets (e.g. '035' vs
+    '034', both 202 columns) and the broadening parameters load cleanly and
+    then silently predict against the wrong representation — this closes that
+    gap.
+
+    ``ke_shift_calc`` is deliberately not checked.  It is a display-only
+    calibration applied to the output energy axis; it never enters training
+    (``_broaden_sticks`` ignores it), so it is a labelling choice at predict
+    time rather than something that must match.
+    """
+    pairs = [
+        ('feature_keys',
+         compute_feature_tag(cfg.feature_keys_parsed), norm.get('feature_keys')),
+        ('node_feature_norm',
+         getattr(cfg, 'node_feature_norm', 'graph'), norm.get('node_feature_norm')),
+    ]
+    # Spectrum grid — auger only; the sidecar records what training used.
+    pairs += [(key, getattr(cfg, key, None), value)
+              for key, value in (norm.get('spectrum') or {}).items()]
+
+    problems = collect_mismatches(pairs)
+    if problems and norm.get('feature_keys'):
+        # Expand the feature-key line with what each set actually contains.
+        problems = [
+            p + (f"\n      config     = {describe_features(cfg.feature_keys_parsed)}"
+                 f"\n      checkpoint = "
+                 f"{describe_features(parse_feature_keys(norm['feature_keys']))}")
+            if p.lstrip().startswith('feature_keys:') else p
+            for p in problems
+        ]
+    raise_on_mismatch(problems, model_path=model_path, context='Predict config')
+
+
 def run_predict(*, model_path: str, predict_dir: str, cfg):
     """
     Build graphs from .xyz files, run inference, and write output.
@@ -944,6 +1204,11 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
     )
     from augernet import DATA_RAW_DIR
     from torch_geometric.data import Data
+
+    # ── Check the config against what the checkpoint was trained with ────
+    # Done before anything expensive so a mismatch fails immediately.
+    norm = load_norm_sidecar(model_path)
+    _check_predict_config(cfg, norm, model_path)
 
     # ── Discover .xyz files ──────────────────────────────────────────────
     xyz_files = sorted(
@@ -995,6 +1260,11 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
         data_list.append(d)
 
     print(f"  Assembling features {cfg.feature_keys}")
+    if getattr(cfg, 'node_feature_norm', 'graph') == 'data':
+        raise ValueError(
+            "run_predict cannot assemble features with node_feature_norm='data' "
+            "— no calculated training set is loaded in predict mode."
+        )
     from augernet.feature_assembly import assemble_dataset
     assemble_dataset(data_list, feature_keys)
 
@@ -1005,7 +1275,7 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
     if cfg.model == 'cebe-gnn':
         _predict_cebe(
             model_path, data_list, mol_names,
-            cfg=cfg, output_dir=output_dir, file_stem=file_stem,
+            cfg=cfg, output_dir=output_dir, file_stem=file_stem, norm=norm,
         )
     else: #auger-gnn
         load_kw = dict(
@@ -1021,13 +1291,18 @@ def run_predict(*, model_path: str, predict_dir: str, cfg):
             cfg=cfg, output_dir=output_dir, file_stem=file_stem,
         )
 
-def _predict_cebe(model_path, data_list, mol_names, *, cfg, output_dir, file_stem):
+def _predict_cebe(model_path, data_list, mol_names, *, cfg, output_dir,
+                  file_stem, norm=None):
     """Run CEBE inference and write per-atom output files."""
     from torch_geometric.loader import DataLoader
 
-    norm_stats = torch.load(cfg.cebe_norm_stats_file, weights_only=False)
+    # Denormalise with the constants fitted for THIS checkpoint's fold.
+    # load_norm_sidecar raises if they are missing — predicting physical
+    # binding energies with any other mean/std silently shifts every value.
+    norm_stats = (norm or load_norm_sidecar(model_path))['cebe']
     mean = norm_stats['mean']
     std  = norm_stats['std']
+    print(f"  CEBE denormalisation: mean={mean:.6f}  std={std:.6f}")
 
     model, device = _load_model_from_path(
         model_path, data_list,
@@ -1143,8 +1418,7 @@ def _predict_auger(model, device, data_list, mol_names,
         np.savetxt(out_path,
                    np.column_stack([energy_grid, spectrum]),
                    header=(f"energy_eV  intensity  (model={cfg.model_id}, "
-                           f"fwhm={cfg.fwhm}, ke_shift={cfg.ke_shift_calc}, ",
-                   fmt="%.6e")
+                           f"fwhm={cfg.fwhm}, ke_shift={cfg.ke_shift_calc}, "))
 
     # Summary table
     print(f"\n{'Molecule':<22s} {'N_C':>5s} {'Peak KE (eV)':>14s}")

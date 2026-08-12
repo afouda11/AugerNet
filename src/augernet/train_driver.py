@@ -62,31 +62,47 @@ def _get_backend(cfg):
 #  Adding a metric downstream requires no change here: it is picked up
 #  automatically provided it is a scalar carrying one of the prefixes.
 
-_EVAL_PREFIXES = ('eval_', 'test_')
+_EVAL_PREFIXES = ('eval_', 'test_', 'expeval_')
 
 # Historical CEBE key names, kept so existing summary JSONs stay readable.
 _LEGACY_EVAL_ALIASES = {'mae': 'eval_mae', 'r2': 'eval_r2', 'std': 'eval_std'}
 
-# Console columns per model type: (entry key, header, width, format)
-#
-# Printout only -- this does NOT control what is recorded.  Every scalar metric
-# returned by run_evaluation is still written to the fold entries and to the CV
-# summary JSON by _aggregate_eval_metrics, which filters on _EVAL_PREFIXES and
-# ignores this table.  Add a column here purely to make a metric visible on the
-# console; remove one and the metric is still in the JSON.
-#
-# Auger columns are deliberately calc-referenced only.  The experiment-referenced
-# metrics (eval_gvx_*, eval_cvx_*) are recorded but not printed: the models
-# predict broader spectra than the 1.6 eV-broadened calculation, and the
-# experimental spectra are broader again, so agreement with experiment is
-# confounded by that broadening and is not a basis for ranking models.
 _EVAL_COLUMNS = {
-    'cebe-gnn':  [('eval_mae',     'Exp MAE (eV)', 12, '.4f'),
-                  ('eval_r2',      'Exp R2',        8, '.4f')],
+    'cebe-gnn':  [('eval_mae',     'Val MAE (eV)',  12, '.4f'),
+                  ('eval_r2',      'Val R2',         8, '.4f'),
+                  ('expeval_mae',  'Eval MAE (eV)', 13, '.4f'),
+                  ('expeval_r2',   'Eval R2',        9, '.4f')],
     'auger-gnn': [('eval_gvc_pcc', 'PCC G-Calc',    10, '.4f'),
                   ('test_gvc_pcc', 'PCC G-Calc HO', 13, '.4f'),
-                  ('test_gvc_mse', 'MSE G-Calc HO', 13, '.5f')],
+                  ('test_gvc_mse', 'MSE G-Calc HO', 13, '.5f'),
+                  ('eval_cebe_mae', 'Exp MAE (eV)',  12, '.4f')],
+    'auger-cnn': [('best_val_f1',    'Val F1',      9, '.4f'),
+                  ('test_f1_macro',  'F1 HO',       9, '.4f'),
+                  ('test_acc',       'Acc HO',      9, '.4f'),
+                  ('eval_f1_macro',  'F1 Eval',    10, '.4f'),
+                  ('eval_acc',       'Acc Eval',   10, '.4f')],
 }
+
+_RANK_METRIC = {
+    'auger-cnn': ('best_val_f1', True),
+}
+
+
+def _rank_spec(cfg):
+    """Return ``(entry_key, higher_is_better)`` for *cfg*'s model type."""
+    return _RANK_METRIC.get(cfg.model, ('best_val_loss', False))
+
+
+def _rank_value(cfg, entry):
+    """Sort key for a fold/config entry — always ascending, lower = better.
+
+    Missing or NaN values sort last so a failed config never wins a search.
+    """
+    key, higher = _rank_spec(cfg)
+    v = entry.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        return float('inf')
+    return -float(v) if higher else float(v)
 
 
 def _collect_eval_metrics(eval_metrics) -> dict:
@@ -241,7 +257,8 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
         fold_results.append(entry)
 
     # ── Identify best fold ───────────────────────────────────────────────
-    best = min(fold_results, key=lambda r: r['best_val_loss'])
+    rank_key, rank_higher = _rank_spec(cfg)
+    best = min(fold_results, key=lambda r: _rank_value(cfg, r))
 
     # ── Print summary table ──────────────────────────────────────────────
     eval_cols = _eval_columns(cfg, fold_results)
@@ -256,7 +273,12 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
         if vals:
             print(f"  {header:<16s} {np.mean(vals):{fmt}} +/- "
                   f"{np.std(vals, ddof=1):{fmt}}  (n={len(vals)})")
-    print(f"  Best fold: Fold {best['fold']}  (loss={best['best_val_loss']:.6f})")
+    if rank_key == 'best_val_loss':
+        print(f"  Best fold: Fold {best['fold']}  (loss={best['best_val_loss']:.6f})")
+    else:
+        print(f"  Best fold: Fold {best['fold']}  "
+              f"({rank_key}={best.get(rank_key, float('nan')):.6f}, "
+              f"loss={best['best_val_loss']:.6f})")
 
     # ── Save JSON summary ────────────────────────────────────────────────
     cv_summary = _build_summary(fold_results, cfg)
@@ -395,8 +417,10 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
 
     total_elapsed = time.time() - t0_total
 
-    # Sort by best_val_loss
-    results.sort(key=lambda r: r['best_val_loss'])
+    # Sort by the model's selection criterion (val loss for the GNNs, macro
+    # val F1 for the CNN — see _RANK_METRIC).
+    rank_key, rank_higher = _rank_spec(cfg)
+    results.sort(key=lambda r: _rank_value(cfg, r))
     for rank, r in enumerate(results):
         r['rank'] = rank + 1
 
@@ -406,10 +430,13 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
                              eval_cols=eval_cols)
 
     best = results[0]
-    print(f"\n  Best config: {best['config_id']}")
+    print(f"\n  Best config: {best['config_id']}"
+          f"   (ranked on {rank_key}, {'higher' if rank_higher else 'lower'} is better)")
     for k in sorted(param_grid.keys()):
         print(f"      {k}: {best.get(k)}")
     print(f"      val_loss: {best['best_val_loss']:.6f}")
+    if rank_key != 'best_val_loss' and isinstance(best.get(rank_key), float):
+        print(f"      {rank_key}: {best[rank_key]:.6f}")
     for key, header, _w, fmt in eval_cols:
         v = best.get(key)
         if isinstance(v, float):
@@ -502,9 +529,15 @@ def run(cfg: AugerNetConfig):
             data['train_df'] = df[~is_calc_test].reset_index(drop=True)
             if 'train_df_raw' in data:
                 raw = data['train_df_raw']
-                data['train_df_raw'] = raw[
-                    ~((raw['source'] == 'calc') & raw['mol_name'].isin(test_mol_names))
-                ].reset_index(drop=True)
+                raw_is_test = ((raw['source'] == 'calc')
+                               & raw['mol_name'].isin(test_mol_names))
+                # Keep the un-merged hold-out as well.  data['test_df'] is in the
+                # BASE merge scheme's label space; a param search that overrides
+                # merge_scheme has to re-merge the hold-out from raw to score it
+                # in the same label space as its predictions.
+                # See backend_cnn.train_single_run.
+                data['test_df_raw']  = raw[raw_is_test].reset_index(drop=True)
+                data['train_df_raw'] = raw[~raw_is_test].reset_index(drop=True)
             n_holdout_mols = data['test_df']['mol_name'].nunique()
             n_train_mols   = data['train_df'][
                 data['train_df']['source'] == 'calc']['mol_name'].nunique()
@@ -557,8 +590,7 @@ def run(cfg: AugerNetConfig):
         if result is not None:
             try:
                 be.run_unit_tests(result, data, cfg)
-            except Exception:
-                pass  # unit tests are optional
+            except Exception as e: print(e)
 
     print("\n AugerNet run complete\n")
 
@@ -594,7 +626,8 @@ def _run_evaluate(data, cfg):
         #result = (model, device)
         result = {'model': model, 'device': device}
     else:
-        # GNN backend (cebe-gnn or auger-gnn): 
+        be.apply_saved_norm(data, cfg, model_path)
+
         calc_data = data['calc_data']
         model, device = be._load_model_from_path(
             model_path, calc_data,
@@ -738,6 +771,26 @@ def _build_summary(entries: List[dict], cfg) -> dict:
     best_idx = int(np.argmin(val_losses))
     summary['best_train_loss'] = entries[best_idx].get('best_train_loss')
 
+    # ── Ranking criterion ────────────────────────────────────────────────
+    # Recorded explicitly so a summary JSON always states what ordered it.
+    # For the CNN the key is best_val_f1, which carries no 'eval_'/'test_'
+    # prefix and so is not picked up by _aggregate_eval_metrics below.
+    rank_key, rank_higher = _rank_spec(cfg)
+    summary['rank_metric'] = rank_key
+    summary['rank_higher_is_better'] = rank_higher
+    if rank_key != 'best_val_loss':
+        rank_vals = [float(r[rank_key]) for r in entries
+                     if isinstance(r.get(rank_key), (int, float))
+                     and not isinstance(r[rank_key], bool)
+                     and r[rank_key] == r[rank_key]]
+        if rank_vals:
+            summary[f'mean_{rank_key}'] = float(np.mean(rank_vals))
+            summary[f'std_{rank_key}']  = (float(np.std(rank_vals, ddof=1))
+                                           if len(rank_vals) > 1 else 0.0)
+            summary[f'n_{rank_key}']    = len(rank_vals)
+            summary[f'best_{rank_key}'] = float(max(rank_vals) if rank_higher
+                                                else min(rank_vals))
+
     # ── Aggregate every recorded evaluation metric (mean +/- std over folds) ──
     summary.update(_aggregate_eval_metrics(entries))
 
@@ -761,6 +814,15 @@ def _run_entry(result: dict, eval_metrics: dict = None) -> dict:
         'final_train_loss': result.get('final_train_loss'),
         'final_val_loss': result.get('final_val_loss'),
     }
+
+    # Validation-set classification metrics (auger-cnn only; absent for the
+    # GNNs).  best_val_f1 is the CNN's checkpoint-selection criterion and its
+    # ranking key -- see _RANK_METRIC -- so it has to live on the entry rather
+    # than only inside the eval-metric block.
+    for key in ('best_val_f1', 'best_val_acc'):
+        v = result.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            entry[key] = float(v)
 
     entry.update(_collect_eval_metrics(eval_metrics))
 

@@ -24,6 +24,10 @@ MOL_NAME = "dsgdb9nsd_133427"
 XYZ_PATH = os.path.join(TEST_MOL_DIR, f"{MOL_NAME}.xyz")
 CEBE_PATH = os.path.join(TEST_MOL_DIR, f"{MOL_NAME}_out.txt")
 
+# Feature keys assembled onto real_mol_graph: skipatom_200 + atomic_be + e_score,
+# matching the '035' default used by the shipped configs.  Gives in_dim = 202.
+REAL_MOL_FEATURE_KEYS = [0, 3, 5]
+
 
 # -- pytest markers ----------------------------------------------------------
 
@@ -56,7 +60,12 @@ def make_mock_data(n_atoms=4, n_carbon_categories=8):
     """SimpleNamespace mimicking a PyG Data with all feature attributes."""
     torch = pytest.importorskip("torch")
     data = types.SimpleNamespace()
-    data.x = torch.zeros(n_atoms, 3)
+    # Zero-width placeholder, matching what build_molecular_graphs emits:
+    # assemble_node_features REPLACES data.x with the selected features, it does
+    # not append to it.  This used to be a 3-column category_feature, which is
+    # now retired (the block is commented out in _build_node_and_edge_features),
+    # so a 3-column mock made every assembled width look 3 too wide.
+    data.x = torch.zeros(n_atoms, 0)
     data.skipatom_200 = torch.randn(n_atoms, 200)
     data.skipatom_30 = torch.randn(n_atoms, 30)
     data.onehot = torch.randn(n_atoms, 5)
@@ -64,7 +73,6 @@ def make_mock_data(n_atoms=4, n_carbon_categories=8):
     data.mol_be = torch.randn(n_atoms, 1)
     data.e_score = torch.randn(n_atoms, 1)
     data.env_onehot = torch.randn(n_atoms, n_carbon_categories)
-    data.morgan_fp = torch.randn(n_atoms, 256)
     return data
 
 
@@ -76,8 +84,15 @@ def mock_data():
 # -- real molecule graph (session-scoped, built once) -------------------------
 
 @pytest.fixture(scope="session")
-def real_mol_graph():
-    """Build a real PyG Data graph from dsgdb9nsd_133427 (C4H3F2N3).
+def real_mol_graph_raw():
+    """Real PyG Data graph from dsgdb9nsd_133427 (C4H3F2N3), UNASSEMBLED.
+
+    Exactly what ``_build_node_and_edge_features`` produces: ``x`` is a
+    zero-width placeholder and the node features live as separate attributes.
+    Use this to assert the graph-builder's contract.  For anything that feeds a
+    model, use ``real_mol_graph`` instead — a zero-width ``x`` makes
+    ``MPNN.lin_in`` a ``Linear(0, emb_dim)`` whose output is the bias alone, so
+    symmetry tests would pass without the output depending on the molecule.
 
     The molecule has 12 atoms: 4C, 3H, 2F, 3N.
     CEBE values are available for 4 carbon atoms.
@@ -122,6 +137,28 @@ def real_mol_graph():
     for attr_name, tensor in node_features.items():
         setattr(data, attr_name, tensor)
 
+    assert data.x.shape[1] == 0, (
+        "real_mol_graph_raw is meant to be unassembled — the builder should "
+        "return a zero-width x placeholder."
+    )
+    return data
+
+
+@pytest.fixture(scope="session")
+def real_mol_graph(real_mol_graph_raw):
+    """``real_mol_graph_raw`` with node features assembled, ready for a model.
+
+    Mirrors what the training pipeline does before any graph reaches the
+    network: feature_assembly concatenates the selected features into ``x``.
+    Deep-copied so the raw fixture stays unassembled for the builder tests.
+    """
+    import copy
+
+    from augernet.feature_assembly import assemble_dataset
+
+    data = copy.deepcopy(real_mol_graph_raw)
+    assemble_dataset([data], REAL_MOL_FEATURE_KEYS, scale_mode="graph")
+    assert data.x.size(1) > 0, "real_mol_graph: feature assembly produced no columns"
     return data
 
 

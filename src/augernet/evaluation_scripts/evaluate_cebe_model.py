@@ -44,8 +44,8 @@ def conformal_quantile(residuals, alpha):
     n = len(residuals)
     k = int(np.ceil((n + 1) * (1 - alpha))) - 1
     sorted_residuals = np.sort(residuals)
-    if k > n:
-        print(f"Split CP Warning: k={k} exceeds number of residuals n={n}. Returning infinity.")
+    if k >= n:
+        print(f"Split CP Warning: k={k} equals or exceeds number of residuals n={n}. Returning infinity.")
         return np.inf
     return sorted_residuals[k]
 
@@ -120,7 +120,7 @@ def run_evaluation(
     output_dir: str,
     *,
     fold: Optional[int] = None,
-    norm_stats_file: str = None,
+    norm_stats: dict = None,
     png_dir: str,
     train_results: list = None,
     model_id: str = 'cebe',
@@ -153,8 +153,9 @@ def run_evaluation(
         Directory for text output files.
     fold : int, optional
         Fold number (used in filenames). ``None`` for standalone evaluation.
-    norm_stats_file : str, optional
-        Path to ``cebe_normalization_stats.pt``.
+    norm_stats : dict
+        ``{'mean': float, 'std': float}`` — the CEBE target shift/scale fitted
+        on the training molecules of the fold under evaluation.  Required.
     png_dir : str
         Directory for PNG plots.
     train_results : list, optional
@@ -174,8 +175,17 @@ def run_evaluation(
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(png_dir, exist_ok=True)
 
-    # Load normalization stats
-    norm_stats = torch.load(norm_stats_file, weights_only=False)
+    # Normalisation constants fitted on the training molecules of this fold and
+    # passed in by the caller.  There is no dataset-wide file to fall back to:
+    # denormalising with constants the model was not trained against silently
+    # shifts every reported binding energy.
+    if not norm_stats or 'mean' not in norm_stats or 'std' not in norm_stats:
+        raise ValueError(
+            "Normalization stats for the given fold are not available. "
+            "evaluate_cebe_model.run_evaluation requires norm_stats="
+            "{'mean': ..., 'std': ...} as fitted for the fold being evaluated "
+            "(see backend_gnn._fit_fold_norm / load_norm_sidecar)."
+        )
     mean = norm_stats['mean']
     std = norm_stats['std']
 
@@ -434,7 +444,7 @@ def run_evaluation(
     plt.tight_layout()
 
     plot_path = os.path.join(png_dir, f"{file_stem}_scatter.png")
-    plt.savefig(plot_path, dpi=3000, bbox_inches='tight')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"Scatter plot saved to: {plot_path}")
     plt.close()
 

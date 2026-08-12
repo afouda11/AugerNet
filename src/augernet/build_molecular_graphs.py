@@ -535,36 +535,19 @@ def _mol_from_xyz_order(fname, labeled_atoms=False):
 # NORMALIZATION STATISTICS
 # =============================================================================
 
-def _compute_cebe_normalization_stats(cebe_dir, mol_list):
-    """
-    Load all CEBE data to compute normalization statistics.
-    Returns: mean and std of (C_1s_BE - mol_cebe)
-    """
-
-    # Carbon 1s binding energy (atomic reference)
-    atom_cebe = 308.23974136400005
-    
-    all_rel_cebe = []
-
-    for mol_name in mol_list:
-
-        cebe_path = f"{cebe_dir}/{mol_name}_out.txt"
-        
-        cebe = np.loadtxt(cebe_path)
-        
-        for i in cebe:
-            if i != -1.:
-                all_rel_cebe.append(atom_cebe - i)
-    
-    mean = np.mean(all_rel_cebe)
-    std = np.std(all_rel_cebe, ddof=1)
-    
-    print(f"CEBE normalization stats:")
-    print(f"  Mean: {mean}")
-    print(f"  Std: {std}")
-    print(f"  Total atoms: {len(all_rel_cebe)}")
-    
-    return mean, std
+# NOTE: _compute_cebe_normalization_stats() was removed here.
+#
+# It fitted the CEBE target mean/std over EVERY molecule in
+# calc_cebe/mol_list.txt and saved them to cebe_norm_stats.pt, which was then
+# used to normalise the stored targets and to denormalise predictions for every
+# fold — so each validation fold contributed to its own normalisation
+# constants, and (for auger-gnn / auger-cnn) so did the 50-molecule calculated
+# hold-out.  It also carried a hardcoded `atom_cebe = 308.23974136400005` that
+# duplicated the value build_graphs() derives from orbitalenergy.json, with
+# nothing to keep the two in step.
+#
+# Targets are now stored raw and normalised per fold from training molecules
+# only; see backend_gnn._fit_fold_norm and the '{model}_norm.json' sidecar.
 
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
@@ -590,20 +573,11 @@ def build_graphs(data_type,
 
     all_encoders = _initialize_all_atom_encoders(skipatom_dir)
 
-    # Compute or load stats before loop over mol_list:
-
-    # Calculate and save norm stats for calc data
-    cebe_norm_stats_path = os.path.join(DATA_PROCESSED_DIR, 'cebe_norm_stats.pt')
-
-    if data_type in ['calc_cebe']:
-        mean, std = _compute_cebe_normalization_stats(mol_dir, mol_list)
-        cebe_norm_stats = {'mean': float(mean), 'std': float(std)}
-        print("CEBE Normalization statistics:", cebe_norm_stats)
-        torch.save(cebe_norm_stats, cebe_norm_stats_path)
-    else: #use cebe calc norm throughout
-        cebe_norm_stats = torch.load(cebe_norm_stats_path, weights_only=False)
-        mean = cebe_norm_stats['mean']
-        std = cebe_norm_stats['std']
+    # No normalisation statistics are computed here.  Targets are stored raw
+    # (eV) and normalised per fold at train time from the training molecules
+    # only — see backend_gnn._fit_fold_norm.  Fitting anything dataset-wide at
+    # this point would necessarily include the validation folds and the
+    # calculated hold-out.
 
     data_list = []
 
@@ -630,16 +604,18 @@ def build_graphs(data_type,
         #    x = torch.tensor(cat_feat, dtype=torch.float)
         ######
 
-        # Build targets (same logic as v1)
+        # Build targets.  RAW (eV) — not normalised.
+        # Normalisation constants are fitted per fold from the training
+        # molecules at train time (backend_gnn._fit_fold_norm), which
+        # recomputes this same quantity as atomic_be_eV - true_cebe.  Storing
+        # it raw here means the graphs carry no dataset-wide statistic.
         cebe_out = []
         for n, val in enumerate(cebe):
             if val == -1:
                 cebe_out.append(-1)
             else:
                 ref_e = atomic_be[n].item()
-                dum = ref_e - val
-                #Mean std normalized output, across the full calc dataset
-                cebe_out.append((dum - mean) / std)
+                cebe_out.append(ref_e - val)
 
         cebe_y = torch.FloatTensor(cebe_out)
 
@@ -703,7 +679,6 @@ def build_graphs(data_type,
                 carbon_env_labels=carbon_env_labels,
                 carbon_env_indices=torch.tensor(carbon_env_indices, dtype=torch.long),
                 carbon_spec_idx=carbon_spec_idx,
-                cebe_norm_stats=torch.tensor([mean, std], dtype=torch.float),
             )
 
         # Store all features as separate attributes
@@ -782,42 +757,3 @@ def get_butina_clusters(smiles_list, cutoff=0.65):
             raise ValueError(f"RDKit could not parse SMILES: {smi}")
         fp_list.append(gen.GetFingerprint(mol))
     return _taylor_butina_clustering(fp_list, cutoff=cutoff)
-
-# =============================================================================
-# MORGAN FINGERPRINT (PER-ATOM)
-# =============================================================================
-
-def get_per_atom_morgan_bits(mol, radius=1, n_bits=2048):
-    """Compute per-atom Morgan fingerprint bit sets for every atom.
-
-    This is the canonical low-level function used by all Morgan-FP
-    consumers in this project (node features, locality analysis, etc.).
-
-    Parameters
-    ----------
-    mol : RDKit Mol
-        Must already have explicit hydrogens (``Chem.AddHs``).
-    radius : int
-        Morgan FP radius.  1 = ECFP2, 2 = ECFP4, …
-    n_bits : int
-        Number of bits in the hashed fingerprint.
-
-    Returns
-    -------
-    list[frozenset[int]]
-        One ``frozenset`` of active bit indices per atom (length = n_atoms).
-    """
-    n_atoms = mol.GetNumAtoms()
-
-    gen = rdFingerprintGenerator.GetMorganGenerator(
-        radius=radius, fpSize=n_bits,
-    )
-
-    ao = rdFingerprintGenerator.AdditionalOutput()
-    ao.AllocateAtomToBits()
-
-    # Side-effect: populates ao with atom→bit mapping
-    gen.GetFingerprintAsNumPy(mol, additionalOutput=ao)
-
-    atom_to_bits = ao.GetAtomToBits()
-    return [frozenset(atom_to_bits[i]) for i in range(n_atoms)]

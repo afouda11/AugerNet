@@ -136,8 +136,20 @@ class FiLMGenerator(nn.Module):
                 for i in range(len(self.channels_per_layer))]
 
 class AugerCNN1D_FiLMd(nn.Module):
+    """1-D CNN over a broadened Auger spectrum.
+
+    Length-agnostic by construction: ``AdaptiveAvgPool1d(pool_kernel)`` reduces
+    any input length to exactly ``pool_kernel`` time-steps, so the classifier
+    width depends only on ``sequential_filters[-1] * pool_kernel``.
+
+    There is deliberately no ``input_length`` argument.  One used to be accepted
+    and never referenced, which read as a shape guard while guaranteeing
+    nothing — a spectrum built with a different ``n_points``, or with
+    ``cebe_augment`` toggled, was consumed silently.  Nothing here can catch
+    that; the checkpoint's config sidecar is the place for it.
+    """
+
     def __init__(self,
-        input_length: int,
         num_classes: int,
         parallel_kernel_sizes=(5,10,15),
         parallel_filters=(12,12,12),
@@ -259,12 +271,18 @@ class CNNTrainer:
                  cosine_T_max: int = None,
                  class_weights: torch.Tensor = None,
                  label_smoothing: float = 0.0,
-                 noise_std: float = 0.0):
+                 noise_std: float = 0.0,
+                 augment_offset: int = 0):
 
         self.model = model.to(device)
         self.device = device
         self.patience = patience
         self.noise_std = noise_std
+        # Number of leading elements of the input vector that are NOT spectrum
+        # intensities.  With cebe_augment the z-scored delta_be is prepended, so
+        # this is 1; noise augmentation must skip those elements (see
+        # train_epoch) -- they are signed and are not intensities.
+        self.augment_offset = augment_offset
         self.optimizer = torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
@@ -273,13 +291,16 @@ class CNNTrainer:
         self.scheduler = None
         self.scheduler_per_batch = False
         if scheduler_type == 'onecycle':
-            # OneCycleLR requires train_loader length — deferred to fit()
+            # OneCycleLR needs both the total epoch budget and the train_loader
+            # length, so it is built in fit() where num_epochs is known.
             self._onecycle_max_lr = learning_rate
-            self._onecycle_cosine_T_max = cosine_T_max  # used as num_epochs
             self.scheduler_per_batch = True
             print(f"  Scheduler: OneCycleLR  (will be initialised at fit())")
         else:
-            # CosineAnnealingLR — per-epoch
+            # CosineAnnealingLR — per-epoch.  T_max is the period, so it must be
+            # the full epoch budget: torch's cosine schedule is PERIODIC, and
+            # once t > T_max the learning rate climbs back toward base_lr
+            # instead of staying annealed.  Callers pass num_epochs.
             T_max = cosine_T_max if cosine_T_max is not None else 500
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer, T_max=T_max, eta_min=1e-6
@@ -301,6 +322,11 @@ class CNNTrainer:
 
         self.history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': [], 'val_f1': []}
         self.best_model_state = None
+        # 0-indexed epoch whose weights are held in best_model_state.  Selection
+        # is on val F1 (see fit), so callers must read the reported metrics off
+        # THIS epoch rather than taking min/max over the whole history --
+        # otherwise the numbers describe a different model than the .pth saved.
+        self.best_epoch = -1
 
     def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
         self.model.train()
@@ -310,22 +336,27 @@ class CNNTrainer:
 #                 spectra = batch['spectrum'].to(self.device, dtype=torch.float32)
 #                 labels = batch['label'].to(self.device, dtype=torch.long)
 #             else:
-            spectra, delta_be, mol_size, labels = batch
+            spectra, delta_be, labels = batch
             spectra = spectra.to(self.device, dtype=torch.float32)
             delta_be = delta_be.to(self.device, dtype=torch.float32)
-            mol_size = mol_size.to(self.device, dtype=torch.float32)
             labels = labels.to(self.device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
 
-            # Online augmentation: Gaussian noise (train only)
+            # Online augmentation: Gaussian noise (train only).
+            # Applied to the spectrum channel only.  With cebe_augment the first
+            # `augment_offset` elements are the z-scored delta_be, which is
+            # negative for ~half the atoms -- clamping the whole vector at 0
+            # would zero the conditioning feature for those samples.
             if self.noise_std > 0.0:
-                spectra = spectra + torch.randn_like(spectra) * self.noise_std
-                spectra = spectra.clamp(min=0.0)
+                k = self.augment_offset
+                spec = spectra[..., k:]
+                spec = (spec + torch.randn_like(spec) * self.noise_std).clamp(min=0.0)
+                spectra = torch.cat([spectra[..., :k], spec], dim=-1)
 
             self.optimizer.zero_grad()
 
-            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            film_cond = torch.stack([delta_be], dim=1)  # (B, 2)
             logits = self.model(spectra, film_cond)
             loss = self.criterion(logits, labels)
             _, predicted = logits.max(1)
@@ -349,14 +380,13 @@ class CNNTrainer:
         all_preds, all_labels = [], []
         with torch.no_grad():
             for batch in val_loader:
-                spectra, delta_be, mol_size, labels = batch
+                spectra, delta_be, labels = batch
                 spectra = spectra.to(self.device, dtype=torch.float32)
                 delta_be = delta_be.to(self.device, dtype=torch.float32)
-                mol_size = mol_size.to(self.device, dtype=torch.float32)
                 labels = labels.to(self.device, dtype=torch.long)
                 if spectra.dim() == 2:
                     spectra = spectra.unsqueeze(1)
-                film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+                film_cond = torch.stack([delta_be], dim=1)  # (B, 2)
                 logits = self.model(spectra, film_cond)
                 loss = self.criterion(logits, labels)
                 total_loss += loss.item()
@@ -373,10 +403,9 @@ class CNNTrainer:
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader,
             num_epochs: int = 100, verbose: bool = True) -> Dict[str, List[float]]:
-        # Deferred OneCycleLR init (needs train_loader length)
         if self.scheduler_per_batch and self.scheduler is None:
             from torch.optim.lr_scheduler import OneCycleLR
-            epochs = getattr(self, '_onecycle_cosine_T_max', None) or num_epochs
+            epochs = num_epochs
             self.scheduler = OneCycleLR(
                 self.optimizer,
                 max_lr=self._onecycle_max_lr,
@@ -387,7 +416,10 @@ class CNNTrainer:
             if verbose:
                 print(f"  Scheduler: OneCycleLR  (per-batch, {total_steps} total steps)")
 
-        best_val_f1 = 0.0
+        # Model selection criterion: macro val F1.  Chosen over val loss because
+        # the carbon-environment classes are heavily imbalanced, so a weighted
+        # cross-entropy minimum does not track per-class performance.
+        best_val_f1 = -1.0
         patience_counter = 0
 
         for epoch in range(num_epochs):
@@ -412,6 +444,7 @@ class CNNTrainer:
 
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
+                self.best_epoch = epoch
                 patience_counter = 0
                 self.best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
             else:
@@ -424,6 +457,9 @@ class CNNTrainer:
         # Restore best model
         if self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
+            if verbose:
+                print(f"  Restored weights from epoch {self.best_epoch + 1} "
+                      f"(val F1 = {best_val_f1:.4f})")
 
         return self.history
 
@@ -451,14 +487,13 @@ def evaluate_with_molecule_details(
 
     with torch.no_grad():
         for batch in loader:
-            spectra, delta_be, mol_size, labels = batch
+            spectra, delta_be, labels = batch
             spectra = spectra.to(device, dtype=torch.float32)
             delta_be = delta_be.to(device, dtype=torch.float32)
-            mol_size = mol_size.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            film_cond = torch.stack([delta_be], dim=1)  # (B, 2)
             logits = model(spectra, film_cond)
             probs = torch.softmax(logits, dim=1)
             pred = logits.argmax(dim=1)

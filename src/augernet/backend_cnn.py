@@ -33,6 +33,13 @@ from augernet.class_merging import (
     get_num_classes,
     print_scheme_summary,
 )
+from augernet.norm_sidecar import (
+    collect_mismatches,
+    load_norm_sidecar,
+    norm_sidecar_path,
+    raise_on_mismatch,
+    save_norm_sidecar,
+)
 
 from augernet import DATA_PROCESSED_DIR
 
@@ -79,97 +86,6 @@ def _butina_cluster_ids_per_molecule(mol_names: List[str],
         print(f"  Butina clustering: {len(set(cluster_ids))} clusters "
               f"across {len(mol_names)} molecules (cutoff={cutoff})")
     return list(cluster_ids)
-
-
-def _three_way_split(carbon_df: pd.DataFrame,
-                     *,
-                     train_frac: float = 0.70,
-                     val_frac:   float = 0.15,
-                     test_frac:  float = 0.15,
-                     split_method: str = 'random',
-                     random_seed: int = 42,
-                     butina_cutoff: float = 0.65,
-                     verbose: bool = True
-                     ) -> Tuple[List[int], List[int], List[int]]:
-    """Split carbon-atom rows into train/val/test at the molecule (or
-    Butina-cluster) level, so atoms from one molecule never straddle
-    a split boundary.
-
-    Returns three lists of row indices into ``carbon_df``.
-    """
-    eps = 1e-6
-    if not abs(train_frac + val_frac + test_frac - 1.0) < eps:
-        raise ValueError(
-            f"Split fractions must sum to 1.0; got "
-            f"{train_frac}+{val_frac}+{test_frac}={train_frac+val_frac+test_frac}"
-        )
-
-    mol_names = _molecule_groups(carbon_df)
-
-    if split_method == 'random':
-        # Treat each molecule as its own "group"; group_ids == index in mol_names
-        groups = np.arange(len(mol_names))
-    elif split_method == 'butina':
-        groups = np.array(_butina_cluster_ids_per_molecule(
-            mol_names, carbon_df, cutoff=butina_cutoff, verbose=verbose
-        ))
-    else:
-        raise ValueError(f"Unknown split_method '{split_method}'. "
-                         f"Supported: 'random', 'butina'.")
-
-    # We split *cluster IDs* (random: one cluster per molecule;
-    # butina: real clusters). All molecules in a cluster move together.
-    unique_clusters = np.array(sorted(set(groups.tolist())))
-
-    # First peel off the test set, then split the remainder into train+val.
-    test_size_rel = test_frac
-    val_size_rel  = val_frac / (train_frac + val_frac)  # of the trainval pool
-
-    trainval_clust, test_clust = train_test_split(
-        unique_clusters,
-        test_size=test_size_rel,
-        random_state=random_seed,
-        shuffle=True,
-    )
-    train_clust, val_clust = train_test_split(
-        trainval_clust,
-        test_size=val_size_rel,
-        random_state=random_seed,
-        shuffle=True,
-    )
-
-    train_clusters = set(train_clust.tolist())
-    val_clusters   = set(val_clust.tolist())
-    test_clusters  = set(test_clust.tolist())
-
-    # Map cluster membership back to row indices.
-    # groups[i] is the cluster of the i-th *unique molecule*, so we need
-    # a per-row mapping mol_name -> cluster_id.
-    mol_to_cluster = {mol_names[i]: int(groups[i]) for i in range(len(mol_names))}
-
-    train_rows, val_rows, test_rows = [], [], []
-    for row_idx, name in enumerate(carbon_df['mol_name']):
-        c = mol_to_cluster[name]
-        if c in train_clusters:
-            train_rows.append(row_idx)
-        elif c in val_clusters:
-            val_rows.append(row_idx)
-        elif c in test_clusters:
-            test_rows.append(row_idx)
-        # (every cluster is in exactly one bucket — no else needed)
-
-    if verbose:
-        n_mol = len(mol_names)
-        n_train_mol = sum(1 for n in mol_names if mol_to_cluster[n] in train_clusters)
-        n_val_mol   = sum(1 for n in mol_names if mol_to_cluster[n] in val_clusters)
-        n_test_mol  = sum(1 for n in mol_names if mol_to_cluster[n] in test_clusters)
-        print(f"  Split ({split_method}, seed={random_seed}): "
-              f"{n_train_mol}/{n_val_mol}/{n_test_mol} molecules "
-              f"({n_mol} total)")
-        print(f"  Carbon rows: {len(train_rows)}/{len(val_rows)}/{len(test_rows)} "
-              f"(train/val/test)")
-
-    return train_rows, val_rows, test_rows
 
 
 def _cnn_fold_split(calc_mol_names, calc_df, fold, n_folds,
@@ -247,13 +163,12 @@ def _per_class_accuracy(df: pd.DataFrame, row_indices: List[int],
     preds, labels = [], []
     with torch.no_grad():
         for batch in loader:
-            spectra, delta_be, mol_size, y = batch
+            spectra, delta_be, y = batch
             spectra = spectra.to(device, dtype=torch.float32)
             delta_be = delta_be.to(device, dtype=torch.float32)
-            mol_size = mol_size.to(device, dtype=torch.float32)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            film_cond = torch.stack([delta_be, mol_size], dim=1)  # (B, 2)
+            film_cond = torch.stack([delta_be], dim=1)  
             logits = model(spectra, film_cond)
             preds.append(logits.argmax(dim=1).cpu().numpy())
             labels.append(y.numpy())
@@ -323,8 +238,17 @@ def load_data(cfg) -> Dict[str, Any]:
     """Load CNN training data, concatenating the previously-separate
     calc and eval pickles into one DataFrame.
     """
-    calc_path = os.path.join(DATA_PROCESSED_DIR, 'cnn_auger_calc.pkl')
-    eval_path = os.path.join(DATA_PROCESSED_DIR, 'cnn_auger_eval.pkl')
+    calc_path = os.path.join(
+        DATA_PROCESSED_DIR, getattr(cfg, 'cnn_calc_data_file', 'cnn_auger_calc.pkl'))
+    eval_path = os.path.join(
+        DATA_PROCESSED_DIR, getattr(cfg, 'cnn_eval_data_file', 'cnn_auger_eval.pkl'))
+
+    if not os.path.isfile(calc_path):
+        raise FileNotFoundError(
+            f"CNN calc data not found: {calc_path}\n"
+            f"  Set 'cnn_calc_data_file' in the config, or generate it with "
+            f"'python scripts/prepare_data.py'."
+        )
 
     print(f"\nLoading calc data: {calc_path}")
     calc_df = pd.read_pickle(calc_path)
@@ -375,13 +299,6 @@ def load_data(cfg) -> Dict[str, Any]:
 #  Architecture / class-count resolution  (unchanged from previous version)
 # =============================================================================
 
-def _get_input_length(cfg, *, use_augmented=None) -> int:
-    n_spec = getattr(cfg, 'n_points', 731)
-    use_aug = use_augmented if use_augmented is not None \
-              else getattr(cfg, 'cebe_augment', False)
-    return n_spec + (1 if use_aug else 0)
-
-
 def _resolve_architecture(cfg, overrides=None):
     overrides = overrides or {}
     arch = overrides.get('architecture') or getattr(cfg, 'architecture', None)
@@ -395,6 +312,167 @@ def _resolve_num_classes(cfg, merge_scheme_override=None) -> int:
     if ms != 'none':
         return get_num_classes(ms)
     return ctu.NUM_CARBON_CLASSES
+
+
+def _resolve_class_names(merge_scheme):
+    return (get_merged_class_names(merge_scheme) if merge_scheme != 'none'
+            else ctu.CARBON_ENVIRONMENT_NAMES)
+
+
+# =============================================================================
+#  Shared evaluation plumbing
+# =============================================================================
+#  Used by BOTH train_single_run and run_evaluation.
+#
+#  This block used to live inside train_single_run, which stored its results on
+#  the returned dict for run_evaluation to re-print.  That made run_evaluation a
+#  shim with nothing to report when it was handed a checkpoint loaded from disk,
+#  so `mode: evaluate` for auger-cnn printed "(no results)" and exited 0 without
+#  running any inference.  Both entry points now call _evaluate_splits.
+
+def _apply_scheme(frame, merge_scheme):
+    """Merge *frame*'s raw labels into *merge_scheme*'s label space."""
+    frame = frame.copy()
+    if merge_scheme != 'none':
+        frame = apply_label_merging(frame, merge_scheme)
+        frame = frame[frame['carbon_env_index'] >= 0]
+    return frame.reset_index(drop=True)
+
+
+def _resolve_holdout_df(data, merge_scheme, scheme_overridden):
+    """The calc hold-out, in the label space this run actually predicts in."""
+    if scheme_overridden:
+        raw = data.get('test_df_raw')
+        if raw is None:
+            raise KeyError(
+                "merge_scheme was overridden but data['test_df_raw'] is missing. "
+                "It is populated by train_driver.run alongside data['test_df']; "
+                "set it too if calling train_single_run directly."
+            )
+        return _apply_scheme(raw, merge_scheme)
+    return data.get('test_df')
+
+
+def _dataset_params(cfg, overrides=None) -> Dict[str, Any]:
+    """CarbonDataset construction parameters, honouring param-search overrides."""
+    o = overrides or {}
+    g = lambda k, d=None: o.get(k, getattr(cfg, k, d))
+    return dict(
+        include_augmentation=g('cebe_augment', True),
+        normalize_intensity=g('normalize_intensity', False),
+        broadening_fwhm=g('fwhm', 1.6),
+        energy_min=g('min_ke', 200.0),
+        energy_max=g('max_ke', 273.0),
+        n_points=g('n_points', 731),
+    )
+
+
+def _make_dataset(df_sub, ds_params, norm_stats=None):
+    return cdf.CarbonDataset(df_sub, norm_stats=norm_stats, **ds_params)
+
+
+def _check_evaluate_config(cfg, norm, model_path):
+    """Fail if the evaluate config disagrees with the checkpoint's sidecar.
+
+    The strict ``load_state_dict`` already catches anything that changes a
+    tensor shape — filters, kernel sizes, ``pool_kernel``, ``num_classes`` (so
+    ``merge_scheme``), and ``film_inputs``.  It catches none of the input-build
+    settings, because ``AugerCNN1D_FiLMd`` is length-agnostic: a spectrum
+    broadened with a different FWHM, on a different grid, or with
+    ``cebe_augment`` toggled is consumed silently.  Those are exactly the
+    settings checked here.
+    """
+    ds_cfg = _dataset_params(cfg)
+    ds_ckpt = norm.get('dataset') or {}
+
+    pairs = [(f'{key}', ds_cfg[key], ds_ckpt.get(key)) for key in ds_cfg]
+    pairs += [
+        ('merge_scheme', getattr(cfg, 'merge_scheme', 'none'),
+         norm.get('merge_scheme')),
+        ('film_inputs', getattr(cfg, 'film_inputs', 'none'),
+         norm.get('film_inputs')),
+        ('architecture', _resolve_architecture(cfg), norm.get('architecture')),
+    ]
+    raise_on_mismatch(collect_mismatches(pairs),
+                      model_path=model_path, context='Evaluate config')
+
+
+def _evaluate_splits(model, device, *, holdout_df, eval_df, ds_params,
+                     norm_stats, class_names, num_classes, output_dir, fold):
+    """Run *model* over the calc hold-out and the eval_auger split.
+
+    Returns ``{'holdout': {...}, 'eval_auger': {...}}`` where each entry holds
+    ``df`` / ``idx`` / ``accs`` / ``results``.  Empty splits yield a zeroed
+    entry with ``results=None`` rather than being skipped, so the caller can
+    build the per-environment table unconditionally.
+    """
+    out: Dict[str, Any] = {}
+    for key, frame, eval_type in (('holdout', holdout_df, 'calc_holdout'),
+                                  ('eval_auger', eval_df, 'eval_auger')):
+        if frame is not None and len(frame) > 0:
+            sub = frame.reset_index(drop=True)
+            idx = list(range(len(sub)))
+            dataset = _make_dataset(sub, ds_params, norm_stats)
+            accs, _, _ = _per_class_accuracy(
+                sub, idx, dataset, model, device, class_names)
+            results = ctu.evaluate_with_molecule_details(
+                df=sub, model=model, device=device, dataset=dataset,
+                output_dir=output_dir, eval_type=eval_type,
+                csv_suffix=f'_fold{fold}',
+                class_names_override=class_names,
+                num_classes_override=num_classes,
+            )
+            out[key] = dict(df=sub, idx=idx, accs=accs, results=results)
+        else:
+            out[key] = dict(df=pd.DataFrame(), idx=[],
+                            accs={n: (0, 0) for n in class_names}, results=None)
+    return out
+
+
+def _evaluate_checkpoint(model_result, data, cfg, fold, output_dir):
+    """Evaluate a checkpoint loaded from disk — the ``mode: evaluate`` path.
+
+    The delta_be normalisation and the spectrum-build settings come from the
+    checkpoint's sidecar, not from the config, so evaluation reproduces exactly
+    the representation the model was trained on.  The config is still compared
+    against the sidecar first, so a YAML that disagrees is reported rather than
+    quietly overridden.
+
+    An earlier version re-derived ``be_mu``/``be_std`` by reproducing the fold
+    split from the config.  That worked but made the result depend on
+    ``n_folds`` / ``split_method`` / ``random_seed`` / ``butina_cutoff`` still
+    matching the training run, with nothing enforcing it.
+    """
+    model = model_result['model']
+    device = model_result['device']
+    model_path = model_result.get('model_path') or getattr(cfg, 'model_path', '')
+
+    norm = load_norm_sidecar(model_path, require=('delta_be',))
+    _check_evaluate_config(cfg, norm, model_path)
+
+    merge_scheme = norm.get('merge_scheme', getattr(cfg, 'merge_scheme', 'none'))
+    class_names = _resolve_class_names(merge_scheme)
+    num_classes = norm.get('num_classes') or _resolve_num_classes(cfg)
+    ds_params = norm.get('dataset') or _dataset_params(cfg)
+    norm_stats = {'be_mu':  norm['delta_be']['be_mu'],
+                  'be_std': norm['delta_be']['be_std']}
+
+    df = data['train_df']                      # already in cfg's merge scheme
+    eval_df = df[df['source'] == 'eval'].reset_index(drop=True)
+    holdout_df = _resolve_holdout_df(data, merge_scheme, scheme_overridden=False)
+
+    print(f"  Loaded fold normalisation from {norm_sidecar_path(model_path)}")
+    print(f"    fitted on fold {norm.get('fold', '?')} "
+          f"({norm.get('n_train_molecules', '?')} training molecules)")
+    print(f"    delta_be: be_mu={norm_stats['be_mu']:.6f} "
+          f"be_std={norm_stats['be_std']:.6f}")
+
+    return _evaluate_splits(
+        model, device, holdout_df=holdout_df, eval_df=eval_df,
+        ds_params=ds_params, norm_stats=norm_stats,
+        class_names=class_names, num_classes=num_classes,
+        output_dir=output_dir, fold=norm.get('fold', fold),
+    )
 
 
 # =============================================================================
@@ -446,9 +524,6 @@ def train_single_run(data: Dict[str, Any],
     # New: splitting params
     split_method   = _g('split_method', 'random')
     butina_cutoff  = _g('butina_cutoff', 0.65)
-    train_frac     = _g('train_frac', 0.70)
-    val_frac       = _g('val_frac', 0.15)
-    test_frac      = _g('test_frac', 0.15)
 
     # Different "folds" use different seeds — gives the driver's existing
     # fold loop a meaningful interpretation under fixed-split training.
@@ -456,11 +531,14 @@ def train_single_run(data: Dict[str, Any],
 
     # ── Resolve training DataFrame (re-merge if scheme differs) ──────────
     base_merge = getattr(cfg, 'merge_scheme', 'none')
-    if merge_scheme != base_merge and 'train_df_raw' in data:
-        df = data['train_df_raw'].copy()
-        if merge_scheme != 'none':
-            df = apply_label_merging(df, merge_scheme)
-            df = df[df['carbon_env_index'] >= 0].reset_index(drop=True)
+
+    # True when this run's label space differs from the one data['train_df'] and
+    # data['test_df'] were built in (i.e. a param-search merge_scheme override).
+    # Both frames then have to be rebuilt from raw — see _resolve_holdout_df.
+    scheme_overridden = (merge_scheme != base_merge and 'train_df_raw' in data)
+
+    if scheme_overridden:
+        df = _apply_scheme(data['train_df_raw'], merge_scheme)
     else:
         df = data['train_df']
 
@@ -490,7 +568,6 @@ def train_single_run(data: Dict[str, Any],
         print(f"  Normalize int: {normalize_intensity}")
         print(f"  Split method:  {split_method}"
               f"{f' (Butina cutoff={butina_cutoff})' if split_method=='butina' else ''}")
-        print(f"  Split fracs:   {train_frac:.2f} / {val_frac:.2f} / {test_frac:.2f}")
         print(f"{'=' * 70}")
 
     # ── Separate calc training pool from eval_auger molecules ────────────
@@ -543,16 +620,20 @@ def train_single_run(data: Dict[str, Any],
                               batch_size=batch_size, shuffle=False, num_workers=0)
 
     # ── Model ─────────────────────────────────────────────────────────────
-    input_length = _get_input_length(cfg, use_augmented=cebe_augment)
+    # AugerCNN1D_FiLMd is length-agnostic (AdaptiveAvgPool1d), so it takes no
+    # input_length.  The width below is read off the dataset the model will
+    # actually be fed, not derived from cfg, so it is a real diagnostic rather
+    # than a restatement of the config.
     ctu.validate_architecture(architecture)
     model = ctu.AugerCNN1D_FiLMd(
-        input_length, num_classes,
+        num_classes,
         film_inputs=film_inputs,
         **architecture,
     )
     if verbose:
         n_params = sum(p.numel() for p in model.parameters())
-        print(f"  Input length: {input_length}  |  Parameters: {n_params:,}")
+        sample_width = int(dataset[0][0].numel()) if len(dataset) else 0
+        print(f"  Input width: {sample_width}  |  Parameters: {n_params:,}")
 
     # ── Class weights + trainer (weights from train split only!) ─────────
     class_weights, _ = train_ds.get_class_weights_and_counts(
@@ -564,10 +645,17 @@ def train_single_run(data: Dict[str, Any],
         learning_rate=learning_rate, weight_decay=weight_decay,
         patience=patience,
         scheduler_type=scheduler_type,
-        cosine_T_max=patience * 2,
+        # The schedule spans the training budget, not the early-stopping
+        # patience.  patience * 2 made the cosine period end at 2*patience
+        # epochs, after which the LR climbed back up (torch's cosine is
+        # periodic), and under-sized OneCycleLR into a ValueError.
+        cosine_T_max=num_epochs,
         class_weights=class_weights,
         label_smoothing=label_smoothing,
         noise_std=noise_std,
+        # CarbonDataset prepends one z-scored delta_be element when
+        # cebe_augment is on; keep noise augmentation off it.
+        augment_offset=1 if cebe_augment else 0,
     )
 
     if verbose:
@@ -575,11 +663,32 @@ def train_single_run(data: Dict[str, Any],
     history = trainer.fit(train_loader, val_loader,
                           num_epochs=num_epochs, verbose=verbose)
 
-    # ── Save model + history ──────────────────────────────────────────────
+    # ── Save model + sidecar + history ───────────────────────────────────
     model_path = save_paths['model']
     torch.save(model.state_dict(), model_path)
     if verbose:
         print(f"\n Saved model to {model_path}")
+
+    # The checkpoint is not self-describing: delta_be is z-scored with constants
+    # fitted on THIS fold's training split, and the spectra were broadened with
+    # these grid settings.  None of that changes a tensor shape, so a mismatch at
+    # evaluate time cannot be caught by the state_dict load — the sidecar is the
+    # only thing standing between a wrong config and plausible wrong numbers.
+    ds_params = _dataset_params(cfg, overrides)
+    sidecar = save_norm_sidecar(model_path, {
+        'model':             'auger-cnn',
+        'fold':              fold,
+        'n_train_molecules': len(train_mol_names),
+        'delta_be':          {'be_mu':  float(norm_stats['be_mu']),
+                              'be_std': float(norm_stats['be_std'])},
+        'merge_scheme':      merge_scheme,
+        'num_classes':       num_classes,
+        'film_inputs':       film_inputs,
+        'dataset':           ds_params,
+        'architecture':      architecture,
+    })
+    if verbose:
+        print(f" Saved fold normalisation to {sidecar}")
 
     pd.DataFrame(history).to_csv(
         os.path.join(output_dir, f'training_history_fold{fold}.csv'),
@@ -591,59 +700,25 @@ def train_single_run(data: Dict[str, Any],
     if os.path.exists(generic_plot):
         os.replace(generic_plot, fold_plot)
 
-    # ── Per-split per-environment summary + hold-out + eval_auger eval ───
-    def _build_eval_dataset(eval_df_sub, norm_stats):
-        return cdf.CarbonDataset(
-            eval_df_sub,
-            include_augmentation=False,
-            normalize_intensity=normalize_intensity,
-            broadening_fwhm=broadening_fwhm,
-            energy_min=energy_min, energy_max=energy_max,
-            n_points=n_spectrum_points,
-            norm_stats=norm_stats,
-        )
-
-    holdout_df_raw = data.get('test_df')
-    if holdout_df_raw is not None and len(holdout_df_raw) > 0:
-        holdout_df = holdout_df_raw.copy().reset_index(drop=True)
-        holdout_idx = list(range(len(holdout_df)))
-        holdout_dataset = _build_eval_dataset(holdout_df, norm_stats)
-        accs_holdout, _, _ = _per_class_accuracy(
-            holdout_df, holdout_idx, holdout_dataset, model, device, class_names)
-        holdout_results = ctu.evaluate_with_molecule_details(
-            df=holdout_df, model=model, device=device,
-            dataset=holdout_dataset,
-            output_dir=output_dir,
-            eval_type='calc_holdout',
-            csv_suffix=f'_fold{fold}',
-            class_names_override=class_names,
-            num_classes_override=num_classes,
-        )
-    else:
-        holdout_df = pd.DataFrame()
-        holdout_idx = []
-        accs_holdout = {n: (0, 0) for n in class_names}
-        holdout_results = None
-
-    # Eval_auger molecules (source='eval', never in train/val)
-    if len(eval_df) > 0:
-        eval_auger_idx = list(range(len(eval_df)))
-        eval_auger_dataset = _build_eval_dataset(eval_df, norm_stats)
-        accs_eval, _, _ = _per_class_accuracy(
-            eval_df, eval_auger_idx, eval_auger_dataset, model, device, class_names)
-        eval_auger_results = ctu.evaluate_with_molecule_details(
-            df=eval_df, model=model, device=device,
-            dataset=eval_auger_dataset,
-            output_dir=output_dir,
-            eval_type='eval_auger',
-            csv_suffix=f'_fold{fold}',
-            class_names_override=class_names,
-            num_classes_override=num_classes,
-        )
-    else:
-        eval_auger_idx = []
-        accs_eval = {n: (0, 0) for n in class_names}
-        eval_auger_results = None
+    # ── Hold-out + eval_auger evaluation ─────────────────────────────────
+    # Shared with run_evaluation so `mode: evaluate` produces identical
+    # results — see _evaluate_splits.
+    splits = _evaluate_splits(
+        model, device,
+        holdout_df=_resolve_holdout_df(data, merge_scheme, scheme_overridden),
+        eval_df=eval_df,
+        ds_params=ds_params,
+        norm_stats=norm_stats,
+        class_names=class_names, num_classes=num_classes,
+        output_dir=output_dir, fold=fold,
+    )
+    holdout_df         = splits['holdout']['df']
+    holdout_idx        = splits['holdout']['idx']
+    accs_holdout       = splits['holdout']['accs']
+    holdout_results    = splits['holdout']['results']
+    eval_auger_idx     = splits['eval_auger']['idx']
+    accs_eval          = splits['eval_auger']['accs']
+    eval_auger_results = splits['eval_auger']['results']
 
     if verbose:
         counts = {
@@ -667,9 +742,19 @@ def train_single_run(data: Dict[str, Any],
         _print_environment_table(class_names, counts, accs)
 
     # ── Results ───────────────────────────────────────────────────────────
-    best_val_loss   = min(history['val_loss'])
-    best_val_acc    = max(history['val_acc'])
-    best_val_f1     = max(history['val_f1'])
+    # Report the epoch whose weights were actually checkpointed and saved.
+    # trainer.fit selects on max val F1, so min(val_loss) / max(val_acc) taken
+    # independently over the history generally describe a DIFFERENT epoch than
+    # the .pth on disk — and the driver ranks folds/configs on best_val_loss.
+    sel = getattr(trainer, 'best_epoch', -1)
+    if sel < 0:
+        sel = int(np.argmax(history['val_f1']))
+
+    best_val_epoch  = sel + 1                     # 1-indexed, matches the GNN
+    best_val_loss   = history['val_loss'][sel]
+    best_val_acc    = history['val_acc'][sel]
+    best_val_f1     = history['val_f1'][sel]
+    best_train_loss = history['train_loss'][sel]
     final_train_acc = history['train_acc'][-1]
     final_val_acc   = history['val_acc'][-1]
     n_epochs_run    = len(history['train_loss'])
@@ -681,9 +766,10 @@ def train_single_run(data: Dict[str, Any],
         print(f"  Epochs run:    {n_epochs_run}")
         print(f"  Final Train:   {final_train_acc:.2f}%")
         print(f"  Final Val:     {final_val_acc:.2f}%")
-        print(f"  Best Val Loss: {best_val_loss:.4f}")
-        print(f"  Best Val Acc:  {best_val_acc:.2f}%")
-        print(f"  Best Val F1:   {best_val_f1:.4f}")
+        print(f"  Selected epoch:{best_val_epoch}  (max val F1 — saved weights)")
+        print(f"  Val Loss:      {best_val_loss:.4f}")
+        print(f"  Val Acc:       {best_val_acc:.2f}%")
+        print(f"  Val F1:        {best_val_f1:.4f}")
         if holdout_results is not None:
             print(f"  Calc holdout:  "
                   f"{holdout_results.get('accuracy', 0)*100:.2f}% acc  "
@@ -699,16 +785,25 @@ def train_single_run(data: Dict[str, Any],
         'model': model,
         'device': device,
         'fold': fold,
+        # All four are read off best_val_epoch, so they describe one model.
         'best_val_loss': best_val_loss,
         'combined_val_loss': best_val_loss,
+        'best_train_loss': best_train_loss,
+        'best_val_epoch': best_val_epoch,
         'best_val_acc': best_val_acc,
         'best_val_f1': best_val_f1,
         'final_train_acc': final_train_acc,
         'final_val_acc': final_val_acc,
+        'final_train_loss': history['train_loss'][-1],
+        'final_val_loss': history['val_loss'][-1],
         'n_epochs': n_epochs_run,
         'model_path': model_path,
         'holdout_results': holdout_results,      # calc hold-out (GNN-consistent)
         'eval_auger_results': eval_auger_results, # eval_auger (experimental)
+        # Tells run_evaluation the splits have already been scored, so it
+        # reports rather than re-running inference.  Absent on the bare
+        # {'model', 'device'} dict that mode: evaluate builds.
+        'evaluated': True,
         'train_idx': train_idx,
         'val_idx':   val_idx,
     }
@@ -719,8 +814,7 @@ def train_single_run(data: Dict[str, Any],
 # =============================================================================
 
 def _load_model_from_path(model_path, data, cfg, *, architecture=None,
-                          merge_scheme=None, use_augmented=None):
-    input_length = _get_input_length(cfg, use_augmented=use_augmented)
+                          merge_scheme=None):
     ms = merge_scheme or getattr(cfg, 'merge_scheme', 'none')
     arch = architecture or _resolve_architecture(cfg)
     device_str = getattr(cfg, 'device', 'auto')
@@ -730,7 +824,7 @@ def _load_model_from_path(model_path, data, cfg, *, architecture=None,
     film_inputs = getattr(cfg, 'film_inputs', 'none')
     ctu.validate_architecture(arch)
     model = ctu.AugerCNN1D_FiLMd(
-        input_length, num_classes,
+        num_classes,
         film_inputs=film_inputs,
         **arch,
     )
@@ -759,9 +853,27 @@ def load_saved_model(save_paths, data, cfg):
 
 def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
                    train_results=None, **_extra):
-    """Surface the hold-out and eval_auger results captured in train_single_run."""
+    """Report hold-out and eval_auger performance.
+
+    ``mode: train`` passes the result dict from ``train_single_run``, which
+    already carries both — this then just reports them.  ``mode: evaluate``
+    passes a bare ``{'model', 'device'}`` loaded from disk, in which case the
+    evaluation is run here.  Previously the latter case silently produced
+    nothing at all.
+    """
     holdout_results     = model_result.get('holdout_results')
     eval_auger_results  = model_result.get('eval_auger_results')
+
+    # 'evaluated' is set by train_single_run.  Keyed on that rather than on the
+    # results being None, because a run with no hold-out and no eval_auger data
+    # legitimately yields two Nones and must not be re-evaluated.
+    if not model_result.get('evaluated', False):
+        print(f"\n{'=' * 70}")
+        print("CNN EVALUATION — running inference on the loaded checkpoint")
+        print(f"{'=' * 70}")
+        splits = _evaluate_checkpoint(model_result, data, cfg, fold, output_dir)
+        holdout_results    = splits['holdout']['results']
+        eval_auger_results = splits['eval_auger']['results']
 
     print(f"\n{'=' * 70}")
     print(f"CNN EVALUATION SUMMARY  (fold {fold})")
@@ -788,10 +900,34 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
     _print_block('Eval-auger (experimental spectra)', eval_auger_results)
     print(f"\n{'=' * 70}")
 
-    return {
-        'holdout':    holdout_results,
-        'eval_auger': eval_auger_results,
+    # Flatten to the scalar contract train_driver._collect_eval_metrics expects:
+    # only keys prefixed 'eval_'/'test_' whose value is a scalar are recorded on
+    # the fold/config entry and aggregated into the CV / param summary JSON.
+    # Nested dicts (per_class, predictions, ...) are dropped there, so returning
+    # only those meant every CNN accuracy/F1 existed solely in stdout.
+    #   test_ = calc hold-out          eval_ = eval_auger (experimental)
+    _SCALARS = {
+        'accuracy':          'acc',
+        'f1_macro':          'f1_macro',
+        'f1_weighted':       'f1_weighted',
+        'dedup_accuracy':    'dedup_acc',
+        'dedup_f1_macro':    'dedup_f1_macro',
+        'dedup_f1_weighted': 'dedup_f1_weighted',
     }
+
+    metrics = {}
+    for prefix, res in (('test', holdout_results), ('eval', eval_auger_results)):
+        if not isinstance(res, dict):
+            continue
+        for src, short in _SCALARS.items():
+            v = res.get(src)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                metrics[f'{prefix}_{short}'] = float(v)
+
+    # Nested detail kept for callers that want it; filtered out downstream.
+    metrics['holdout'] = holdout_results
+    metrics['eval_auger'] = eval_auger_results
+    return metrics
 
 
 # =============================================================================
