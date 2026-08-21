@@ -19,7 +19,7 @@ Key  Name            Dim   Description
  3   atomic_be         1   Isolated-atom 1s BE (Hartree, raw)
  4   mol_be            1   Molecular CEBE for C, atomic for others (Hartree, raw)
  5   e_score           1   Electronegativity-difference score (raw)
- 6   env_onehot       36   Carbon environment one-hot (NUM_CARBON_CATEGORIES)
+ 6   env_onehot       37   Carbon environment one-hot (NUM_CARBON_CATEGORIES)
  7   morgan_fp       256   Per-atom Morgan fingerprint (ECFP2, radius=1)
 
 Usage

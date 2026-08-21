@@ -530,25 +530,6 @@ def _mol_from_xyz_order(fname, labeled_atoms=False):
     
     return mol, xyz_symbols, xyz_coords, smiles
 
-
-# =============================================================================
-# NORMALIZATION STATISTICS
-# =============================================================================
-
-# NOTE: _compute_cebe_normalization_stats() was removed here.
-#
-# It fitted the CEBE target mean/std over EVERY molecule in
-# calc_cebe/mol_list.txt and saved them to cebe_norm_stats.pt, which was then
-# used to normalise the stored targets and to denormalise predictions for every
-# fold — so each validation fold contributed to its own normalisation
-# constants, and (for auger-gnn / auger-cnn) so did the 50-molecule calculated
-# hold-out.  It also carried a hardcoded `atom_cebe = 308.23974136400005` that
-# duplicated the value build_graphs() derives from orbitalenergy.json, with
-# nothing to keep the two in step.
-#
-# Targets are now stored raw and normalised per fold from training molecules
-# only; see backend_gnn._fit_fold_norm and the '{model}_norm.json' sidecar.
-
 # =============================================================================
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
@@ -573,18 +554,23 @@ def build_graphs(data_type,
 
     all_encoders = _initialize_all_atom_encoders(skipatom_dir)
 
-    # No normalisation statistics are computed here.  Targets are stored raw
-    # (eV) and normalised per fold at train time from the training molecules
-    # only — see backend_gnn._fit_fold_norm.  Fitting anything dataset-wide at
-    # this point would necessarily include the validation folds and the
-    # calculated hold-out.
-
     data_list = []
 
     if DEBUG:
-        mol_list = mol_list[:5]
+        mol_list = mol_list[:10]
+
+    # QM9 molecules with dissociated N2 groups identified 
+    # https://figshare.com/ndownloader/files/3195404 is the orginal file of mols from KCGNN
+    # The molecules exculded from AugerNet calculated database are in data/raw/excluded_molecules.txt
+    EXCLUDED_MOLECULES_FILE = os.path.join(DATA_RAW_DIR, "excluded_molecules.txt")
+    with open(EXCLUDED_MOLECULES_FILE, 'r') as f:
+        excluded_mol_list = {line.strip() for line in f} # a set {} gets a harsh lookup with 'in' 
 
     for mol_name in mol_list:
+
+        if mol_name in excluded_mol_list:
+            print(f"{mol_name} in exclusion list due to dissociated N2 group, skipping")
+            continue
 
         mol_xyz_path = os.path.join(mol_dir, f"{mol_name}.xyz")
         mol, xyz_symbols, pos, smiles = _mol_from_xyz_order(mol_xyz_path, labeled_atoms=False)

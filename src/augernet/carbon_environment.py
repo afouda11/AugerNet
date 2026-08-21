@@ -50,31 +50,24 @@ CARBON_ENVIRONMENT_PATTERNS = OrderedDict([
     ('C_alkyne', '[CX2;$([CX2]#[CX2])]'),                 # Either C in C≡C
     ('C_CO2', '[CX2](=[OX1])=[OX1]'),                     # O=C=O  (carbon dioxide)
     ('C_isocyanate', '[CX2](=[OX1])=[NX2]'),              # O=C=N  (isocyanate / isocyanic acid)
-    ('C_carbodiimide', '[CX2](=[NX2])=[NX2]'),            # N=C=N  (carbodiimide central C)
     ('C_ketene', '[CX2](=[#6])=[OX1]'),                   # C=C=O  (ketene sp C, also carbon suboxide outer)
-    ('C_ketenimine', '[CX2](=[#6])=[NX2]'),               # C=C=N  (ketenimine sp C)
     ('C_allene', '[CX2](=[#6])=[#6]'),                    # C=C=C  (central sp C of allene / cumulene)
     ('C_enol', '[CX3;$([CX3]=[CX3])][OX2H]'),            # Vinyl alcohol C=C-OH (enol)
     ('C_vinyl', '[CX3;$([CX3]=[CX3,CX2])]'),             # Either C in C=C (vinyl/alkene, incl. cumulated terminal)
     
-    # Aromatic carbons - use both aromatic (c) and Kekulé ([#6]) patterns
-    # to handle cases where aromaticity isn't perceived
     # Order: most specific heteroaromatic patterns first
-    ('C_phenol', '[c,C;R][OX2H]'),                       # Ar-OH (ring C with -OH substituent)
-    ('C_aryl_ether', '[c,C;R][OX2H0][#6]'),              # Ar-O-R (ring C with ether linkage, not phenol)
-    ('C_aryl_amine', '[c,C;R][NX3;H2,H1]'),              # Ar-NH2 or Ar-NHR
-    #('C_aryl_halide', '[c,C;R][F,Cl,Br,I]'),             # Ar-X
-    ('C_aryl_fluoride', '[c,C;R][F]'),             # Ar-X
-    ('C_aryl_nitro', '[c,C;R][NX3+](=O)[O-]'),           # Ar-NO2
+    ('C_phenol', '[c][OX2H]'),                       # Ar-OH (ring C with -OH substituent)
+    ('C_aryl_ether', '[c][OX2H0][#6]'),              # Ar-O-R (ring C with ether linkage, not phenol)
+    ('C_aryl_amine', '[c][NX3;H2,H1]'),              # Ar-NH2 or Ar-NHR
+    ('C_aryl_fluoride', '[c][F]'),                   # Ar-F
+    ('C_aryl_nitro', '[c][NX3+](=O)[O-]'),           # Ar-NO2
+    ('C_aryl_carbonyl', '[c]=[OX1]'),                # aromatic ring C with exocyclic =O (oxoarene) 
     
     # Heteroaromatic carbons (C in ring with O/N as ring members)
-    # NOTE: Removed aromatic with S patterns (C_arom_S, C_arom_O_S, C_arom_N_S)
-    # Only keeping O and N heteroaromatic patterns for H,C,N,O,F dataset
-    ('C_arom_O_N', '[c,C;R;$([#6](~[#8;R])(~[#7;R]))]'), # Aromatic C bonded to both O and N in ring (e.g., oxazole C2)
-    
+    ('C_arom_O_N', '[c;$([#6](~[#8;R])(~[#7;R]))]'), # Aromatic C bonded to both O and N in ring (e.g., oxazole C2)
     # C adjacent to single heteroatom in ring
-    ('C_arom_O', '[c,C;R;$([#6]~[#8;R]);!$([#6](~[#8;R])(~[#7;R]))]'),  # Aromatic C next to ring O only
-    ('C_arom_N', '[c,C;R;$([#6]~[#7;R]);!$([#6](~[#7;R])(~[#8;R]))]'),  # Aromatic C next to ring N only
+    ('C_arom_O', '[c;$([#6]~[#8;R]);!$([#6](~[#8;R])(~[#7;R]))]'),  # Aromatic C next to ring O only
+    ('C_arom_N', '[c;$([#6]~[#7;R]);!$([#6](~[#7;R])(~[#8;R]))]'),  # Aromatic C next to ring N only
     
     # Generic aromatic (no heteroatom neighbors in ring, or fallback)
     ('C_aromatic', '[c,$(C1=CC=CC=C1),$(C1=CC=CC=1)]'),  # Aromatic C (carbocyclic or unmatched)
@@ -122,8 +115,9 @@ CARBON_ENV_PRIORITY = {
     'C_phenol':           92,
     'C_aryl_ether':       91,
     'C_aryl_amine':       90,
-    'C_aryl_fluoride':      89,
+    'C_aryl_fluoride':    89,
     'C_aryl_nitro':       88,
+    'C_aryl_carbonyl':    85, 
     
     # Heteroaromatic (C in ring with heteroatom)
     'C_arom_O_N':         82,
@@ -143,9 +137,7 @@ CARBON_ENV_PRIORITY = {
     'C_alkyne':           62,
     'C_CO2':              67,
     'C_isocyanate':       66,
-    'C_carbodiimide':     66,
     'C_ketene':           65,
-    'C_ketenimine':       65,
     'C_allene':           64,
     'C_enol':             63,
     'C_vinyl':            60,
@@ -214,7 +206,7 @@ def _get_carbon_environment_label(mol: Chem.Mol, atom_idx: int) -> Tuple[str, in
         if priority <= best_priority:
             continue
             
-        matches = mol.GetSubstructMatches(pattern)
+        matches = mol.GetSubstructMatches(pattern, uniquify=False)
         for match in matches:
             # Only match if the atom is at position 0 in the SMARTS match.
             # This ensures we classify the carbon that the pattern is designed

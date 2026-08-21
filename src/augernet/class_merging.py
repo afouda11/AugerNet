@@ -51,7 +51,6 @@ MERGING_SCHEMES: Dict[str, OrderedDict] = {}
 
 MERGING_SCHEMES['heteroaromatic_only'] = OrderedDict([
     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-    # everything else: identity map, one-to-one
     ('carboxylic_acid',     ['C_carboxylic_acid']),
     ('carboxylate',         ['C_carboxylate']),
     ('ester_carbonyl',      ['C_ester_carbonyl']),
@@ -69,9 +68,7 @@ MERGING_SCHEMES['heteroaromatic_only'] = OrderedDict([
     ('alkyne',              ['C_alkyne']),
     ('CO2',                 ['C_CO2']),
     ('isocyanate',          ['C_isocyanate']),
-    ('carbodiimide',        ['C_carbodiimide']),
     ('ketene',              ['C_ketene']),
-    ('ketenimine',          ['C_ketenimine']),
     ('allene',              ['C_allene']),
     ('enol',                ['C_enol']),
     ('vinyl',               ['C_vinyl']),
@@ -80,6 +77,7 @@ MERGING_SCHEMES['heteroaromatic_only'] = OrderedDict([
     ('aryl_amine',          ['C_aryl_amine']),
     ('aryl_fluoride',       ['C_aryl_fluoride']),
     ('aryl_nitro',          ['C_aryl_nitro']),
+     ('aryl_carbonyl',       ['C_aryl_carbonyl']),
     ('aromatic',            ['C_aromatic']),
     ('methyl',              ['C_methyl']),
     ('methylene',           ['C_methylene']),
@@ -96,32 +94,32 @@ MERGING_SCHEMES['chemical'] = OrderedDict([
     ('aryl_N',              ['C_aryl_amine', 'C_aryl_nitro']),
     ('aryl_O',              ['C_phenol', 'C_aryl_ether']),
     ('aryl_F',              ['C_aryl_fluoride']),
+    ('aryl_carbonyl',       ['C_aryl_carbonyl']),
     ('hydrocarbon',         ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary',
-                                'C_alkyne', 'C_vinyl', 'C_allene', 'C_aromatic']),
+                            'C_alkyne', 'C_vinyl', 'C_allene', 'C_aromatic']),
     ('carbonyl',            ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_ester_alkyl', 
-                                'C_carboxylic_acid', 'C_carboxylate']),
-    ('amide_carbonyl',      ['C_amide_carbonyl']),
+                            'C_carboxylic_acid', 'C_carboxylate']),
+    ('amide_carbonyl',      ['C_amide_carbonyl', 'C_isocyanate']),
     ('nitrile',             ['C_nitrile']),
     ('imine',               ['C_imine']),
     ('C_O_single',          ['C_ether', 'C_alcohol', 'C_enol']),
-    ('C_N_single',          ['C_amine']),
+    ('amine',               ['C_amine']),
     ('alkyl_fluorinated',   ['C_fluorinated', 'C_acyl_fluoride']),
-    ('cumulated_N',         ['C_carbodiimide', 'C_ketenimine']),
     ('cumulated_O',         ['C_ketene', 'C_CO2']),
-    ('isocyanate',          ['C_isocyanate']),
+    #('isocyanate',          ['C_isocyanate']),
 ])
 
 MERGING_SCHEMES['heteroatom'] = OrderedDict([
     # C=O containing (8 classes)
     ('carbonyl',        ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_amide_carbonyl',
-                         'C_carboxylic_acid', 'C_carboxylate', 'C_CO2', 'C_ketene']),
+                         'C_carboxylic_acid', 'C_carboxylate', 'C_CO2', 'C_ketene', 'C_aryl_carbonyl']),
     # C-O single bond / O-substituted (6 classes)
     ('oxygen_single',   ['C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_phenol',
                          'C_enol', 'C_aryl_ether']),
     # N-containing: all kinds (10 classes)
     ('nitrogen',        ['C_nitrile', 'C_imine', 'C_amine', 'C_aryl_amine',
                          'C_aryl_nitro', 'C_arom_N', 'C_arom_O_N',
-                         'C_isocyanate', 'C_carbodiimide', 'C_ketenimine']),
+                         'C_isocyanate']),
     # Fluorinated (3 classes)
     ('halogen',         ['C_fluorinated', 'C_aryl_fluoride', 'C_acyl_fluoride']),
     # Pure aromatic ring carbons (no N, no heteroatom in ring) (2 classes)
@@ -135,6 +133,53 @@ MERGING_SCHEMES['heteroatom'] = OrderedDict([
 # =============================================================================
 #  PUBLIC API
 # =============================================================================
+
+def present_classes(data_list):
+    """Class names occurring in a built dataset."""
+    seen = set()
+    for d in data_list:
+        for idx in d.carbon_env_indices.tolist():
+            if idx >= 0:
+                seen.add(IDX_TO_CARBON_ENV[idx])
+    return seen
+
+def restrict_to_present(present, scheme_name='none'):
+    """Project a label space onto the classes a dataset actually contains.
+
+    present : iterable of class names.  Compute once over the whole
+        post-exclusion dataset -- not per fold, or the label space would
+        change between folds.
+    scheme_name : 'none' for the fine-grained space, else a MERGING_SCHEMES key.
+
+    Returns (names, label_map): names[i] is restricted label i;
+    label_map maps CARBON_ENV_TO_IDX indices onto restricted indices.
+    Absent classes are simply not keys, so a stray lookup raises KeyError
+    rather than silently landing on class 0.
+    """
+    present = set(present)
+    unknown = present - set(CARBON_ENV_TO_IDX)
+    if unknown:
+        raise ValueError(f"unknown class names: {sorted(unknown)}")
+
+    if scheme_name == 'none':
+        names = [c for c in CARBON_ENVIRONMENT_PATTERNS if c in present]
+        return names, {CARBON_ENV_TO_IDX[c]: i for i, c in enumerate(names)}
+
+    names, label_map = [], {}
+    for bucket, members in get_scheme(scheme_name).items():
+        kept = [m for m in members if m in present]
+        if not kept:
+            continue                      # bucket empty for this dataset
+        for m in kept:
+            label_map[CARBON_ENV_TO_IDX[m]] = len(names)
+        names.append(bucket)
+
+    covered = {CARBON_ENV_TO_IDX[c] for c in present}
+    if set(label_map) != covered:
+        missing = sorted(IDX_TO_CARBON_ENV[i] for i in covered - set(label_map))
+        raise ValueError(f"scheme '{scheme_name}' does not cover: {missing}")
+    return names, label_map
+
 
 def get_available_schemes() -> List[str]:
     """Return list of available merging scheme names."""
