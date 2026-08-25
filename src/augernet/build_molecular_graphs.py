@@ -568,6 +568,7 @@ def build_graphs(data_type,
 
     for mol_name in mol_list:
 
+        # comment out for first submission of Auger GNN paper results
         if mol_name in excluded_mol_list:
             print(f"{mol_name} in exclusion list due to dissociated N2 group, skipping")
             continue

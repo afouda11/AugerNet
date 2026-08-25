@@ -22,7 +22,7 @@ CARBON_ENVIRONMENT_PATTERNS = OrderedDict([
     # Carbonyl-containing groups (most specific first)
     ('C_carboxylic_acid', '[CX3](=O)[OX2H1]'),           # -COOH
     ('C_carboxylate', '[CX3](=O)[O-]'),                   # -COO-
-    ('C_ester_carbonyl', '[CX3](=O)[OX2][#6]'),          # -COO-R (carbonyl C)
+    ('C_ester_carbonyl', '[CX3](=O)[OX2]'),          # -COO-R (carbonyl C)
     ('C_amide_carbonyl', '[CX3](=O)[#7]'),                # -CO-N (carbonyl C bonded to any N)
     ('C_acyl_fluoride', '[CX3](=O)[F]'),           # -COF
     ('C_ketone', '[CX3](=O)([#6])[#6]'),                 # R-CO-R (must have 2 C neighbors)
@@ -50,6 +50,8 @@ CARBON_ENVIRONMENT_PATTERNS = OrderedDict([
     ('C_alkyne', '[CX2;$([CX2]#[CX2])]'),                 # Either C in C≡C
     ('C_CO2', '[CX2](=[OX1])=[OX1]'),                     # O=C=O  (carbon dioxide)
     ('C_isocyanate', '[CX2](=[OX1])=[NX2]'),              # O=C=N  (isocyanate / isocyanic acid)
+    ('C_carbodiimide', '[CX2](=[NX2])=[NX2]'),            # N=C=N  (carbodiimide)
+    ('C_ketenimine', '[CX2](=[#6])=[NX2]'),               # C=C=N  (ketenimine sp C)
     ('C_ketene', '[CX2](=[#6])=[OX1]'),                   # C=C=O  (ketene sp C, also carbon suboxide outer)
     ('C_allene', '[CX2](=[#6])=[#6]'),                    # C=C=C  (central sp C of allene / cumulene)
     ('C_enol', '[CX3;$([CX3]=[CX3])][OX2H]'),            # Vinyl alcohol C=C-OH (enol)
@@ -137,6 +139,8 @@ CARBON_ENV_PRIORITY = {
     'C_alkyne':           62,
     'C_CO2':              67,
     'C_isocyanate':       66,
+    'C_carbodiimide':     66,
+    'C_ketenimine':       65,
     'C_ketene':           65,
     'C_allene':           64,
     'C_enol':             63,

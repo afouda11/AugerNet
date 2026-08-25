@@ -270,6 +270,8 @@ class AugerNetConfig:
                 )
             if self.model == 'auger-cnn':
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
+                film = str(getattr(self, 'film_inputs', 'none') or 'none')
+                film_tag = '' if film in ('none', '') else '_film' + film.replace(',', '')
                 # Build tag strings from the real AugerCNN1D_FiLMd architecture keys
                 pf_str = 'pf' + '_'.join(str(f) for f in self.architecture.get('parallel_filters', []))
                 pk_str = 'pk' + '_'.join(str(k) for k in self.architecture.get('parallel_kernel_sizes', []))
@@ -278,11 +280,11 @@ class AugerNetConfig:
                 pool_str = f"pool{self.architecture.get('pool_kernel', '')}"
                 self.model_id = (
                     f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
-                    f"BE{self.cebe_augment}_{pf_str}_{pk_str}_{sf_str}_{sk_str}_{pool_str}{de_tag}"
+                    f"BE{self.cebe_augment}{film_tag}_{pf_str}_{pk_str}_{sf_str}_{sk_str}_{pool_str}{de_tag}"
                 )
 
         # results sub dirs: outputs files, train loss and eval pngs, and models 
-        self.outputs_dir = os.path.join(self.result_dir, 'outputs')
+        self.outputs_dir = os.path.join(self.result_dir, 'outputs', self.model_id)
         os.makedirs(self.outputs_dir, exist_ok=True)
 
         #no scatter or training loss pngs for predict, just raw values to output

@@ -49,45 +49,8 @@ _ORIG_NAMES = list(CARBON_ENVIRONMENT_PATTERNS.keys())
 
 MERGING_SCHEMES: Dict[str, OrderedDict] = {}
 
-MERGING_SCHEMES['heteroaromatic_only'] = OrderedDict([
-    ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
-    ('carboxylic_acid',     ['C_carboxylic_acid']),
-    ('carboxylate',         ['C_carboxylate']),
-    ('ester_carbonyl',      ['C_ester_carbonyl']),
-    ('amide_carbonyl',      ['C_amide_carbonyl']),
-    ('acyl_fluoride',       ['C_acyl_fluoride']),
-    ('ketone',              ['C_ketone']),
-    ('aldehyde',            ['C_aldehyde']),
-    ('nitrile',             ['C_nitrile']),
-    ('imine',               ['C_imine']),
-    ('ether',               ['C_ether']),
-    ('alcohol',             ['C_alcohol']),
-    ('ester_alkyl',         ['C_ester_alkyl']),
-    ('fluorinated',         ['C_fluorinated']),
-    ('amine',               ['C_amine']),
-    ('alkyne',              ['C_alkyne']),
-    ('CO2',                 ['C_CO2']),
-    ('isocyanate',          ['C_isocyanate']),
-    ('ketene',              ['C_ketene']),
-    ('allene',              ['C_allene']),
-    ('enol',                ['C_enol']),
-    ('vinyl',               ['C_vinyl']),
-    ('phenol',              ['C_phenol']),
-    ('aryl_ether',          ['C_aryl_ether']),
-    ('aryl_amine',          ['C_aryl_amine']),
-    ('aryl_fluoride',       ['C_aryl_fluoride']),
-    ('aryl_nitro',          ['C_aryl_nitro']),
-     ('aryl_carbonyl',       ['C_aryl_carbonyl']),
-    ('aromatic',            ['C_aromatic']),
-    ('methyl',              ['C_methyl']),
-    ('methylene',           ['C_methylene']),
-    ('methine',             ['C_methine']),
-    ('quaternary',          ['C_quaternary']),
-])
-
-
 # ------------------------------------------------------------------------------
-#  CHEMICAL (36 -> 16)  
+#  CHEMICAL (35 -> 14)  
 # ------------------------------------------------------------------------------
 MERGING_SCHEMES['chemical'] = OrderedDict([
     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
@@ -102,33 +65,70 @@ MERGING_SCHEMES['chemical'] = OrderedDict([
     ('amide_carbonyl',      ['C_amide_carbonyl', 'C_isocyanate']),
     ('nitrile',             ['C_nitrile']),
     ('imine',               ['C_imine']),
-    ('C_O_single',          ['C_ether', 'C_alcohol', 'C_enol']),
+    ('oxyl',                ['C_ether', 'C_alcohol', 'C_enol']),
     ('amine',               ['C_amine']),
     ('alkyl_fluorinated',   ['C_fluorinated', 'C_acyl_fluoride']),
     ('cumulated_O',         ['C_ketene', 'C_CO2']),
+    ('cumulated_N',         ['C_carbodiimide', 'C_ketenimine']),
     #('isocyanate',          ['C_isocyanate']),
 ])
 
-MERGING_SCHEMES['heteroatom'] = OrderedDict([
-    # C=O containing (8 classes)
-    ('carbonyl',        ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_amide_carbonyl',
-                         'C_carboxylic_acid', 'C_carboxylate', 'C_CO2', 'C_ketene', 'C_aryl_carbonyl']),
-    # C-O single bond / O-substituted (6 classes)
-    ('oxygen_single',   ['C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_phenol',
-                         'C_enol', 'C_aryl_ether']),
-    # N-containing: all kinds (10 classes)
-    ('nitrogen',        ['C_nitrile', 'C_imine', 'C_amine', 'C_aryl_amine',
-                         'C_aryl_nitro', 'C_arom_N', 'C_arom_O_N',
-                         'C_isocyanate']),
-    # Fluorinated (3 classes)
-    ('halogen',         ['C_fluorinated', 'C_aryl_fluoride', 'C_acyl_fluoride']),
-    # Pure aromatic ring carbons (no N, no heteroatom in ring) (2 classes)
-    ('aromatic',        ['C_aromatic', 'C_arom_O']),
-    # Pure hydrocarbon: saturated (4 classes)
-    ('aliphatic',       ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary']),
-    # Pure hydrocarbon: unsaturated non-aromatic (3 classes)
-    ('unsaturated',     ['C_alkyne', 'C_allene', 'C_vinyl']),
-])
+# MERGING_SCHEMES['heteroaromatic_only'] = OrderedDict([
+#     ('heteroaromatic',      ['C_arom_N', 'C_arom_O', 'C_arom_O_N']),
+#     ('carboxylic_acid',     ['C_carboxylic_acid']),
+#     ('carboxylate',         ['C_carboxylate']),
+#     ('ester_carbonyl',      ['C_ester_carbonyl']),
+#     ('amide_carbonyl',      ['C_amide_carbonyl']),
+#     ('acyl_fluoride',       ['C_acyl_fluoride']),
+#     ('ketone',              ['C_ketone']),
+#     ('aldehyde',            ['C_aldehyde']),
+#     ('nitrile',             ['C_nitrile']),
+#     ('imine',               ['C_imine']),
+#     ('ether',               ['C_ether']),
+#     ('alcohol',             ['C_alcohol']),
+#     ('ester_alkyl',         ['C_ester_alkyl']),
+#     ('fluorinated',         ['C_fluorinated']),
+#     ('amine',               ['C_amine']),
+#     ('alkyne',              ['C_alkyne']),
+#     ('CO2',                 ['C_CO2']),
+#     ('isocyanate',          ['C_isocyanate']),
+#     ('ketene',              ['C_ketene']),
+#     ('allene',              ['C_allene']),
+#     ('enol',                ['C_enol']),
+#     ('vinyl',               ['C_vinyl']),
+#     ('phenol',              ['C_phenol']),
+#     ('aryl_ether',          ['C_aryl_ether']),
+#     ('aryl_amine',          ['C_aryl_amine']),
+#     ('aryl_fluoride',       ['C_aryl_fluoride']),
+#     ('aryl_nitro',          ['C_aryl_nitro']),
+#      ('aryl_carbonyl',       ['C_aryl_carbonyl']),
+#     ('aromatic',            ['C_aromatic']),
+#     ('methyl',              ['C_methyl']),
+#     ('methylene',           ['C_methylene']),
+#     ('methine',             ['C_methine']),
+#     ('quaternary',          ['C_quaternary']),
+# ])
+# 
+# MERGING_SCHEMES['heteroatom'] = OrderedDict([
+#     # C=O containing (8 classes)
+#     ('carbonyl',        ['C_ketone', 'C_aldehyde', 'C_ester_carbonyl', 'C_amide_carbonyl',
+#                          'C_carboxylic_acid', 'C_carboxylate', 'C_CO2', 'C_ketene', 'C_aryl_carbonyl']),
+#     # C-O single bond / O-substituted (6 classes)
+#     ('oxygen_single',   ['C_ether', 'C_alcohol', 'C_ester_alkyl', 'C_phenol',
+#                          'C_enol', 'C_aryl_ether']),
+#     # N-containing: all kinds (10 classes)
+#     ('nitrogen',        ['C_nitrile', 'C_imine', 'C_amine', 'C_aryl_amine',
+#                          'C_aryl_nitro', 'C_arom_N', 'C_arom_O_N',
+#                          'C_isocyanate']),
+#     # Fluorinated (3 classes)
+#     ('halogen',         ['C_fluorinated', 'C_aryl_fluoride', 'C_acyl_fluoride']),
+#     # Pure aromatic ring carbons (no N, no heteroatom in ring) (2 classes)
+#     ('aromatic',        ['C_aromatic', 'C_arom_O']),
+#     # Pure hydrocarbon: saturated (4 classes)
+#     ('aliphatic',       ['C_methyl', 'C_methylene', 'C_methine', 'C_quaternary']),
+#     # Pure hydrocarbon: unsaturated non-aromatic (3 classes)
+#     ('unsaturated',     ['C_alkyne', 'C_allene', 'C_vinyl']),
+# ])
 
 # =============================================================================
 #  PUBLIC API
