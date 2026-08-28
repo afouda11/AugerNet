@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score)
 
 from augernet.carbon_environment import (
     CARBON_ENVIRONMENT_PATTERNS,
@@ -107,7 +108,7 @@ class FiLMLayer(nn.Module):
 class FiLMGenerator(nn.Module):
     """ Maps z-score normalised conditioning inputs to gamma and beta parameters
         for every FiLM layer in the FiLM'd network.
-        film_dim: 1 (be only or mol_size only) or 2 (both)
+        film_dim: 1 (be only)
     """
     def __init__(self, channels_per_layer: list, hidden_dim: int = 64, film_dim: int = 2):
         super().__init__()
@@ -124,7 +125,7 @@ class FiLMGenerator(nn.Module):
         nn.init.zeros_(self.mlp[-1].bias)
 
     def forward(self, film_cond: torch.Tensor):
-        # film_cond: (B, 2) = [delta_be_norm, mol_size_norm]
+        # film_cond: (B, 1) = [delta_be_norm]
         out = self.mlp(film_cond)
         # split into (gamma_i, beta_i) pairs per layer
         sizes = []
@@ -133,20 +134,15 @@ class FiLMGenerator(nn.Module):
         parts = torch.split(out, sizes, dim=1)
         # gamma = 1 + delta (so identity init means gamma == 1)
         return [(1.0 + parts[2*i], parts[2*i + 1])
-                for i in range(len(self.channels_per_layer))]
+            for i in range(len(self.channels_per_layer))]
 
 class AugerCNN1D_FiLMd(nn.Module):
     """1-D CNN over a broadened Auger spectrum.
 
-    Length-agnostic by construction: ``AdaptiveAvgPool1d(pool_kernel)`` reduces
-    any input length to exactly ``pool_kernel`` time-steps, so the classifier
-    width depends only on ``sequential_filters[-1] * pool_kernel``.
+    Length-agnostic by construction: 
+    ``AdaptiveAvgPool1d(pool_kernel)`` reduces any input length to exactly ``pool_kernel``, 
+    so the classifier width depends only on ``sequential_filters[-1] * pool_kernel``.
 
-    There is deliberately no ``input_length`` argument.  One used to be accepted
-    and never referenced, which read as a shape guard while guaranteeing
-    nothing — a spectrum built with a different ``n_points``, or with
-    ``cebe_augment`` toggled, was consumed silently.  Nothing here can catch
-    that; the checkpoint's config sidecar is the place for it.
     """
 
     def __init__(self,
@@ -155,9 +151,9 @@ class AugerCNN1D_FiLMd(nn.Module):
         parallel_filters=(12,12,12),
         sequential_kernel_size=(15,15),
         sequential_filters=(12,12),
+        stride=1,
         conv_dropout=0.2,
-        pool_kernel=32,
-        pool_stride=2,
+        pool_output=32,
         film_hidden=64,
         film_inputs='none',   # 'none' | 'be'
     ):
@@ -172,7 +168,7 @@ class AugerCNN1D_FiLMd(nn.Module):
 
         self.parallel_convs = nn.ModuleList([
             nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
-                      stride=1, padding='same') for f, k in zip(parallel_filters, parallel_kernel_sizes)
+                      stride=stride, padding='same') for f, k in zip(parallel_filters, parallel_kernel_sizes)
         ])
         concat_channels = sum(parallel_filters)
 
@@ -193,9 +189,9 @@ class AugerCNN1D_FiLMd(nn.Module):
             self.film_layers = None
 
         self.conv_dropout = nn.Dropout(conv_dropout)
-        self.pool = nn.AdaptiveAvgPool1d(pool_kernel)
+        self.pool = nn.AdaptiveAvgPool1d(pool_output)
         # AdaptiveAvgPool1d always outputs exactly pool_kernel time-steps
-        flat_size = sequential_filters[1] * pool_kernel
+        flat_size = sequential_filters[1] * pool_output
         print(f"AugerCNN1D_FiLMd: film_inputs='{film_inputs}', film_dim={film_dim}, flat_size={flat_size}")
         self.fc = nn.Linear(flat_size, num_classes)
 
@@ -251,9 +247,9 @@ ARCHITECTURE_PRESETS: Dict[str, Dict[str, Any]] = {
         parallel_filters=(12, 12, 12),
         sequential_kernel_size=(15, 15),
         sequential_filters=(12, 12),
+        stride=1,
         conv_dropout=0.2,
-        pool_kernel=32,
-        pool_stride=2,
+        pool_output=32,
         film_hidden=64,
     ),
 }
@@ -505,9 +501,19 @@ def evaluate_with_molecule_details(
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
 
+    # Precision and recall use the same convention as F_1 -- no explicit
+    # `labels=`, so sklearn averages over the union of the classes present in
+    # the references and those the model emitted.  Keeping the three identical
+    # is what makes them comparable column-to-column in the manuscript table;
+    # averaging recall over only the classes with support instead reads about
+    # 0.07 higher on this data.
     accuracy = accuracy_score(all_labels, all_preds)
     f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
     f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+    precision_macro = precision_score(all_labels, all_preds, average='macro', zero_division=0)
+    precision_weighted = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
+    recall_macro = recall_score(all_labels, all_preds, average='macro', zero_division=0)
+    recall_weighted = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
 
     print(f"\n== EVALUATION ({eval_type.upper()}) - {num_classes} CLASSES ==")
 
@@ -584,13 +590,17 @@ def evaluate_with_molecule_details(
         dedup_accuracy = accuracy_score(dedup_labels, dedup_preds)
         dedup_f1_macro = f1_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
         dedup_f1_weighted = f1_score(dedup_labels, dedup_preds, average='weighted', zero_division=0)
+        dedup_precision_macro = precision_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
+        dedup_recall_macro = recall_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
 
     print("\n== SUMMARY STATISTICS ==")
 
     print(f"  Per-atom  ({len(all_labels)} atoms):  "
-          f"Acc={accuracy*100:.1f}%  F1-mac={f1_macro:.4f}  F1-wt={f1_weighted:.4f}")
+          f"Acc={accuracy*100:.1f}%  F1-mac={f1_macro:.4f}  F1-wt={f1_weighted:.4f}  "
+          f"P-mac={precision_macro:.4f}  R-mac={recall_macro:.4f}")
     print(f"  Deduped   ({len(dedup_labels)} pairs):  "
-          f"Acc={dedup_accuracy*100:.1f}%  F1-mac={dedup_f1_macro:.4f}  F1-wt={dedup_f1_weighted:.4f}")
+          f"Acc={dedup_accuracy*100:.1f}%  F1-mac={dedup_f1_macro:.4f}  F1-wt={dedup_f1_weighted:.4f}  "
+          f"P-mac={dedup_precision_macro:.4f}  R-mac={dedup_recall_macro:.4f}")
 
     print("\n  Per-Class (deduplicated):")
     print("  " + "-" * 70)
@@ -604,8 +614,12 @@ def evaluate_with_molecule_details(
 
     return {
         'accuracy': accuracy, 'f1_macro': f1_macro, 'f1_weighted': f1_weighted,
+        'precision_macro': precision_macro, 'precision_weighted': precision_weighted,
+        'recall_macro': recall_macro, 'recall_weighted': recall_weighted,
         'dedup_accuracy': dedup_accuracy, 'dedup_f1_macro': dedup_f1_macro,
         'dedup_f1_weighted': dedup_f1_weighted,
+        'dedup_precision_macro': dedup_precision_macro,
+        'dedup_recall_macro': dedup_recall_macro,
         'predictions': all_preds, 'labels': all_labels, 'probabilities': all_probs,
         'dedup_predictions': dedup_preds, 'dedup_labels': dedup_labels,
     }

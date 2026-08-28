@@ -54,6 +54,59 @@ OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  CNN architecture -> model_id tag
+# ─────────────────────────────────────────────────────────────────────────────
+
+# (architecture key, filename prefix) for the fields that distinguish one
+# auger-cnn run from another.  conv_dropout and film_hidden are deliberately
+# absent: they are swept rarely and the id is long enough already.
+#
+# These keys must exist on AugerCNN1D_FiLMd.__init__.  Two renames have already
+# slipped past a `.get(key, '')` here and silently emptied part of the id --
+# conv_filters/conv_kernels/pool_size/fc_hidden first, then pool_kernel ->
+# pool_output -- producing runs whose names claimed an architecture they were
+# not trained with.  _arch_tag therefore raises on a key the architecture dict
+# does not carry rather than degrading quietly.
+_CNN_ARCH_TAGS: tuple = (
+    ('parallel_filters',       'pf'),
+    ('parallel_kernel_sizes',  'pk'),
+    ('sequential_filters',     'sf'),
+    ('sequential_kernel_size', 'sk'),
+    ('stride',                 'st'),
+    ('pool_output',            'pool'),
+)
+
+
+def _arch_tag(architecture: Dict[str, Any]) -> str:
+    """Filename tag for a resolved auger-cnn ``architecture`` dict.
+
+    Raises
+    ------
+    ValueError
+        If any key in ``_CNN_ARCH_TAGS`` is missing.  That means the spec here
+        and AugerCNN1D_FiLMd's signature have drifted apart, which must be a
+        hard failure -- an id that silently drops a swept parameter collides
+        two different models onto one set of output filenames.
+    """
+    missing = [k for k, _ in _CNN_ARCH_TAGS if k not in (architecture or {})]
+    if missing:
+        raise ValueError(
+            f"architecture is missing key(s) required for model_id: {missing}. "
+            f"Add them to the yml's architecture: block, or update "
+            f"_CNN_ARCH_TAGS in config.py if AugerCNN1D_FiLMd's signature "
+            f"changed."
+        )
+    parts = []
+    for key, prefix in _CNN_ARCH_TAGS:
+        val = architecture[key]
+        if isinstance(val, (list, tuple)):
+            parts.append(prefix + '_'.join(str(v) for v in val))
+        else:
+            parts.append(f'{prefix}{val}')
+    return '_'.join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Dataclass
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -219,7 +272,10 @@ class AugerNetConfig:
         #   task_tag (multi)  = _multi_w{mt_warmup_epochs}[_ft{mt_finetune_epochs}]{phys_tag}_l_a{auger_loss}_c{cebe_loss}
 
         # auger-cnn:
-        # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}BE{cebe_augment}_f{filters}_k{kernels}_p{pool}_h{hidden}{de_tag}
+        # model_id = auger_cnn_{fwhm}_{split_method}{n_folds}_{merge_scheme}BE{cebe_augment}{film_tag}_{arch_tag}{de_tag}
+        #   film_tag = '' when film_inputs is 'none', else _film{film_inputs}
+        #   arch_tag = pf{...}_pk{...}_sf{...}_sk{...}_st{...}_pool{...}, built
+        #              from _CNN_ARCH_TAGS above
 
         # de_tag (all model types, data-efficiency sweep):
         #   ''                                     when train_frac == 1.0 (full data)
@@ -271,16 +327,26 @@ class AugerNetConfig:
             if self.model == 'auger-cnn':
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
                 film = str(getattr(self, 'film_inputs', 'none') or 'none')
-                film_tag = '' if film in ('none', '') else '_film' + film.replace(',', '')
-                # Build tag strings from the real AugerCNN1D_FiLMd architecture keys
-                pf_str = 'pf' + '_'.join(str(f) for f in self.architecture.get('parallel_filters', []))
-                pk_str = 'pk' + '_'.join(str(k) for k in self.architecture.get('parallel_kernel_sizes', []))
-                sf_str = 'sf' + '_'.join(str(f) for f in self.architecture.get('sequential_filters', []))
-                sk_str = 'sk' + '_'.join(str(k) for k in self.architecture.get('sequential_kernel_size', []))
-                pool_str = f"pool{self.architecture.get('pool_kernel', '')}"
+                #film_tag = '' if film in ('none', '') else '_film' + film.replace(',', '')
+                # Tag built from the real AugerCNN1D_FiLMd architecture keys;
+                # _arch_tag raises if the spec and the yml have drifted apart.
+                if film == 'none' and self.cebe_augment == False: 
+                    be_tag = 'nobe'
+                elif film == 'be' and self.cebe_augment == False:
+                    be_tag = 'filmbe'
+                elif film == 'none' and self.cebe_augment == True:
+                    be_tag = 'augbe'
+                elif film == 'be' and self.cebe_augment == True: 
+                    raise ValueError(
+                        "Only augmented binding energies or FiLM binding energies "
+                        "can be used, not both. Set either:\n"
+                        "  cebe_augment: false (to use FiLM)\n"
+                        "  film_inputs: 'none' (to use augmented BE)\n"
+                    )
+                arch_str = _arch_tag(self.architecture)
                 self.model_id = (
                     f"auger_cnn_{fwhm_str}_{self.split_method}{self.n_folds}_{self.merge_scheme}"
-                    f"BE{self.cebe_augment}{film_tag}_{pf_str}_{pk_str}_{sf_str}_{sk_str}_{pool_str}{de_tag}"
+                    f"_{be_tag}_{arch_str}{de_tag}"
                 )
 
         # results sub dirs: outputs files, train loss and eval pngs, and models 

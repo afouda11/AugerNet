@@ -1004,6 +1004,8 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
         print(f"    Accuracy:    {res.get('accuracy', 0)*100:.2f}%")
         print(f"    F1-macro:    {res.get('f1_macro',    0):.4f}")
         print(f"    F1-weighted: {res.get('f1_weighted', 0):.4f}")
+        print(f"    Prec-macro:  {res.get('precision_macro', 0):.4f}")
+        print(f"    Rec-macro:   {res.get('recall_macro',    0):.4f}")
         if res.get('per_class'):
             print(f"    {'Class':<22} {'N':>6} {'Correct':>9} {'Acc':>8}")
             print(f"    {'-'*50}")
@@ -1040,13 +1042,22 @@ def run_evaluation(model_result, data, fold, output_dir, png_dir, cfg,
     # Nested dicts (per_class, predictions, ...) are dropped there, so returning
     # only those meant every CNN accuracy/F1 existed solely in stdout.
     #   test_ = calc hold-out          eval_ = eval_auger (experimental)
+    # Adding a key here is all that is needed for a metric to reach the CV /
+    # param summary JSON: _aggregate_eval_metrics picks up any scalar carrying
+    # an eval_/test_ prefix, so no change is required in train_driver.
     _SCALARS = {
-        'accuracy':          'acc',
-        'f1_macro':          'f1_macro',
-        'f1_weighted':       'f1_weighted',
-        'dedup_accuracy':    'dedup_acc',
-        'dedup_f1_macro':    'dedup_f1_macro',
-        'dedup_f1_weighted': 'dedup_f1_weighted',
+        'accuracy':              'acc',
+        'f1_macro':              'f1_macro',
+        'f1_weighted':           'f1_weighted',
+        'precision_macro':       'prec_macro',
+        'precision_weighted':    'prec_weighted',
+        'recall_macro':          'rec_macro',
+        'recall_weighted':       'rec_weighted',
+        'dedup_accuracy':        'dedup_acc',
+        'dedup_f1_macro':        'dedup_f1_macro',
+        'dedup_f1_weighted':     'dedup_f1_weighted',
+        'dedup_precision_macro': 'dedup_prec_macro',
+        'dedup_recall_macro':    'dedup_rec_macro',
     }
 
     metrics = {}
