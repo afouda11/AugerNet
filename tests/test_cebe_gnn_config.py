@@ -231,7 +231,7 @@ class TestCebeGnnLoadConfig:
         yaml_str = (
             "model: cebe-gnn\n"
             "mode: param\n"
-            "test_param_grid_all_overridable_fields\n"
+            "train_data_file: gnn_calc_cebe_data.pt\n"
             "param_grid:\n"
             + "\n".join(grid_lines)
         )
