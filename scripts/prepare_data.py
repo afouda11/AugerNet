@@ -236,7 +236,7 @@ def prepare_auger_gnn(args):
 # AUGER CNN
 # =============================================================================
 
-def auger_gnn_to_cnn_dataframe(data_type, pt_path):
+def auger_gnn_to_cnn_dataframe(data_type, pt_path, exclude_file=None):
     """
     Extract a per-carbon DataFrame from a saved Auger GNN .pt file.
 
@@ -262,12 +262,28 @@ def auger_gnn_to_cnn_dataframe(data_type, pt_path):
     dataset = []
     n_mols = len(slices['x']) - 1
 
+    # QM9 molecules with dissociated N2 groups identified 
+    # https://figshare.com/ndownloader/files/3195404 is the orginal file of mols from KCGNN
+    # These molecules are exculded from AugerNet CNN classifications only 
+    # As they add new very lowly populated env classes for molecules with dissociated structures
+    # They can be found in data/raw/excluded_molecules.txt
+    excluded = set()
+    if exclude_file:
+        with open(os.path.join(DATA_RAW_DIR, exclude_file)) as f:
+            excluded = {ln.strip() for ln in f if ln.strip()}
+
+    skipped_mol = 0
     for i in range(n_mols):
+
+        mol_name = collated.mol_name[i]
+        if mol_name in excluded:
+            skipped_mol += 1
+            continue
+
         # Node-level slices (for node_mask, carbon_env, atomic_be, etc.)
         ns, ne = int(slices['x'][i]), int(slices['x'][i + 1])
         n_atoms = ne - ns
 
-        mol_name = collated.mol_name[i]
         smiles = collated.smiles[i]
         node_mask = collated.node_mask[ns:ne]
         carbon_env_labels = collated.carbon_env_labels[i]   # list of strings
@@ -329,7 +345,7 @@ def auger_gnn_to_cnn_dataframe(data_type, pt_path):
               })
 
     df = pd.DataFrame(dataset)
-    print(f"  CNN DataFrame: {len(df)} carbons from {n_mols} molecules")
+    print(f"  CNN DataFrame: {len(df)} carbons from {n_mols-skipped_mol} molecules")
     return df
 
 
@@ -352,7 +368,8 @@ def prepare_auger_cnn(args):
     calc_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['calc'])
     eval_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['eval'])
 
-    calc_df = auger_gnn_to_cnn_dataframe('calc', calc_pt_path)
+    calc_df = auger_gnn_to_cnn_dataframe('calc', calc_pt_path, 
+                                         exclude_file=args.cnn_exclude_file)
     eval_df = auger_gnn_to_cnn_dataframe('eval', eval_pt_path)
     
     calc_out_path = _debug_suffix("cnn_auger_calc.pkl", args.debug)
@@ -385,6 +402,7 @@ def main():
                         help='Print detailed per-molecule environment tables')
     parser.add_argument('--max_spec_len', default=300, type=int,
                         help='Max number of final states in auger spec')
+    parser.add_argument('--cnn-exclude-file', default='excluded_molecules.txt') 
     args = parser.parse_args()
 
     print("=" * 80)

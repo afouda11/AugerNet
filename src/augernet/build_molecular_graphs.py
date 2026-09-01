@@ -559,19 +559,7 @@ def build_graphs(data_type,
     if DEBUG:
         mol_list = mol_list[:10]
 
-    # QM9 molecules with dissociated N2 groups identified 
-    # https://figshare.com/ndownloader/files/3195404 is the orginal file of mols from KCGNN
-    # The molecules exculded from AugerNet calculated database are in data/raw/excluded_molecules.txt
-    EXCLUDED_MOLECULES_FILE = os.path.join(DATA_RAW_DIR, "excluded_molecules.txt")
-    with open(EXCLUDED_MOLECULES_FILE, 'r') as f:
-        excluded_mol_list = {line.strip() for line in f} # a set {} gets a harsh lookup with 'in' 
-
     for mol_name in mol_list:
-
-        # comment out for first submission of Auger GNN paper results
-        if mol_name in excluded_mol_list:
-            print(f"{mol_name} in exclusion list due to dissociated N2 group, skipping")
-            continue
 
         mol_xyz_path = os.path.join(mol_dir, f"{mol_name}.xyz")
         mol, xyz_symbols, pos, smiles = _mol_from_xyz_order(mol_xyz_path, labeled_atoms=False)

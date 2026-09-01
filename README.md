@@ -7,16 +7,13 @@ Includes:
   - a: core-electron binding energies (CEBE) 
   - b: Auger-Electron spectra (AES) 
 
-2) CNN classifications of local bond environments (functional groups) from AES spectra augmented with CEBEs
+2) CNN classifications of local bond environments (functional groups) from AES spectra with CEBEs included with:
+  - a: Simple augmentation to input spectra
+  - b: Conditioned with feature-wise linear modulation (FiLM) layers
 
-The present code and data release only supports the GNN CEBE predictions of the following manuscript:
+The present code and data release only supports all of the above modes
 
 <img src="docs/graphical_abstract.png" alt="AugerNet graphical abstract" height="350" width="700"/>
-
-The next release will accompany a future manuscript on GNN Auger predictions and\
-CNN bond env classification and will include the data for these functionalities.\
-The present release only contains the code templates for GNN Auger prediction and\
-CNN bond environment classification.
 
 AugerNet currently provides **three model types**:
 
@@ -73,8 +70,23 @@ Example configs are provided in `examples/`.
 ```bash
 # Download processed graph data from https://zenodo.org/records/19688196
 python scripts/prepare_data.py --from-zenodo
-# CEBE GNN — train, will recreate same model in artifact and main paper result.
+# CEBE GNN — train: Will recreate same model in artifact and the main result in:
+# arXiv:2604.27070
 python -m augernet --config examples/gnn_cebe_configs/train.yml
+
+# Auger GNN: 
+# Single-task train:
+python -m augernet --config examples/gnn_auger_configs/train_auger_single_task.yml
+# Multi-task train:
+python -m augernet --config examples/gnn_auger_configs/train_auger_cebe_multi_task.yml
+
+# Auger+CEBE CNN:
+# No E_b or merging scheme train:
+python -m augernet --config examples/cnn_auger_configs/train_no_be_no_merge.yml
+# E_b augmented and 'chemical' merging scheme used in submitted manuscript:
+python -m augernet --config examples/cnn_auger_configs/train_aug_be_merged.yml
+# E_b FiLM and 'chemical' merging scheme used in submitted manuscript:
+python -m augernet --config examples/cnn_auger_configs/train_film_be_merged.yml
 
 ```
 
