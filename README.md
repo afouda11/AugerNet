@@ -11,8 +11,6 @@ Includes:
   - a: Simple augmentation to input spectra
   - b: Conditioned with feature-wise linear modulation (FiLM) layers
 
-The present code and data release only supports all of the above modes
-
 <img src="docs/graphical_abstract.png" alt="AugerNet graphical abstract" height="350" width="700"/>
 
 AugerNet currently provides **three model types**:
@@ -81,145 +79,88 @@ python -m augernet --config examples/gnn_auger_configs/train_auger_single_task.y
 python -m augernet --config examples/gnn_auger_configs/train_auger_cebe_multi_task.yml
 
 # Auger+CEBE CNN:
-# No E_b or merging scheme train:
-python -m augernet --config examples/cnn_auger_configs/train_no_be_no_merge.yml
-# E_b augmented and 'chemical' merging scheme used in submitted manuscript:
-python -m augernet --config examples/cnn_auger_configs/train_aug_be_merged.yml
-# E_b FiLM and 'chemical' merging scheme used in submitted manuscript:
-python -m augernet --config examples/cnn_auger_configs/train_film_be_merged.yml
+# CV run for E_b FiLM and 'chemical' merging scheme used in submitted manuscript (slow calc):
+# Slow clac but the cv_* files give cnn_auger_configs main paper results in Table 2
+python -m augernet --config examples/cnn_auger_configs/cv_film_chemical.yml
+# TRAIN run for No E_b or merging scheme, quick example check:
+python -m augernet --config examples/cnn_auger_configs/train.yml
+# PARAM search run one the FWHM broadening used for Figure 6 in the paper: 
+# No merging and E_b inlcuded with augmentation to input
+python -m augernet --config examples/cnn_auger_configs/fwhm_aug.yml
 
 ```
-
-## Run Modes
-
-AugerNet supports five run modes, set via `mode:` in the YAML config.
-All three model types share the same mode system.
-
-### train — Train a single model
-
-Train one model on a single k-fold split with optional evaluation.
-
-```yaml
-mode: train
-model: cebe-gnn        # or auger-gnn or auger-cnn
-train_fold: 3
-n_folds: 5
-run_evaluation: true
-exp_split: 'both' # 'val' | 'eval' | 'both' (separate val and eval sets) | 'all' (combined val + eval set)
-```
-
-Output is written to `{model_type}_{mode}_results/` (e.g.
-`cebe_gnn_train_results/`, `auger_cnn_train_results/`) with
-subdirectories `models/`, `outputs/`, and `pngs/`.
-
-For `run_evaluation: true`
-113 mols in expirmental cebe data split into: 
-  - Validation set (`val`) (to assist fold and param search)
-  - Final evaluation set (`eval`)
-
-Path to processed evaluation data set interally in AugerNet \
-`exp_split: 'both'` will have `eval` and `val` prefixes assigned to different outputs
-
-### cv — K-fold cross-validation
-
-Train one model per fold, evaluate each, and write a JSON summary.
-
-```yaml
-mode: cv
-model: cebe-gnn
-n_folds: 5
-split_method: random   # random | butina (GNN only)
-run_evaluation: true
-exp_split: 'val' 
-```
-
-### param — Hyperparameter search
-
-Train one fold per configuration from a Cartesian-product grid.
-
-```yaml
-mode: param
-model: cebe-gnn
-run_evaluation: true
-exp_split: 'val' 
-param_grid:
-  feature_keys: ['035', '03', '0356']
-  learning_rate: [0.0001, 0.0003, 0.001]
-  hidden_channels: [48, 64]
-  n_layers: [3, 4, 5]
-```
-
-A unique `search_id` is derived from the searched dimensions so that\
-different grid searches never overwrite each other.
-
-### evaluate — Evaluate a saved model
-
-Load a previously trained `.pth` model and evaluate it on experimental data.\
-Architecture fields must match the values used during training.
-
-```yaml
-mode: evaluate
-model: cebe-gnn
-exp_split: 'both' # 'val' | 'eval' | 'both' (separate val and eval sets) | 'all' (combined val + eval set)
-model_path: cebe_gnn_train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
-feature_keys: '035'
-layer_type: EQ
-hidden_channels: 64
-n_layers: 3
-```
-
-### predict — Predict on new molecules
-
-Run inference on a directory of `.xyz` files using a saved GNN model.\
-No pre-processing is needed — molecular graphs are built on the fly.
-
-```yaml
-mode: predict
-model: cebe-gnn
-model_path: cebe_gnn_train_results/models/cebe_gnn_035_random_EQ3_h64_fold3.pth
-predict_dir: my_molecules/
-feature_keys: '035'
-layer_type: EQ
-hidden_channels: 64
-n_layers: 3
-```
-
-> **Note:** The GNN models are trained on carbon 1s properties. Predictions
-> for non-carbon atoms are not meaningful and are marked with `*` in the
-> output labels file.
 
 ## Model Types
+
+See .yml files in `examples` for the details on how each model and mode is run.\
+Full doc site will be released soon. 
+
+Output is written to `{model_type}_{mode}_results/` (e.g.
+`cebe_gnn_train_results/`, `auger_cnn_train_results/`) \
+with subdirectories `models/`, `outputs/`, and `pngs/`.
 
 ### CEBE GNN (`cebe-gnn`)
 
 Predicts per-atom carbon 1s core-electron binding energies using an equivariant or invariant message-passing neural network.\
 Input is a set of `.xyz` molecular geometries converted to PyG graphs with configurable node features.
 
-```yaml
-model: cebe-gnn
-feature_keys: '035'
-layer_type: EQ
-hidden_channels: 64
-n_layers: 3
-```
-
-**model_id format:** `cebe_gnn_{feature_keys}_{split_method}{n_folds}_{layer}{n_layers}_h{hidden}`\
-Example: `cebe_gnn_035_random5_EQ3_h64`
-
 ### Auger GNN (`auger-gnn`)
 
-Predicts Auger-electron spectra from molecular graphs.\
-The details for running this model will be released in a future release.
+Uses same GNN architecture as cebe-gnn to predicts Auger-electron spectra from molecular graphs.\
+Can be run in single task (just AES) or multi-task (AES + CEBE) prediction modes.
 
 ### Auger CNN (`auger-cnn`)
 
 Classifies carbon environments from broadened Auger spectra using a 1D CNN.\
-The details for running this model will be released in a future release.
+The CEBE can be inlcuded with either augmentation to the AES lineshape or, with feature-wise linear modulation layers.
+
+## Run Modes
+
+AugerNet supports five run modes, set via `mode:` in the yml config.\
+All three model types share the same mode system.
+
+### train — Train a single model
+
+Train one model on a single k-fold split with optional evaluation.
+
+For `run_evaluation: true`
+113 mols in expirmental cebe data split into: 
+  - Validation set (`val`) (to assist fold and param search)
+  - Final evaluation set (`eval`)
+
+### cv — K-fold cross-validation
+
+Train one model per fold, evaluate each, and write a JSON summary.
+
+### param — Hyperparameter search
+
+Train one fold per configuration from a Cartesian-product grid.
+
+A unique `search_id` is derived from the searched dimensions so that\
+different grid searches don't overwrite each other.
+
+Path to processed evaluation data set interally in AugerNet \
+`exp_split: 'both'` will have `eval` and `val` prefixes assigned to different outputs
+
+### evaluate — Evaluate a saved model
+
+Load a previously trained `.pth` model and evaluate it on experimental data.\
+Architecture fields must match the values used during training.
+
+### predict — Predict on new molecules
+
+Run inference on a directory of `.xyz` files using a saved GNN model.\
+No pre-processing is needed — molecular graphs are built on the fly.
+
+> **Note:** The GNN models are trained on carbon 1s properties. Predictions
+> for non-carbon atoms are not meaningful and are marked with `*` in the
+> output labels file.
+
 
 ## Configuration Reference
 
 See [docs/configuration.md](docs/configuration.md) for the full reference,
-or see the summary tables below.
+or the light summary below, however a more detailed documentation will be made soon.
 
 ### Identity
 

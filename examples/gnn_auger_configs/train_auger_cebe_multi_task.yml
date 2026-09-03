@@ -1,0 +1,56 @@
+# =============================================================================
+#  AugerNet — Auger GNN Config  (scan: frac=0.75, subsample_seed=2, nophys)
+# =============================================================================
+model: auger-gnn
+mode: train
+
+train_data_file:       'gnn_calc_auger_data.pt'
+cebe_eval_data_file:   'gnn_exp_cebe_data.pt'
+auger_eval_data_file:  'gnn_eval_auger_data.pt'
+
+run_evaluation: true
+cebe_exp_split: 'all' 
+run_unit_tests: true
+
+n_folds: 10
+train_fold: 8
+split_method: butina
+
+# reduce training data size
+train_frac: 1.0 
+train_subsample_seed: 0
+
+feature_keys: '035'
+
+layer_type: EQ
+hidden_channels: 64
+n_layers: 3
+num_epochs: 300
+patience: 30
+batch_size: 24
+learning_rate: 0.003
+random_seed: 0
+dropout: 0.1
+cebe_loss: mse
+auger_loss: mae
+
+optimizer_type: adamw
+weight_decay: 1.0e-4
+gradient_clip_norm: 1.0
+warmup_epochs: 10
+min_lr: 1.0e-7
+
+scheduler_type: onecycle
+pct_start: 0.3
+
+max_spec_len: 300
+max_ke: 275
+min_ke: 200.0
+n_points: 751
+fwhm: 1.6
+ke_shift_calc: -2.0
+
+task_type: multi
+mt_warmup_epochs: 0
+mt_finetune_auger: false
+mt_finetune_epochs: 0

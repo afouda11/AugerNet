@@ -16,6 +16,14 @@ from augernet.train_driver import (
     _param_search_id,
     _infer_fold_from_path,
 )
+import glob
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SHIPPED_CONFIGS = (
+    sorted(glob.glob(os.path.join(_REPO_ROOT, "examples", "**", "*.yml"), recursive=True))
+    + sorted(glob.glob(os.path.join(_REPO_ROOT, "artifacts", "**", "config", "*.yml"), recursive=True))
+)
+assert _SHIPPED_CONFIGS, "no shipped configs found — check the glob roots"
 
 
 # -- Defaults (no torch required) --------------------------------------------
@@ -141,6 +149,10 @@ class TestCebeGnnLoadConfig:
         p = tmp_path / "cfg.yml"
         p.write_text(textwrap.dedent(content))
         return str(p)
+
+    @pytest.mark.parametrize("path", _SHIPPED_CONFIGS)
+    def test_shipped_config_loads(self, path):
+        load_config(path)
 
     def test_unknown_key_raises(self, tmp_path):
         path = self._write_yaml(tmp_path, """

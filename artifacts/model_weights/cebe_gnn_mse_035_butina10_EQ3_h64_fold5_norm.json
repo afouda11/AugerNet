@@ -1,0 +1,13 @@
+{
+  "model": "cebe-gnn",
+  "feature_keys": "035",
+  "node_feature_norm": "graph",
+  "n_train_molecules": 1904,
+  "cebe": {
+    "mean": 15.34575366973877,
+    "std": 1.648093581199646,
+    "n_carbons": 7805
+  },
+  "feature_stats": null,
+  "fold": 5
+}

@@ -5,19 +5,20 @@
 #  Run with:
 #    python -m augernet --config /path/to/this/file/
 #
-#  Results and models for each param config written to cwd/param_results/
 # =============================================================================
 
-# Model type and run mode 
-model: cebe-gnn          # cebe-gnn | auger-gnn | cnn
-mode: param              # cv | train | param | evaluate | predict
+  # Model type and run mode 
+model: cebe-gnn           # 'cebe-gnn' only atm
+mode: param               # cv | train | param | evaluate | predict
+
+# ── Data files (in AugerNet/data/processed) ──────────────────────────────────
+train_data_file:     'gnn_calc_cebe_data.pt'
+cebe_eval_data_file: 'gnn_exp_cebe_data.pt'
 
 # Evaluate on exp data immediately after each training cycle
 run_evaluation: true
-# 113 mols in exp cebe data split into: 
-#   validation (to assist fold and param search) 
-#   final evaluation sets
-exp_split: 'val' # 'val' | 'eval' | 'both'
+cebe_exp_split: 'all'
+cp_alpha: 0.1            # split-conformal miscoverage level (90% interval)
 
 # Sanity check permutation invariance & rotational invariance/equivariance
 run_unit_tests: true 
@@ -37,7 +38,7 @@ feature_keys: '035'                # skipatom_200 + atomic_be + e_score
 layer_type: EQ                     # EQ (equivariant) | IN (invariant)
 hidden_channels: 64
 n_layers: 3
-num_epochs: 3
+num_epochs: 300
 patience: 30
 batch_size: 24
 learning_rate: 0.001
@@ -56,12 +57,6 @@ scheduler_type: 'cosine'   # cosine | onecycle
 pct_start: 0.3           # OneCycleLR only
 
 # Hyperparameter search grid
-# output file names get very long with many param types
 param_grid:
-  feature_keys: ['035', '03']
-  learning_rate: [0.0003, 0.001]
-  weight_decay:  [5.0e-4, 1.0e-3]
-  n_layers:      [2, 3]
-  hidden_channels: [48, 64]
-  batch_size:    [24, 32]
-
+  n_layers:      [1, 2, 3, 4, 5, 6, 7, 8]
+  feature_keys:  ['0', '035']

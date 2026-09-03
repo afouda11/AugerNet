@@ -1,40 +1,52 @@
 # =============================================================================
-#  AugerNet — CEBE GNN Default Config.
+#  AugerNet — CEBE EGNN main result (updated to the current config schema)
 # =============================================================================
+#
+#  Reproduces the paper's main equivariant GNN (EGNN) carbon-1s CEBE model.
+#  Updated from the legacy config to the current schema used by the Auger study:
+#    - exp_split            -> cebe_exp_split
+#    - added train_data_file / cebe_eval_data_file
+#    - added train_frac / train_subsample_seed (data-efficiency knobs; full data here)
+#    - cebe_loss: mse  (the paper trains with an MSE loss)
+#  All model hyper-parameters are unchanged from the published run.
 #
 #  Run with:
-#    python -m augernet --config /path/to/this/file/
-#
-#  Results and models for each fold written to cwd/cv_results/
+#    python -m augernet --config configs/train_EQ.yml
 # =============================================================================
 
-# Model type and run mode 
-model: cebe-gnn       # cebe-gnn | auger-gnn | cnn
+# ── Identity ─────────────────────────────────────────────────────────────────
+model: cebe-gnn          # cebe-gnn | auger-gnn | cnn
 mode: cv              # cv | train | param | evaluate | predict
 
-# Evaluate on exp data immediately after each training cycle
+# ── Data files (in AugerNet/data/processed) ──────────────────────────────────
+train_data_file:     'gnn_calc_cebe_data.pt'
+cebe_eval_data_file: 'gnn_exp_cebe_data.pt'
+
+# ── Run flags ────────────────────────────────────────────────────────────────
 run_evaluation: true
-# 113 mols in exp cebe data split into: 
-#   validation (to assist fold and param search) 
-#   final evaluation sets
-exp_split: 'val' # 'val' | 'eval' | 'both'
+# 113 exp cebe mols split into: val (assists fold/param search) + eval (hold-out)
+cebe_exp_split: 'both'   # all | val | eval | both
+run_unit_tests: true     # permutation + rotational invariance/equivariance checks
+cp_alpha: 0.1            # split-conformal miscoverage level (90% interval)
 
-# Sanity check permutation invariance & rotational invariance/equivariance
-run_unit_tests: true 
-
-#  K-fold
+# ── K-fold split ─────────────────────────────────────────────────────────────
 n_folds: 10
 train_fold: 5
-split_method: butina # butina | random only available atm
+split_method: butina
+butina_cutoff: 0.65
 
-# Node Feature Specification
-#   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot, 
-#   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE), 
+# ── Training-set size (full data for the headline result) ────────────────────
+train_frac: 1.0
+train_subsample_seed: 0
+
+# ── Node feature specification ───────────────────────────────────────────────
+#   Atom types: 0=skipatom_200, 1=skipatom_30, 2=onehot,
+#   Other:      3=atomic_be,    4=mol_be (DO NOT USE for CEBE),
 #               5=e_score,      6=env_onehot
-feature_keys: '035'                # skipatom_200 + atomic_be + e_score
+feature_keys: '035'      # skipatom_200 + atomic_be + e_score
 
-# Model hyper-parameters
-layer_type: EQ                     # EQ (equivariant) | IN (invariant)
+# ── Model hyper-parameters ───────────────────────────────────────────────────
+layer_type: EQ           # EQ (equivariant) | IN (invariant)
 hidden_channels: 64
 n_layers: 3
 num_epochs: 300
@@ -43,15 +55,15 @@ batch_size: 24
 learning_rate: 0.001
 random_seed: 42
 dropout: 0.1
+cebe_loss: 'mse'         # paper trains with MSE
 
-# Optimizer
+# ── Optimizer ────────────────────────────────────────────────────────────────
 optimizer_type: adamw
 weight_decay: 5.0e-4
 gradient_clip_norm: 0.5
 warmup_epochs: 10
 min_lr: 1.0e-7
 
-# scheduler
-scheduler_type: 'cosine'   # cosine | onecycle
+# ── Scheduler ────────────────────────────────────────────────────────────────
+scheduler_type: 'cosine' # cosine | onecycle
 pct_start: 0.3           # OneCycleLR only
-
