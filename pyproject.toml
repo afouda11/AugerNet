@@ -1,7 +1,7 @@
 [project]
 name = "augernet"
 version = "1.0.0"
-description = "GNN predictions of carbon 1s core-electron binding energies (CEBEs) from molecular geometry."
+description = "GNN predictions and CNN classifications of carbon 1s binding energies and auger spectra"
 readme = "README.md"
 license = "BSD-3-Clause"
 authors = [

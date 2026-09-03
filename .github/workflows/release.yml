@@ -10,9 +10,6 @@ name: Release
 #      GitHub release with model weights and training plots attached, and a
 #      post-release evaluation whose output plots are appended to the same release.
 #
-# Note: the evaluate job downloads processed data from Zenodo using the URLs
-# in artifacts/data_manifest.yml. Update those URLs once the Zenodo record is
-# published before expecting the evaluate job to succeed.
 
 on:
   workflow_dispatch:
@@ -77,6 +74,8 @@ jobs:
           tag:  "v${{ steps.version.outputs.app_version }}"
           artifacts: >
             artifacts/model_weights/*.pth,
-            artifacts/plots/*.png,
+            artifacts/model_weights/*.json,
+            artifacts/gnn_plots/*.png,
+            artifacts/cnn_csv/*.csv,
             artifacts/config/*.yml,
             artifacts/data_manifest.yml

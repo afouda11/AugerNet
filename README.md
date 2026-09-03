@@ -66,7 +66,7 @@ All runs are controlled by a single YAML config file.
 Example configs are provided in `examples/`.
 
 ```bash
-# Download processed graph data from https://zenodo.org/records/19688196
+# Download processed graph data from https://zenodo.org/records/22283453
 python scripts/prepare_data.py --from-zenodo
 # CEBE GNN — train: Will recreate same model in artifact and the main result in:
 # arXiv:2604.27070
@@ -227,7 +227,7 @@ modes also create a `models/` subdirectory.
 Details for this model will be released in a future release.
 
 ## Data Preparation
-Processed and raw data files are stored at https://zenodo.org/records/19688196\ 
+Processed and raw data files are stored at https://zenodo.org/records/22283453\ 
 
 To download pre-processed data to `data/processed/` run: 
 ```bash
@@ -311,7 +311,7 @@ uv run python scripts/export_best_model.py --overwrite
 for all data files. To verify integrity:
 
 ```bash
-shasum -a 256 data/processed/*.pt data/raw/*.tar.gz
+ md5sum -a 256 data/processed/*.pt data/raw/*.tar.gz
 ```
 
 ## Project Structure

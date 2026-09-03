@@ -1,53 +1,102 @@
 # AugerNet Data Manifest
 # ======================
 #
-# This file records the Zenodo dataset associated with this release,
-# including the DOI, per-file download URLs, file sizes, and SHA-256
-# checksums for each data file.
+# Records the Zenodo dataset for this release: DOI, per-file download URLs,
+# sizes in bytes, and md5 checksums.
 #
-# To download all data files automatically, use the `url` field for each file.
+# `scripts/prepare_data.py --from-zenodo [--with-raw]` downloads these files.
 #
-# To verify data integrity after downloading, run from the repo root:
+# To verify integrity after downloading, run from the repo root:
 #
-#    md5 data/processed/*.pt data/raw/*.tar.gz
+#    md5sum data/processed/*.pt data/processed/*.pkl data/raw/*.tar.gz   # Linux
+#    md5    data/processed/*.pt data/processed/*.pkl data/raw/*.tar.gz   # macOS
 #
-# and compare the output against the md5 checksums listed below.
+# and compare against the md5 values below.
 
 zenodo:
-  doi: "10.5281/zenodo.19688196"      
-  record_id: "19688196"                 
-  url: "https://doi.org/10.5281/zenodo.19688196"
-  version: "1.0.0"
-  title: "AugerNet: CEBE Data"
+  doi: "10.5281/zenodo.22283453"
+  concept_doi: "10.5281/zenodo.19688195"
+  concept_url: "https://doi.org/10.5281/zenodo.19688195"
+  record_id: "22283453"
+  url: "https://doi.org/10.5281/zenodo.22283453"
+  version: "v2"
+  title: "AugerNet: CEBE and Auger Spectra Data"
   license: "CC-BY-4.0"
   description: >
-    Calculated and experimental carbon 1s core-electron binding energy (CEBE)
-    datasets used to train and evaluate the AugerNet GNN models.  
-    Both the raw .tar.gz and processed graph .pt dataset are included.
+    Calculated carbon 1s core-electron binding energy (CEBE) and Auger-electron
+    spectra datasets used to train and evaluate the AugerNet GNN and CNN models.
+    Raw .tar.gz archives, processed PyG graph .pt datasets, and the per-carbon
+    CNN .pkl dataframes are all included.  The GNN datasets use all 1689
+    Auger molecules; the CNN dataframes exclude the 36 molecules listed in
+    excluded_molecules.txt.
 
 files:
-  # Pre-processed PyG datasets (data/processed/)
+  # ── Processed PyG graph datasets (data/processed/) ──────────────────────
   - path: data/processed/gnn_calc_cebe_data.pt
-    description: "Calculated CEBE molecular graphs (primary training set)"
-    size_bytes: 30019098
-    md5: a7b3a3a999003d891bf2191c352a73af
-    url: "https://zenodo.org/records/19688196/files/gnn_calc_cebe_data.pt?download=1"
+    description: "Calculated CEBE molecular graphs, 2116 molecules (CEBE GNN training set)"
+    size_bytes: 29883426
+    md5: 373346b41a1dbefa9981f194f9f371bb
+    url: "https://zenodo.org/records/22283453/files/gnn_calc_cebe_data.pt?download=1"
 
   - path: data/processed/gnn_exp_cebe_data.pt
-    description: "Experimental CEBE molecular graphs (evaluation set)"
-    size_bytes: 1856499
-    md5: 5b967b97268aa315e41b0ebc28c0eada
-    url: "https://zenodo.org/records/19688196/files/gnn_exp_cebe_data.pt?download=1"
+    description: "Experimental CEBE molecular graphs, 113 molecules (CEBE GNN evaluation set)"
+    size_bytes: 1848634
+    md5: 88b67a5ecfe6b8c4e7f1c5be841caa90
+    url: "https://zenodo.org/records/22283453/files/gnn_exp_cebe_data.pt?download=1"
 
-  # Raw archives (data/raw/)
+  - path: data/processed/gnn_calc_auger_data.pt
+    description: "Calculated Auger molecular graphs, 1689 molecules / 6501 carbons (Auger GNN training set)"
+    size_bytes: 155682660
+    md5: 497727366eb5e079b112fa51fc63a743
+    url: "https://zenodo.org/records/22283453/files/gnn_calc_auger_data.pt?download=1"
+
+  - path: data/processed/gnn_eval_auger_data.pt
+    description: "Evaluation Auger molecular graphs, 16 molecules / 42 carbons"
+    size_bytes: 1119204
+    md5: 4d34e2dccc0ceb62fd407209d3483bc6
+    url: "https://zenodo.org/records/22283453/files/gnn_eval_auger_data.pt?download=1"
+
+  # ── Per-carbon CNN dataframes (data/processed/) ─────────────────────────
+  - path: data/processed/cnn_auger_calc.pkl
+    description: "Per-carbon CNN training dataframe, 1653 molecules / 6394 carbons / 30 classes (36 molecules excluded)"
+    size_bytes: 32057308
+    md5: 7172e637b32f9230a18a35c5550c4328
+    url: "https://zenodo.org/records/22283453/files/cnn_auger_calc.pkl?download=1"
+
+  - path: data/processed/cnn_auger_eval.pkl
+    description: "Per-carbon CNN evaluation dataframe, 16 molecules / 42 carbons, with experimental spectra"
+    size_bytes: 260384
+    md5: 35d902f75181dbd8d3cb902da855d9f1
+    url: "https://zenodo.org/records/22283453/files/cnn_auger_eval.pkl?download=1"
+
+  # ── Raw archives (data/raw/) ───────────────────────────────────────────
   - path: data/raw/calc_cebe.tar.gz
-    description: "Raw calculated CEBE XYZ files and outputs"
-    size_bytes: 1573664
-    md5: 2e8a5c5f1ab43ccd6b828513ec46a65c
-    url: "https://zenodo.org/records/19688196/files/calc_cebe.tar.gz?download=1"
+    description: "Raw calculated CEBE XYZ geometries and output files"
+    size_bytes: 1573667
+    md5: 09510b1dc6222d8c35642571123ac50c
+    url: "https://zenodo.org/records/22283453/files/calc_cebe.tar.gz?download=1"
 
   - path: data/raw/exp_cebe.tar.gz
-    description: "Raw experimental CEBE XYZ files and outputs"
+    description: "Raw experimental CEBE XYZ geometries and output files"
     size_bytes: 961134
-    md5: e67d539ecbf258e48cc4a745d53e19e9
-    url: "https://zenodo.org/records/19688196/files/exp_cebe.tar.gz?download=1"
+    md5: 747fa86420cc80a570ee963f3ee3fe74
+    url: "https://zenodo.org/records/22283453/files/exp_cebe.tar.gz?download=1"
+
+  - path: data/raw/calc_auger.tar.gz
+    description: "Raw calculated Auger spectra (OCA/MC-PDFT) and XYZ geometries"
+    size_bytes: 48620110
+    md5: bf72d6313759b380ed23382250e0b174
+    url: "https://zenodo.org/records/22283453/files/calc_auger.tar.gz?download=1"
+
+  - path: data/raw/eval_auger.tar.gz
+    description: "Raw evaluation-set Auger spectra, including digitised experimental spectra"
+    size_bytes: 150720
+    md5: df08e52600dae246f1141104d1ecdb5f
+    url: "https://zenodo.org/records/22283453/files/eval_auger.tar.gz?download=1"
+
+  # ── Standalone reference file (tracked in git; on Zenodo for citation) ──
+  - path: data/raw/excluded_molecules.txt
+    description: "The 36 QM9 molecules with dissociated N2 groups excluded from the CNN dataset"
+    size_bytes: 629
+    md5: 8411ff2d94a669e669bf7345ad99584f
+    url: "https://zenodo.org/records/22283453/files/excluded_molecules.txt?download=1"

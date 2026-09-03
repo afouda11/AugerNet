@@ -48,23 +48,28 @@ from collections import Counter
 # ZENODO DOWNLOAD
 # =============================================================================
 
+ZENODO_RECORD = '22283453'
+_ZB = f'https://zenodo.org/records/{ZENODO_RECORD}/files'
+
 ZENODO_PROCESSED = {
-    'gnn_calc_cebe_data.pt': 'https://zenodo.org/records/19688196/files/gnn_calc_cebe_data.pt?download=1',
-    'gnn_exp_cebe_data.pt':  'https://zenodo.org/records/19688196/files/gnn_exp_cebe_data.pt?download=1',
+    'gnn_calc_cebe_data.pt':  f'{_ZB}/gnn_calc_cebe_data.pt?download=1',
+    'gnn_exp_cebe_data.pt':   f'{_ZB}/gnn_exp_cebe_data.pt?download=1',
+    'gnn_calc_auger_data.pt': f'{_ZB}/gnn_calc_auger_data.pt?download=1',
+    'gnn_eval_auger_data.pt': f'{_ZB}/gnn_eval_auger_data.pt?download=1',
+    'cnn_auger_calc.pkl':     f'{_ZB}/cnn_auger_calc.pkl?download=1',
+    'cnn_auger_eval.pkl':     f'{_ZB}/cnn_auger_eval.pkl?download=1',
 }
 
 ZENODO_RAW = {
-    'calc_cebe.tar.gz': 'https://zenodo.org/records/19688196/files/calc_cebe.tar.gz?download=1',
-    'exp_cebe.tar.gz':  'https://zenodo.org/records/19688196/files/exp_cebe.tar.gz?download=1',
+    'calc_cebe.tar.gz':  f'{_ZB}/calc_cebe.tar.gz?download=1',
+    'exp_cebe.tar.gz':   f'{_ZB}/exp_cebe.tar.gz?download=1',
+    'calc_auger.tar.gz': f'{_ZB}/calc_auger.tar.gz?download=1',
+    'eval_auger.tar.gz': f'{_ZB}/eval_auger.tar.gz?download=1',
 }
-
 
 def _download(url, dest_path):
     """Download a file from url to dest_path with a progress message."""
     filename = os.path.basename(dest_path)
-    if os.path.exists(dest_path):
-        print(f"    Already exists, skipping: {filename}")
-        return
     print(f"    Downloading {filename} ...")
     urllib.request.urlretrieve(url, dest_path)
     print(f"    Saved: {dest_path}")
@@ -391,10 +396,10 @@ def main():
         epilog=__doc__
     )
     parser.add_argument('--from-zenodo', action='store_true',
-                        help='Download pre-built processed data files from Zenodo '
+                        help='Download all pre-built processed datasets from Zenodo record 22283453'
                              '(skips local graph building)')
     parser.add_argument('--with-raw', action='store_true',
-                        help='Also download and unpack raw data archives from Zenodo '
+                        help='Also download and unpack the four raw data archives from the same record '
                              '(use with --from-zenodo to also regenerate graphs locally)')
     parser.add_argument('--debug', action='store_true',
                         help='Only generate first 5 in mol_list.txt for testing')

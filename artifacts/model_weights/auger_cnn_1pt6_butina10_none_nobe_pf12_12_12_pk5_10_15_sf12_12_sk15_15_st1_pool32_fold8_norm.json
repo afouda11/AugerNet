@@ -1,0 +1,44 @@
+{
+  "model": "auger-cnn",
+  "fold": 8,
+  "n_train_molecules": 1443,
+  "delta_be": {
+    "be_mu": 15.149759150497058,
+    "be_std": 1.6366076694293723
+  },
+  "merge_scheme": "none",
+  "num_classes": 30,
+  "film_inputs": "none",
+  "dataset": {
+    "include_augmentation": false,
+    "normalize_intensity": true,
+    "broadening_fwhm": 1.6,
+    "energy_min": 200.0,
+    "energy_max": 275.0,
+    "n_points": 751
+  },
+  "architecture": {
+    "parallel_filters": [
+      12,
+      12,
+      12
+    ],
+    "parallel_kernel_sizes": [
+      5,
+      10,
+      15
+    ],
+    "sequential_filters": [
+      12,
+      12
+    ],
+    "sequential_kernel_size": [
+      15,
+      15
+    ],
+    "conv_dropout": 0.2,
+    "pool_output": 32,
+    "stride": 1,
+    "film_hidden": 64
+  }
+}
