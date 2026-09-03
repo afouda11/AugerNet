@@ -2,7 +2,7 @@
 
 *Machine learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)*
 
-Includes:
+v2.0.0.0 of AugerNet now includes fully operational:
 1) Equivariant GNN predictions of: 
   - a: core-electron binding energies (CEBE) 
   - b: Auger-Electron spectra (AES) 
@@ -313,52 +313,3 @@ for all data files. To verify integrity:
 ```bash
  md5sum -a 256 data/processed/*.pt data/raw/*.tar.gz
 ```
-
-## Project Structure
-
-```
-AugerNet/
-  src/
-    augernet/                           # Python package (src layout)
-      __init__.py                       # Sets data paths
-      __main__.py                       # CLI entry point
-      config.py                         # YAML to AugerNetConfig dataclass
-      train_driver.py                   # Mode dispatch, CV, param search
-      backend_gnn.py                    # Unified GNN backend (cebe-gnn + auger-gnn)
-      backend_cnn.py                    # CNN backend (auger-cnn)
-      feature_assembly.py               # Runtime feature selection and scaling
-      gnn_train_utils.py                # MPNN model, train loop, unit tests
-      cnn_train_utils.py                # AugerCNN1D model, CNN trainer
-      carbon_dataframe.py               # CarbonDataset for CNN spectra
-      carbon_environment.py             # Carbon environment patterns and labels
-      class_merging.py                  # Carbon-class merging schemes
-      spec_utils.py                     # Spectrum broadening and processing
-      build_molecular_graphs.py         # XYZ to PyG graphs
-      eneg_diff.py                      # Electronegativity scoring
-      evaluation_scripts/
-        evaluate_cebe_model.py          # CEBE evaluation plots and metrics
-  scripts/
-    prepare_data.py                     # Regenerate processed datasets from raw
-    export_best_model.py                # Export best CV fold to artifacts/
-  examples/
-    gnn_cebe_configs/                   # Example YAML configs for CEBE GNN
-  tests/
-    conftest.py                         # Shared fixtures and markers
-    test_mol/                           # Real molecule XYZ data for tests
-    test_cebe_gnn_config.py             # Config defaults, resolution, YAML loading
-    test_cebe_gnn_features.py           # Feature tags, parsing, scaling, assembly
-    test_cebe_gnn_graph.py              # XYZ parsing, graph building, node/edge features
-    test_cebe_gnn_model.py              # MPNN construction, forward pass, symmetry tests
-  data/
-    raw/                                # Raw XYZ + CEBE + atomic BE + skipatom files 
-    processed/                          # Pre-built PyG datasets + CNN pickles + norm stat files
-  artifacts/                            # Release artifacts (tracked in git)
-    data_manifest.yml
-    config/
-    model_weights/
-    plots/
-  environment.yml
-  pyproject.toml
-  README.md
-```
-
