@@ -350,7 +350,7 @@ class AugerNetConfig:
                     f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{nn_tag}{de_tag}"
                 )
             if self.model == 'auger-cnn':
-                self.validate_cnn(self)
+                self.validate_cnn()
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
                 film = str(getattr(self, 'film_inputs', 'none') or 'none')
                 #film_tag = '' if film in ('none', '') else '_film' + film.replace(',', '')
