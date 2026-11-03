@@ -46,8 +46,8 @@ def norm_sidecar_path(model_path: str) -> str:
 def to_jsonable(value: Any) -> Any:
     """Recursively convert tuples to lists.
 
-    ``ARCHITECTURE_PRESETS`` uses tuples; ``json.dump`` writes them as arrays and
-    ``json.load`` returns lists, so ``(5, 10, 15) != [5, 10, 15]`` would read as
+    ``json.dump`` writes as arrays and ``json.load`` returns lists, 
+    so ``(5, 10, 15) != [5, 10, 15]`` would read as
     a config mismatch on every single load.  Normalising both sides through this
     makes the round-trip compare equal.
     """

@@ -84,9 +84,8 @@ def get_device(device_str: str = 'auto', verbose: bool = True) -> torch.device:
 def validate_architecture(architecture: dict, model_cls=None) -> None:
     """
     Fail loudly if `architecture` contains a key AugerCNN1D_FiLMd's
-    constructor doesn't recognize, instead of silently ignoring it (which is
-    what let the old conv_filters/conv_kernels/... yml fields do nothing).
-    """
+    constructor doesn't recognize, instead of silently ignoring it
+    """ 
     model_cls = model_cls or AugerCNN1D_FiLMd
     valid_keys = set(inspect.signature(model_cls.__init__).parameters) - {'self'}
     unknown = set(architecture) - valid_keys
@@ -147,15 +146,17 @@ class AugerCNN1D_FiLMd(nn.Module):
 
     def __init__(self,
         num_classes: int,
-        parallel_kernel_sizes=(5,10,15),
-        parallel_filters=(12,12,12),
-        sequential_kernel_size=(15,15),
-        sequential_filters=(12,12),
-        stride=1,
-        conv_dropout=0.2,
-        pool_output=32,
-        film_hidden=64,
-        film_inputs='none',   # 'none' | 'be'
+        *,
+        parallel_kernel_sizes,
+        parallel_filters,
+        sequential_kernel_size,
+        sequential_filters,
+        stride,
+        conv_dropout,
+        pool_output,
+        film_hidden,
+        film_inputs,   # 'none' | 'be'
+        cebe_augment,
     ):
         super().__init__()
 
@@ -166,6 +167,9 @@ class AugerCNN1D_FiLMd(nn.Module):
         self.film_inputs = film_inputs
         film_dim = {'none': 0, 'be': 1}[film_inputs]
 
+        if cebe_augment not in ('none', 'input', 'embedding'):
+            raise ValueError(f"cebe_augment must be 'none'|'input'|'embedding', got {cebe_augment!r}")
+    
         self.parallel_convs = nn.ModuleList([
             nn.Conv1d(in_channels=1, out_channels=f, kernel_size=k, 
                       stride=stride, padding='same') for f, k in zip(parallel_filters, parallel_kernel_sizes)
@@ -192,6 +196,9 @@ class AugerCNN1D_FiLMd(nn.Module):
         self.pool = nn.AdaptiveAvgPool1d(pool_output)
         # AdaptiveAvgPool1d always outputs exactly pool_kernel time-steps
         flat_size = sequential_filters[1] * pool_output
+        self.cebe_augment = cebe_augment
+        if self.cebe_augment == 'embedding':
+            flat_size += 1
         print(f"AugerCNN1D_FiLMd: film_inputs='{film_inputs}', film_dim={film_dim}, flat_size={flat_size}")
         self.fc = nn.Linear(flat_size, num_classes)
 
@@ -236,23 +243,11 @@ class AugerCNN1D_FiLMd(nn.Module):
         else:
             x = self.pool(x)
         x = torch.flatten(x, start_dim=1)
+        if self.cebe_augment == 'embedding':
+            x = torch.cat([x, film_cond[:,0:1]], dim=1)
         x = self.fc(x)
 
         return x
-
-ARCHITECTURE_PRESETS: Dict[str, Dict[str, Any]] = {
-    # Matches AugerCNN1D_FiLMd's built-in defaults / the paper architecture
-    'legacy_3block': dict(
-        parallel_kernel_sizes=(5, 10, 15),
-        parallel_filters=(12, 12, 12),
-        sequential_kernel_size=(15, 15),
-        sequential_filters=(12, 12),
-        stride=1,
-        conv_dropout=0.2,
-        pool_output=32,
-        film_hidden=64,
-    ),
-}
 
 # =============================================================================
 # TRAINER CLASS
@@ -262,13 +257,14 @@ class CNNTrainer:
     """Training and evaluation handler for Auger CNN models."""
 
     def __init__(self, model: nn.Module, device: torch.device,
-                 learning_rate: float = 5e-4, weight_decay: float = 1e-4,
-                 patience: int = 20, scheduler_type: str = 'cosine',
-                 cosine_T_max: int = None,
-                 class_weights: torch.Tensor = None,
-                 label_smoothing: float = 0.0,
-                 noise_std: float = 0.0,
-                 augment_offset: int = 0):
+                 *, 
+                 learning_rate, weight_decay,
+                 patience, scheduler_type,
+                 cosine_T_max,
+                 class_weights,
+                 label_smoothing,
+                 noise_std,
+                 augment_offset):
 
         self.model = model.to(device)
         self.device = device
@@ -352,7 +348,7 @@ class CNNTrainer:
 
             self.optimizer.zero_grad()
 
-            film_cond = torch.stack([delta_be], dim=1)  # (B, 2)
+            film_cond = torch.stack([delta_be], dim=1)  # (B, 1)
             logits = self.model(spectra, film_cond)
             loss = self.criterion(logits, labels)
             _, predicted = logits.max(1)

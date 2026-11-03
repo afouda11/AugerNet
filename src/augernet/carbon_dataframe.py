@@ -45,9 +45,9 @@ class CarbonDataset(Dataset):
     df : pd.DataFrame
         Carbon-centric DataFrame (``cnn_auger_calc.pkl`` or similar).
         Must include ``carbon_env_label`` column.
-    include_augmentation : bool
-        Prepend z-score normalised ``delta_be`` as an extra input channel.
-    normalize_spectrum : bool
+    include_augmentation : str
+        Prepend z-score normalised ``delta_be`` as an extra 'input' or 'embedding' channel.
+    normalize_intensity : bool
         Normalise broadened spectrum to [0, 1] per atom.
     broadening_fwhm : float
         FWHM for Gaussian broadening (eV).
@@ -60,18 +60,22 @@ class CarbonDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
-        include_augmentation: bool = False,
-        normalize_intensity: bool = False,
-        broadening_fwhm: float = 1.6,
-        energy_min: float = 200.0,
-        energy_max: float = 273.0,
-        n_points: int = 731,
-        norm_stats=None
+        *,
+        include_augmentation: str,              # 'none' | 'input' | 'embedding'
+        normalize_intensity: bool,
+        broadening_fwhm: float,
+        energy_min: float,
+        energy_max: float,
+        n_points: int,
+        norm_stats,
     ):
         self.df = df.reset_index(drop=True)
         self.include_augmentation = include_augmentation
         self.normalize_intensity = normalize_intensity
         self.broadening_fwhm = broadening_fwhm
+
+        if self.include_augmentation not in ('none', 'input', 'embedding'):
+            raise ValueError(f"cebe_augment must be 'none'|'input'|'embedding', got {self.include_augmentation!r}")
 
         n_atoms = len(self.df)
 
@@ -124,14 +128,14 @@ class CarbonDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (spectrum, label) tuple for DataLoader compatibility."""
+        """Return (spectrum, dbe, label) tuple for DataLoader compatibility."""
         row = self.df.iloc[idx]
 
         spectrum = torch.from_numpy(self._spectra[idx].copy())
 
         dbe = float(self._delta_be_norm[idx])
         # Optional delta_be augmentation (prepend to spectrum)
-        if self.include_augmentation:
+        if self.include_augmentation == 'input':
             spectrum = torch.cat([torch.tensor([dbe]), spectrum])
 
         label = torch.tensor(row['carbon_env_index'], dtype=torch.long)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import yaml
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from typing import Any, Dict, List, Union
 
 from augernet import PROJECT_ROOT, DATA_PROCESSED_DIR
@@ -113,6 +113,28 @@ def _arch_tag(architecture: Dict[str, Any]) -> str:
 @dataclass
 class AugerNetConfig:
     """Complete configuration for a single AugerNet run."""
+
+    def validate_cnn(self):
+        if self.cebe_augment not in ('none', 'input', 'embedding'):
+            raise ValueError(f"cebe_augment must be 'none'|'input'|'embedding', got {self.cebe_augment!r}")
+        if self.film_inputs not in ('none', 'be'):
+            raise ValueError(f"film_inputs must be 'none'|'be', got {self.film_inputs!r}")
+        if self.film_inputs == 'be' and self.cebe_augment != 'none':
+            raise ValueError("Use either FiLM or cebe_augment, not both.")
+
+    def with_overrides(self, overrides=None) -> 'AugerNetConfig':
+        """Copy of this config with param-search overrides applied."""
+        if not overrides:
+            return self
+        bad = set(overrides) - OVERRIDABLE_FIELDS
+        if bad:
+            raise ValueError(f"not in OVERRIDABLE_FIELDS: {sorted(bad)}")
+        new = replace(self, **overrides)
+        new.validate_cnn()
+        return new
+    
+    # for cpu and gpu compatibility 
+    device: str = 'auto'
 
     # Model type and run mode
     model: str = 'cebe-gnn'          # cebe-gnn | auger-gnn | cnn
@@ -212,7 +234,10 @@ class AugerNetConfig:
     label_smoothing: float = 0.0     # CrossEntropyLoss label smoothing (0 = off)
     augment_noise_std: float = 0.0   # online Gaussian noise std added during training (0 = off)
     normalize_intensity: bool = True
-    cebe_augment: bool = True        # prepend z-score normalised delta_be to spectrum
+    cebe_augment: str = 'none'       # Prepend z-score normalised delta_be to:
+                                     # 'input': input spectrum
+                                     # 'embedding': learned spectral embedding 
+                                     # 'none': do include (either pure spectrum or FiLM)
     film_inputs: str = 'none'        # FiLM conditioning: 'none' | 'be'
 
     # param search
@@ -325,22 +350,25 @@ class AugerNetConfig:
                     f"_{self.layer_type}{self.n_layers}_h{self.hidden_channels}{nn_tag}{de_tag}"
                 )
             if self.model == 'auger-cnn':
+                self.validate_cnn(self)
                 fwhm_str = str(self.fwhm).replace('.', 'pt')
                 film = str(getattr(self, 'film_inputs', 'none') or 'none')
                 #film_tag = '' if film in ('none', '') else '_film' + film.replace(',', '')
                 # Tag built from the real AugerCNN1D_FiLMd architecture keys;
                 # _arch_tag raises if the spec and the yml have drifted apart.
-                if film == 'none' and self.cebe_augment == False: 
+                if film == 'none' and self.cebe_augment == 'none': 
                     be_tag = 'nobe'
-                elif film == 'be' and self.cebe_augment == False:
+                elif film == 'be' and self.cebe_augment == 'none':
                     be_tag = 'filmbe'
-                elif film == 'none' and self.cebe_augment == True:
-                    be_tag = 'augbe'
-                elif film == 'be' and self.cebe_augment == True: 
+                elif film == 'none' and self.cebe_augment == 'input':
+                    be_tag = 'specbe'
+                elif film == 'none' and self.cebe_augment == 'embedding':
+                    be_tag = 'embedbe'
+                elif film == 'be' and self.cebe_augment != 'none': 
                     raise ValueError(
                         "Only augmented binding energies or FiLM binding energies "
                         "can be used, not both. Set either:\n"
-                        "  cebe_augment: false (to use FiLM)\n"
+                        "  cebe_augment: 'none' (to use FiLM)\n"
                         "  film_inputs: 'none' (to use augmented BE)\n"
                     )
                 arch_str = _arch_tag(self.architecture)

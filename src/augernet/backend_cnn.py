@@ -43,6 +43,10 @@ from augernet.norm_sidecar import (
 
 from augernet import DATA_PROCESSED_DIR
 
+# Every block a CNN sidecar must carry; evaluate fails if any is missing.
+# Used by norm_sidecar.load_norm_sidecar `require: Sequence[str]` argument 
+_CNN_SIDECAR_KEYS = ('delta_be', 'merge_scheme', 'num_classes', 'class_names',
+                     'film_inputs', 'dataset', 'architecture')
 
 # =============================================================================
 #  Molecule-level 3-way split  (train / val / test)
@@ -239,9 +243,9 @@ def load_data(cfg) -> Dict[str, Any]:
     calc and eval pickles into one DataFrame.
     """
     calc_path = os.path.join(
-        DATA_PROCESSED_DIR, getattr(cfg, 'cnn_calc_data_file', 'cnn_auger_calc.pkl'))
+        DATA_PROCESSED_DIR, cfg.cnn_calc_data_file)
     eval_path = os.path.join(
-        DATA_PROCESSED_DIR, getattr(cfg, 'cnn_eval_data_file', 'cnn_auger_eval.pkl'))
+        DATA_PROCESSED_DIR, cfg.cnn_eval_data_file)
 
     if not os.path.isfile(calc_path):
         raise FileNotFoundError(
@@ -279,7 +283,7 @@ def load_data(cfg) -> Dict[str, Any]:
     # Computed once over the whole combined set
 
     present = set(combined_raw['carbon_env_label'])
-    merge_scheme = getattr(cfg, 'merge_scheme', 'none')
+    merge_scheme = cfg.merge_scheme
     if merge_scheme != 'none':
         print_scheme_summary(merge_scheme)
 
@@ -315,19 +319,11 @@ def load_data(cfg) -> Dict[str, Any]:
 
 
 # =============================================================================
-#  Architecture / class-count resolution  (unchanged from previous version)
+#  Class-count resolution 
 # =============================================================================
 
-def _resolve_architecture(cfg, overrides=None):
-    overrides = overrides or {}
-    arch = overrides.get('architecture') or getattr(cfg, 'architecture', None)
-    if arch is None or not arch:
-        arch = ctu.ARCHITECTURE_PRESETS['legacy_3block']
-    return arch
-
-
 def _resolve_num_classes(cfg, present, merge_scheme_override=None) -> int:
-    ms = merge_scheme_override or getattr(cfg, 'merge_scheme', 'none')
+    ms = merge_scheme_override or cfg.merge_scheme
     return len(restrict_to_present(present, ms)[0])
 
 def _resolve_class_names(merge_scheme, present):
@@ -363,22 +359,19 @@ def _resolve_holdout_df(data, merge_scheme, scheme_overridden):
         return _apply_scheme(raw, merge_scheme, _present(data))
     return data.get('test_df')
 
-
 def _dataset_params(cfg, overrides=None) -> Dict[str, Any]:
     """CarbonDataset construction parameters, honouring param-search overrides."""
-    o = overrides or {}
-    g = lambda k, d=None: o.get(k, getattr(cfg, k, d))
+    c = cfg.with_overrides(overrides)
     return dict(
-        include_augmentation=g('cebe_augment', True),
-        normalize_intensity=g('normalize_intensity', False),
-        broadening_fwhm=g('fwhm', 1.6),
-        energy_min=g('min_ke', 200.0),
-        energy_max=g('max_ke', 273.0),
-        n_points=g('n_points', 731),
+        include_augmentation=c.cebe_augment,
+        normalize_intensity=c.normalize_intensity,
+        broadening_fwhm=c.fwhm,
+        energy_min=c.min_ke,
+        energy_max=c.max_ke,
+        n_points=c.n_points,
     )
 
-
-def _make_dataset(df_sub, ds_params, norm_stats=None):
+def _make_dataset(df_sub, ds_params, norm_stats):
     return cdf.CarbonDataset(df_sub, norm_stats=norm_stats, **ds_params)
 
 
@@ -398,11 +391,11 @@ def _check_evaluate_config(cfg, norm, model_path):
 
     pairs = [(f'{key}', ds_cfg[key], ds_ckpt.get(key)) for key in ds_cfg]
     pairs += [
-        ('merge_scheme', getattr(cfg, 'merge_scheme', 'none'),
+        ('merge_scheme', cfg.merge_scheme,
          norm.get('merge_scheme')),
-        ('film_inputs', getattr(cfg, 'film_inputs', 'none'),
+        ('film_inputs', cfg.film_inputs,
          norm.get('film_inputs')),
-        ('architecture', _resolve_architecture(cfg), norm.get('architecture')),
+        ('architecture', cfg.architecture, norm.get('architecture')),
     ]
     raise_on_mismatch(collect_mismatches(pairs),
                       model_path=model_path, context='Evaluate config')
@@ -434,7 +427,7 @@ def _exp_spectrum_on_grid(exp_spec, ds_params):
     grid = np.linspace(ds_params['energy_min'], ds_params['energy_max'],
                        ds_params['n_points'])
     g = np.clip(np.interp(grid, e[order], y[order], left=0.0, right=0.0), 0.0, None)
-    if ds_params.get('normalize_intensity', False) and g.max() > 0:
+    if ds_params['normalize_intensity'] and g.max() > 0:
         g = g / g.max()
     return g.astype(np.float32)
 
@@ -456,7 +449,7 @@ def _evaluate_single_env_exp(model, device, *, eval_df, ds_params, norm_stats,
     if frame.empty:
         return None
 
-    if not ds_params.get('normalize_intensity', False):
+    if not ds_params['normalize_intensity']:
         print("  NOTE: normalize_intensity is off, so the calculated spectra the "
               "model trained on and these measured spectra sit on different "
               "intensity scales -- treat the result as indicative only.")
@@ -557,15 +550,15 @@ def _evaluate_checkpoint(model_result, data, cfg, fold, output_dir):
     """
     model = model_result['model']
     device = model_result['device']
-    model_path = model_result.get('model_path') or getattr(cfg, 'model_path', '')
+    model_path = model_result.get('model_path') or cfg.model_path
 
-    norm = load_norm_sidecar(model_path, require=('delta_be',))
+    norm = load_norm_sidecar(model_path, require=_CNN_SIDECAR_KEYS)
     _check_evaluate_config(cfg, norm, model_path)
 
-    merge_scheme = norm.get('merge_scheme', getattr(cfg, 'merge_scheme', 'none'))
-    class_names = norm.get('class_names') or _resolve_class_names(merge_scheme, _present(data))
-    num_classes = norm.get('num_classes') or _resolve_num_classes(cfg, _present(data))
-    ds_params = norm.get('dataset') or _dataset_params(cfg)
+    merge_scheme = norm.merge_scheme
+    class_names = norm.class_names
+    num_classes = norm.num_classes
+    ds_params = norm.dataset
     norm_stats = {'be_mu':  norm['delta_be']['be_mu'],
                   'be_std': norm['delta_be']['be_std']}
 
@@ -611,38 +604,35 @@ def train_single_run(data: Dict[str, Any],
     from torch.utils.data import DataLoader, Subset
 
     # ── Resolve hyper-parameters from cfg + overrides ─────────────────────
-    _g = lambda k, d=None: overrides.get(k, getattr(cfg, k, d))
 
-    architecture        = _resolve_architecture(cfg, overrides)
-    num_epochs          = _g('num_epochs', 500)
-    patience            = _g('patience', 40)
-    batch_size          = _g('batch_size', 64)
-    learning_rate       = _g('learning_rate', 3e-4)
-    weight_decay        = _g('weight_decay', 1e-4)
-    cebe_augment        = _g('cebe_augment', True)
-    device_str          = _g('device', 'auto')
-    random_seed         = _g('random_seed', 42)
-    scheduler_type      = _g('scheduler_type', 'cosine')
-    broadening_fwhm     = _g('fwhm', 1.6)
-    energy_min          = _g('min_ke', 200.0)
-    energy_max          = _g('max_ke', 273.0)
-    n_spectrum_points   = _g('n_points', 731)
-    merge_scheme        = _g('merge_scheme', 'none')
-    normalize_intensity = _g('normalize_intensity', False)
-    label_smoothing     = _g('label_smoothing', 0.1)
-    noise_std           = _g('augment_noise_std', 0.0)
-    film_inputs         = _g('film_inputs', 'none')
+    c = cfg.with_overrides(overrides)
 
+    device_str          = c.device
+    architecture        = c.architecture
+    num_epochs          = c.num_epochs
+    patience            = c.patience
+    batch_size          = c.batch_size
+    learning_rate       = c.learning_rate
+    weight_decay        = c.weight_decay
+    cebe_augment        = c.cebe_augment
+    random_seed         = c.random_seed
+    scheduler_type      = c.scheduler_type
+    broadening_fwhm     = c.fwhm
+    merge_scheme        = c.merge_scheme
+    normalize_intensity = c.normalize_intensity
+    label_smoothing     = c.label_smoothing
+    noise_std           = c.augment_noise_std
+    film_inputs         = c.film_inputs
     # New: splitting params
-    split_method   = _g('split_method', 'random')
-    butina_cutoff  = _g('butina_cutoff', 0.65)
+    split_method        = c.split_method
+    butina_cutoff       = c.butina_cutoff
 
     # Different "folds" use different seeds — gives the driver's existing
     # fold loop a meaningful interpretation under fixed-split training.
     split_seed = random_seed + (fold - 1)
 
     # ── Resolve training DataFrame (re-merge if scheme differs) ──────────
-    base_merge = getattr(cfg, 'merge_scheme', 'none')
+    base_merge = cfg.merge_scheme # wont scheme of previous run so use cfg. and not c.
 
     # True when this run's label space differs from the one data['train_df'] and
     # data['test_df'] were built in (i.e. a param-search merge_scheme override).
@@ -700,28 +690,17 @@ def train_single_run(data: Dict[str, Any],
     val_idx   = calc_df.index[calc_df['mol_name'].isin(val_mol_set)].tolist()
 
     train_df_subset = calc_df.iloc[train_idx].reset_index(drop=True)
-    # calc z norm stats for film args, by not defining nom_stats in CarbonDataset call 
-    train_ds = cdf.CarbonDataset(
-        train_df_subset,
-        include_augmentation=cebe_augment,
-        normalize_intensity=normalize_intensity,
-        broadening_fwhm=broadening_fwhm,
-        energy_min=energy_min, energy_max=energy_max,
-        n_points=n_spectrum_points,
-    )
-    # get z norm stats from train data to apply across data
-    norm_stats = train_ds.norm_stats
+    
+    # calc z norm stats for film args, for training dataset only 
+    # by not defining norm_stats in train_ds dataCarbonDataset
+    # this is inefficient at the BE norm stats come from a routine that fits all the train spectra
+    # therefore fit yhe spectra twice, when could calc norm stats from `train_df_subset['delta_be']` 
+    ds_params = _dataset_params(c)
+    train_ds = cdf.CarbonDataset(train_df_subset, norm_stats=None, **ds_params)
 
-    # ── Build dataset on calc pool only ──────────────────────────────────
-    dataset = cdf.CarbonDataset(
-        calc_df,
-        include_augmentation=cebe_augment,
-        normalize_intensity=normalize_intensity,
-        broadening_fwhm=broadening_fwhm,
-        energy_min=energy_min, energy_max=energy_max,
-        n_points=n_spectrum_points,
-        norm_stats=norm_stats,
-    )
+    # then use train_ds.norm_stats for full calc dataset 
+    norm_stats = train_ds.norm_stats
+    dataset = cdf.CarbonDataset(calc_df, norm_stats=norm_stats, **ds_params)
 
     train_loader = DataLoader(Subset(dataset, train_idx),
                               batch_size=batch_size, shuffle=True, num_workers=0)
@@ -736,6 +715,7 @@ def train_single_run(data: Dict[str, Any],
     ctu.validate_architecture(architecture)
     model = ctu.AugerCNN1D_FiLMd(
         num_classes,
+        cebe_augment=cebe_augment,
         film_inputs=film_inputs,
         **architecture,
     )
@@ -764,7 +744,7 @@ def train_single_run(data: Dict[str, Any],
         noise_std=noise_std,
         # CarbonDataset prepends one z-scored delta_be element when
         # cebe_augment is on; keep noise augmentation off it.
-        augment_offset=1 if cebe_augment else 0,
+        augment_offset=1 if cebe_augment == 'input' else 0,
     )
 
     if verbose:
@@ -783,7 +763,6 @@ def train_single_run(data: Dict[str, Any],
     # these grid settings.  None of that changes a tensor shape, so a mismatch at
     # evaluate time cannot be caught by the state_dict load — the sidecar is the
     # only thing standing between a wrong config and plausible wrong numbers.
-    ds_params = _dataset_params(cfg, overrides)
     sidecar = save_norm_sidecar(model_path, {
         'model':             'auger-cnn',
         'fold':              fold,
@@ -792,6 +771,7 @@ def train_single_run(data: Dict[str, Any],
                               'be_std': float(norm_stats['be_std'])},
         'merge_scheme':      merge_scheme,
         'num_classes':       num_classes,
+        'class_names':       class_names,
         'film_inputs':       film_inputs,
         'dataset':           ds_params,
         'architecture':      architecture,
@@ -928,21 +908,15 @@ def train_single_run(data: Dict[str, Any],
 #  Model loading
 # =============================================================================
 
-def _load_model_from_path(model_path, data, cfg, *, architecture=None,
-                          merge_scheme=None):
-    ms = merge_scheme or getattr(cfg, 'merge_scheme', 'none')
-    arch = architecture or _resolve_architecture(cfg)
-    device_str = getattr(cfg, 'device', 'auto')
-
-    device = ctu.get_device(device_str, verbose=True)
-    num_classes = _resolve_num_classes(cfg, _present(data), merge_scheme_override=ms)
-    film_inputs = getattr(cfg, 'film_inputs', 'none')
-    ctu.validate_architecture(arch)
-    model = ctu.AugerCNN1D_FiLMd(
-        num_classes,
-        film_inputs=film_inputs,
-        **arch,
-    )
+def _load_model_from_path(model_path, data, cfg):
+    norm = load_norm_sidecar(model_path, require=_CNN_SIDECAR_KEYS)
+    _check_evaluate_config(cfg, norm, model_path)
+    device = ctu.get_device(cfg.device, verbose=True)
+    ctu.validate_architecture(norm['architecture'])
+    model = ctu.AugerCNN1D_FiLMd(norm['num_classes'],
+                                 film_inputs=norm['film_inputs'],
+                                 cebe_augment=norm['dataset']['include_augmentation'],
+                                 **norm['architecture'])
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
