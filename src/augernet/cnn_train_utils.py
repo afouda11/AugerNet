@@ -378,7 +378,7 @@ class CNNTrainer:
                 labels = labels.to(self.device, dtype=torch.long)
                 if spectra.dim() == 2:
                     spectra = spectra.unsqueeze(1)
-                film_cond = torch.stack([delta_be], dim=1)  # (B, 2)
+                film_cond = torch.stack([delta_be], dim=1)  # (B, 1)
                 logits = self.model(spectra, film_cond)
                 loss = self.criterion(logits, labels)
                 total_loss += loss.item()
@@ -460,6 +460,50 @@ class CNNTrainer:
 # EVALUATION
 # =============================================================================
 
+def dedup_pairs(mol_names, y_true, y_pred):
+    """One (true, pred) entry per distinct (molecule, true, pred) triple."""
+    seen, dl, dp = set(), [], []
+    for mol, t, p in zip(mol_names, y_true, y_pred):
+        key = (mol, int(t), int(p))
+        if key not in seen:
+            seen.add(key)
+            dl.append(int(t))
+            dp.append(int(p))
+    return np.array(dl), np.array(dp)
+
+
+def classification_metrics(mol_names, y_true, y_pred) -> dict:
+    """Per-atom and deduplicated classification metrics.
+
+    Macro P/R/F1 use sklearn's default label set -- the union of classes in
+    y_true and y_pred (no ``labels=``) -- identically for all three, so they are
+    comparable column-to-column in the manuscript tables.  Dedup collapses
+    atoms with the same (molecule, true, pred) triple, so symmetry-equivalent
+    carbons count once.
+    """
+
+    y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+    out = {
+        'accuracy':           accuracy_score(y_true, y_pred),
+        'f1_macro':           f1_score(y_true, y_pred, average='macro', zero_division=0),
+        'f1_weighted':        f1_score(y_true, y_pred, average='weighted', zero_division=0),
+        'precision_macro':    precision_score(y_true, y_pred, average='macro', zero_division=0),
+        'precision_weighted': precision_score(y_true, y_pred, average='weighted', zero_division=0),
+        'recall_macro':       recall_score(y_true, y_pred, average='macro', zero_division=0),
+        'recall_weighted':    recall_score(y_true, y_pred, average='weighted', zero_division=0),
+    }
+    dl, dp = dedup_pairs(mol_names, y_true, y_pred)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        out.update({
+            'dedup_accuracy':        accuracy_score(dl, dp),
+            'dedup_f1_macro':        f1_score(dl, dp, average='macro', zero_division=0),
+            'dedup_f1_weighted':     f1_score(dl, dp, average='weighted', zero_division=0),
+            'dedup_precision_macro': precision_score(dl, dp, average='macro', zero_division=0),
+            'dedup_recall_macro':    recall_score(dl, dp, average='macro', zero_division=0),
+        })
+    return out
+
 def evaluate_with_molecule_details(
     df: pd.DataFrame, model: nn.Module, device: torch.device,
     dataset: Dataset, output_dir: str = None,
@@ -485,7 +529,7 @@ def evaluate_with_molecule_details(
             labels = labels.to(device, dtype=torch.long)
             if spectra.dim() == 2:
                 spectra = spectra.unsqueeze(1)
-            film_cond = torch.stack([delta_be], dim=1)  # (B, 2)
+            film_cond = torch.stack([delta_be], dim=1)  # (B, 1)
             logits = model(spectra, film_cond)
             probs = torch.softmax(logits, dim=1)
             pred = logits.argmax(dim=1)
@@ -496,20 +540,6 @@ def evaluate_with_molecule_details(
     all_preds = np.array(all_preds)
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
-
-    # Precision and recall use the same convention as F_1 -- no explicit
-    # `labels=`, so sklearn averages over the union of the classes present in
-    # the references and those the model emitted.  Keeping the three identical
-    # is what makes them comparable column-to-column in the manuscript table;
-    # averaging recall over only the classes with support instead reads about
-    # 0.07 higher on this data.
-    accuracy = accuracy_score(all_labels, all_preds)
-    f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
-    f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
-    precision_macro = precision_score(all_labels, all_preds, average='macro', zero_division=0)
-    precision_weighted = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
-    recall_macro = recall_score(all_labels, all_preds, average='macro', zero_division=0)
-    recall_weighted = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
 
     print(f"\n== EVALUATION ({eval_type.upper()}) - {num_classes} CLASSES ==")
 
@@ -558,45 +588,18 @@ def evaluate_with_molecule_details(
         print(f"\nSaved evaluation CSV: {csv_path}")
         print(f"  Rows: {len(csv_df)} (deduplicated from {len(csv_records)} atoms)")
 
-    # ---- Deduplicated metrics -------------------------------------------------
-    # Collapse atoms that are truly identical: same molecule, same true label,
-    # same predicted label.  This avoids double-counting symmetry-
-    # equivalent carbons (e.g. benzene 6× aromatic = 1 entry) while still
-    # keeping atoms that share a label but have distinguishable spectra and
-    # different predictions (e.g. pyrimidine C2 vs C4/C6, all C_arom_N but
-    # C2 sits between two nitrogens and may be predicted differently).
-    dedup_set = set()  # (mol_name, true_label, pred_label)
-    dedup_labels = []
-    dedup_preds = []
-    for mol_name, mol_group_indices in molecules.groups.items():
-        for idx in mol_group_indices:
-            true_label = int(df_reset.iloc[idx][label_col])
-            pred_label = int(all_preds[idx])
-            key = (mol_name, true_label, pred_label)
-            if key not in dedup_set:
-                dedup_set.add(key)
-                dedup_labels.append(true_label)
-                dedup_preds.append(pred_label)
+    metrics = classification_metrics(df_reset['mol_name'].values, all_labels, all_preds)
 
-    dedup_labels = np.array(dedup_labels)
-    dedup_preds = np.array(dedup_preds)
-    # Suppress sklearn warning when #classes > 50% of #samples (small eval sets)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        dedup_accuracy = accuracy_score(dedup_labels, dedup_preds)
-        dedup_f1_macro = f1_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
-        dedup_f1_weighted = f1_score(dedup_labels, dedup_preds, average='weighted', zero_division=0)
-        dedup_precision_macro = precision_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
-        dedup_recall_macro = recall_score(dedup_labels, dedup_preds, average='macro', zero_division=0)
+    dedup_labels, dedup_preds = dedup_pairs(df_reset['mol_name'].values, all_labels, all_preds)
 
     print("\n== SUMMARY STATISTICS ==")
 
     print(f"  Per-atom  ({len(all_labels)} atoms):  "
-          f"Acc={accuracy*100:.1f}%  F1-mac={f1_macro:.4f}  F1-wt={f1_weighted:.4f}  "
-          f"P-mac={precision_macro:.4f}  R-mac={recall_macro:.4f}")
+          f"Acc={metrics['accuracy']*100:.1f}%  F1-mac={metrics['f1_macro']:.4f}  F1-wt={metrics['f1_weighted']:.4f}  "
+          f"P-mac={metrics['precision_macro']:.4f}  R-mac={metrics['recall_macro']:.4f}")
     print(f"  Deduped   ({len(dedup_labels)} pairs):  "
-          f"Acc={dedup_accuracy*100:.1f}%  F1-mac={dedup_f1_macro:.4f}  F1-wt={dedup_f1_weighted:.4f}  "
-          f"P-mac={dedup_precision_macro:.4f}  R-mac={dedup_recall_macro:.4f}")
+          f"Acc={metrics['dedup_accuracy']*100:.1f}%  F1-mac={metrics['dedup_f1_macro']:.4f}  F1-wt={metrics['dedup_f1_weighted']:.4f}  "
+          f"P-mac={metrics['dedup_precision_macro']:.4f}  R-mac={metrics['dedup_recall_macro']:.4f}")
 
     print("\n  Per-Class (deduplicated):")
     print("  " + "-" * 70)
@@ -609,13 +612,7 @@ def evaluate_with_molecule_details(
         print(f"  {name:40s}: {correct:3d}/{support:3d} ({acc*100:5.1f}%)")
 
     return {
-        'accuracy': accuracy, 'f1_macro': f1_macro, 'f1_weighted': f1_weighted,
-        'precision_macro': precision_macro, 'precision_weighted': precision_weighted,
-        'recall_macro': recall_macro, 'recall_weighted': recall_weighted,
-        'dedup_accuracy': dedup_accuracy, 'dedup_f1_macro': dedup_f1_macro,
-        'dedup_f1_weighted': dedup_f1_weighted,
-        'dedup_precision_macro': dedup_precision_macro,
-        'dedup_recall_macro': dedup_recall_macro,
+        **metrics,
         'predictions': all_preds, 'labels': all_labels, 'probabilities': all_probs,
         'dedup_predictions': dedup_preds, 'dedup_labels': dedup_labels,
     }

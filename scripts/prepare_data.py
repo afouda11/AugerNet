@@ -241,7 +241,7 @@ def prepare_auger_gnn(args):
 # AUGER CNN
 # =============================================================================
 
-def auger_gnn_to_cnn_dataframe(data_type, pt_path, exclude_file=None):
+def _auger_gnn_to_cnn_dataframe(data_type, pt_path, exclude_file=None):
     """
     Extract a per-carbon DataFrame from a saved Auger GNN .pt file.
 
@@ -373,9 +373,9 @@ def prepare_auger_cnn(args):
     calc_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['calc'])
     eval_pt_path = os.path.join(DATA_PROCESSED_DIR, gnn_files['eval'])
 
-    calc_df = auger_gnn_to_cnn_dataframe('calc', calc_pt_path, 
+    calc_df = _auger_gnn_to_cnn_dataframe('calc', calc_pt_path, 
                                          exclude_file=args.cnn_exclude_file)
-    eval_df = auger_gnn_to_cnn_dataframe('eval', eval_pt_path)
+    eval_df = _auger_gnn_to_cnn_dataframe('eval', eval_pt_path)
     
     calc_out_path = _debug_suffix("cnn_auger_calc.pkl", args.debug)
     eval_out_path = _debug_suffix("cnn_auger_eval.pkl", args.debug)

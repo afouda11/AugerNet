@@ -222,7 +222,7 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
     model, and writes a JSON summary identifying the best fold.
     """
 
-    be = _get_backend(cfg)
+    backend = _get_backend(cfg)
     n_folds  = cfg.n_folds
 
     fold_results = []
@@ -233,7 +233,7 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
 
     for fold in range(1, n_folds + 1):
         save_paths = _build_save_paths(cfg, fold, cfg.models_dir)
-        result = be.train_single_run(
+        result = backend.train_single_run(
             data, fold, n_folds,
             save_paths=save_paths,
             output_dir=cfg.outputs_dir,
@@ -244,7 +244,7 @@ def run_kfold_cv(data, cfg) -> Dict[str, Any]:
         # Save loss curve and run evaluation for this fold
         eval_metrics = None
         if cfg.run_evaluation:
-            eval_metrics = be.run_evaluation(
+            eval_metrics = backend.run_evaluation(
                 result, data, fold,
                 output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
                 train_results=result.get('train_results'),
@@ -305,7 +305,7 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
     ``backend.train_single_run`` with overrides, records the best
     validation loss, and writes a sorted leaderboard JSON.
     """
-    be = _get_backend(cfg)
+    backend = _get_backend(cfg)
 
     param_grid = cfg.param_grid
     if not param_grid:
@@ -360,7 +360,7 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
                 cfg, fold, cfg.models_dir,
                 prefix=search_id, config_id=config_id,
             )
-            result = be.train_single_run(
+            result = backend.train_single_run(
                 data, fold, n_folds,
                 save_paths=save_paths,
                 output_dir=cfg.models_dir,
@@ -376,7 +376,7 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
             eval_metrics = None
             if cfg.run_evaluation:
                 eval_cfg = _cfg_with_overrides(cfg, config)
-                eval_metrics = be.run_evaluation(
+                eval_metrics = backend.run_evaluation(
                     result, data, fold,
                     output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=eval_cfg,
                     train_results=result.get('train_results'),
@@ -466,6 +466,61 @@ def run_param_search(data, cfg) -> Dict[str, Any]:
     return summary
 
 
+def split_holdout(data, model):
+
+    if 'test_df' in data or 'test_data' in data:
+        raise RuntimeError("split_holdout has already been applied to this data dict")
+
+    # Calc hold-out: 50 randomly selected molecules for both GNN and CNN,
+    if model == 'auger-gnn':
+        calc_data = data['calc_data']
+        mol_order = [d.mol_name for d in calc_data]
+    elif model == 'auger-cnn':  # auger-cnn
+        calc_mask = data['cnn_df']['source'] == 'calc'
+        mol_order = list(dict.fromkeys(
+            data['cnn_df'].loc[calc_mask, 'mol_name']
+        ))
+    else: raise ValueError(f"split_holdout: unsupported model {model!r}")
+
+    from sklearn.model_selection import ShuffleSplit
+    test_splitter = ShuffleSplit(n_splits=1, test_size=50, random_state=0)
+    tr_arr, te_arr = next(test_splitter.split(mol_order))
+    test_mol_names = {mol_order[i] for i in te_arr}
+
+    if model == 'auger-gnn':
+        data['calc_data'] = [calc_data[i] for i in tr_arr]
+        data['test_data'] = [calc_data[i] for i in te_arr]
+
+        print(f"\nGNN:\n  {len(data['calc_data'])} train+val mol, " 
+                f"{sum(s == 'C' for d in data['calc_data'] for s in d.atom_symbols)} carbons\n")
+
+        print(f"  {len(data['test_data'])} calc test hold-mol (ShuffleSplit random_state=0), " 
+                f"{sum(s == 'C' for d in data['test_data'] for s in d.atom_symbols)} carbons\n")
+    else:
+        df = data['cnn_df']
+        is_calc_test = (df['source'] == 'calc') & df['mol_name'].isin(test_mol_names)
+        data['test_df']  = df[is_calc_test].reset_index(drop=True)
+        data['cnn_df'] = df[~is_calc_test].reset_index(drop=True)
+        if 'cnn_df_raw' in data:
+            raw = data['cnn_df_raw']
+            raw_is_test = ((raw['source'] == 'calc')
+                            & raw['mol_name'].isin(test_mol_names))
+            # Keep the un-merged hold-out as well.  data['test_df'] is in the
+            # BASE merge scheme's label space; a param search that overrides
+            # merge_scheme has to re-merge the hold-out from raw to score it
+            # in the same label space as its predictions.
+            # See backend_cnn.train_single_run.
+            data['test_df_raw']  = raw[raw_is_test].reset_index(drop=True)
+            data['cnn_df_raw'] = raw[~raw_is_test].reset_index(drop=True)
+        n_holdout_mols = data['test_df']['mol_name'].nunique()
+        n_train_mols   = data['cnn_df'][
+            data['cnn_df']['source'] == 'calc']['mol_name'].nunique()
+        print(f"  CNN: {n_holdout_mols} hold-out mols "
+                f"({len(data['test_df'])} carbons), "
+                f"{n_train_mols} train+val calc mols remaining")
+
+    return data
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -487,7 +542,7 @@ def run(cfg: AugerNetConfig):
         print(f"  Model ID: {cfg.model_id}")
     print(f"{'=' * 80}")
 
-    be = _get_backend(cfg)
+    backend = _get_backend(cfg)
 
     if mode == 'predict':
         _run_predict(cfg)
@@ -495,55 +550,11 @@ def run(cfg: AugerNetConfig):
         return
 
     # ── Load data ────────────────────────────────────────────────────────
-    data = be.load_data(cfg)
+    data = backend.load_data(cfg)
 
     if cfg.model in ('auger-gnn', 'auger-cnn'):
         # Calc hold-out: 50 randomly selected molecules for both GNN and CNN,
-        if cfg.model == 'auger-gnn':
-            calc_data = data['calc_data']
-            mol_order = [d.mol_name for d in calc_data]
-        else:  # auger-cnn
-            calc_mask = data['train_df']['source'] == 'calc'
-            mol_order = list(dict.fromkeys(
-                data['train_df'].loc[calc_mask, 'mol_name']
-            ))
-
-        from sklearn.model_selection import ShuffleSplit
-        test_splitter = ShuffleSplit(n_splits=1, test_size=50, random_state=0)
-        tr_arr, te_arr = next(test_splitter.split(mol_order))
-        test_mol_names = {mol_order[i] for i in te_arr}
-
-        if cfg.model == 'auger-gnn':
-            data['calc_data'] = [calc_data[i] for i in tr_arr]
-            data['test_data'] = [calc_data[i] for i in te_arr]
-
-            print(f"\nGNN:\n  {len(data['calc_data'])} train+val mol, " 
-                    f"{sum(s == 'C' for d in data['calc_data'] for s in d.atom_symbols)} carbons\n")
-
-            print(f"  {len(data['test_data'])} calc test hold-mol (ShuffleSplit random_state=0), " 
-                    f"{sum(s == 'C' for d in data['test_data'] for s in d.atom_symbols)} carbons\n")
-        else:
-            df = data['train_df']
-            is_calc_test = (df['source'] == 'calc') & df['mol_name'].isin(test_mol_names)
-            data['test_df']  = df[is_calc_test].reset_index(drop=True)
-            data['train_df'] = df[~is_calc_test].reset_index(drop=True)
-            if 'train_df_raw' in data:
-                raw = data['train_df_raw']
-                raw_is_test = ((raw['source'] == 'calc')
-                               & raw['mol_name'].isin(test_mol_names))
-                # Keep the un-merged hold-out as well.  data['test_df'] is in the
-                # BASE merge scheme's label space; a param search that overrides
-                # merge_scheme has to re-merge the hold-out from raw to score it
-                # in the same label space as its predictions.
-                # See backend_cnn.train_single_run.
-                data['test_df_raw']  = raw[raw_is_test].reset_index(drop=True)
-                data['train_df_raw'] = raw[~raw_is_test].reset_index(drop=True)
-            n_holdout_mols = data['test_df']['mol_name'].nunique()
-            n_train_mols   = data['train_df'][
-                data['train_df']['source'] == 'calc']['mol_name'].nunique()
-            print(f"  CNN: {n_holdout_mols} hold-out mols "
-                  f"({len(data['test_df'])} carbons), "
-                  f"{n_train_mols} train+val calc mols remaining")
+        data = split_holdout(data, cfg.model)
 
     result = None  # Set by train/cv for unit tests
 
@@ -553,11 +564,11 @@ def run(cfg: AugerNetConfig):
         if getattr(cfg, 'run_unit_tests', False):
             best_fold = cv_summary['best_fold']
             save_paths = _build_save_paths(cfg, best_fold, cfg.models_dir)
-            result = be.load_saved_model(save_paths, data, cfg)
+            result = backend.load_saved_model(save_paths, data, cfg)
 
     elif mode == 'train':
         save_paths = _build_save_paths(cfg, cfg.train_fold, cfg.models_dir)
-        result = be.train_single_run(
+        result = backend.train_single_run(
             data, cfg.train_fold, cfg.n_folds,
             save_paths=save_paths,
             output_dir=cfg.outputs_dir,
@@ -566,7 +577,7 @@ def run(cfg: AugerNetConfig):
         )
 
         if cfg.run_evaluation:
-            be.run_evaluation(
+            backend.run_evaluation(
                 result, data, cfg.train_fold,
                 output_dir=cfg.outputs_dir,
                 png_dir=cfg.pngs_dir, cfg=cfg,
@@ -589,7 +600,7 @@ def run(cfg: AugerNetConfig):
     if getattr(cfg, 'run_unit_tests', False) and mode in ('train', 'cv'):
         if result is not None:
             try:
-                be.run_unit_tests(result, data, cfg)
+                backend.run_unit_tests(result, data, cfg)
             except Exception as e: print(e)
 
     print("\n AugerNet run complete\n")
@@ -606,7 +617,7 @@ def _run_evaluate(data, cfg):
     Results are written to ``evaluate_results/``.
     """
 
-    be = _get_backend(cfg)
+    backend = _get_backend(cfg)
 
     model_path = cfg.model_path
     if not model_path:
@@ -622,20 +633,20 @@ def _run_evaluate(data, cfg):
 
     if cfg.model == 'auger-cnn':
         # CNN backend: _load_model_from_path takes (path, data, cfg)
-        model, device = be._load_model_from_path(model_path, data, cfg)
+        model, device = backend._load_model_from_path(model_path, data, cfg)
         #result = (model, device)
         result = {'model': model, 'device': device}
     else:
-        be.apply_saved_norm(data, cfg, model_path)
+        backend.apply_saved_norm(data, cfg, model_path)
 
         calc_data = data['calc_data']
-        model, device = be._load_model_from_path(
+        model, device = backend._load_model_from_path(
             model_path, calc_data,
             layer_type=cfg.layer_type,
             hidden_channels=cfg.hidden_channels,
             n_layers=cfg.n_layers,
             dropout=cfg.dropout,
-            **be._model_load_kwargs(cfg),
+            **backend._model_load_kwargs(cfg),
         )
         #result = (model, device)
         result = {'model': model, 'device': device}
@@ -643,7 +654,7 @@ def _run_evaluate(data, cfg):
     # Try to infer fold from filename (e.g. …_fold3.pth → 3)
     fold = _infer_fold_from_path(model_path)
 
-    be.run_evaluation(
+    backend.run_evaluation(
         result, data, fold,
         output_dir=cfg.outputs_dir, png_dir=cfg.pngs_dir, cfg=cfg,
     )
@@ -669,7 +680,7 @@ def _run_predict(cfg):
     and writes ``_labels.txt`` and ``_results.txt`` output files.
     """
 
-    be = _get_backend(cfg)
+    backend = _get_backend(cfg)
 
     model_path = cfg.model_path
     predict_dir = cfg.predict_dir
@@ -693,7 +704,7 @@ def _run_predict(cfg):
     if not os.path.isdir(predict_dir):
         raise FileNotFoundError(f"Predict directory not found: {predict_dir}")
 
-    be.run_predict(
+    backend.run_predict(
         model_path=model_path,
         predict_dir=predict_dir,
         cfg=cfg,

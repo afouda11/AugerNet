@@ -106,7 +106,10 @@ class CarbonDataset(Dataset):
                 self._spectra[i] = intensity_grid
 
         elapsed = _time.time() - t0
-        scale_desc = ('per-carbon max-normalised')
+        if self.normalize_intensity:
+            scale_desc = ('per-carbon max-normalised')
+        else:
+            scale_desc = ('per-carbon un-normalized') 
         print(f"  Pre-broadened {n_atoms} spectra "
               f"(FWHM={broadening_fwhm} eV, {scale_desc}) in {elapsed:.1f}s")
 

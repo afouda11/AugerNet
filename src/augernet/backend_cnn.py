@@ -92,7 +92,7 @@ def _butina_cluster_ids_per_molecule(mol_names: List[str],
     return list(cluster_ids)
 
 
-def _cnn_fold_split(calc_mol_names, calc_df, fold, n_folds,
+def cnn_fold_split(calc_mol_names, calc_df, fold, n_folds,
                     split_method, random_seed, butina_cutoff=0.65,
                     verbose=False):
     """Compute train/val molecule-name lists for the CNN, mirroring
@@ -311,8 +311,8 @@ def load_data(cfg) -> Dict[str, Any]:
           f"labels 0..{max_label}")
 
     return {
-        'train_df':     combined,
-        'train_df_raw': combined_raw,
+        'cnn_df':     combined,
+        'cnn_df_raw': combined_raw,
         'present':      present,
         'eval_data_path': eval_path if os.path.exists(eval_path) else None,
     }
@@ -353,11 +353,11 @@ def _resolve_holdout_df(data, merge_scheme, scheme_overridden):
         if raw is None:
             raise KeyError(
                 "merge_scheme was overridden but data['test_df_raw'] is missing. "
-                "It is populated by train_driver.run alongside data['test_df']; "
+                "It is populated by train_driver.split_holdout alongside data['test_df']; "
                 "set it too if calling train_single_run directly."
             )
         return _apply_scheme(raw, merge_scheme, _present(data))
-    return data.get('test_df')
+    return data['test_df']
 
 def _dataset_params(cfg, overrides=None) -> Dict[str, Any]:
     """CarbonDataset construction parameters, honouring param-search overrides."""
@@ -555,14 +555,14 @@ def _evaluate_checkpoint(model_result, data, cfg, fold, output_dir):
     norm = load_norm_sidecar(model_path, require=_CNN_SIDECAR_KEYS)
     _check_evaluate_config(cfg, norm, model_path)
 
-    merge_scheme = norm.merge_scheme
-    class_names = norm.class_names
-    num_classes = norm.num_classes
-    ds_params = norm.dataset
+    merge_scheme = norm['merge_scheme']
+    class_names  = norm['class_names']
+    num_classes  = norm['num_classes']
+    ds_params    = norm['dataset']
     norm_stats = {'be_mu':  norm['delta_be']['be_mu'],
                   'be_std': norm['delta_be']['be_std']}
 
-    df = data['train_df']                      # already in cfg's merge scheme
+    df = data['cnn_df']                      # already in cfg's merge scheme
     eval_df = df[df['source'] == 'eval'].reset_index(drop=True)
     holdout_df = _resolve_holdout_df(data, merge_scheme, scheme_overridden=False)
 
@@ -595,11 +595,6 @@ def train_single_run(data: Dict[str, Any],
                      **overrides) -> Dict[str, Any]:
     """Train on the train split, early-stop on val, evaluate on the held-out
     test split, all from a single combined DataFrame.
-
-    The ``fold`` and ``n_folds`` parameters are kept for compatibility with
-    the train_driver interface; they are not used for k-fold CV in this
-    version. Different folds simply correspond to different random seeds
-    so the driver's existing fold loop produces multiple seeded runs.
     """
     from torch.utils.data import DataLoader, Subset
 
@@ -627,22 +622,18 @@ def train_single_run(data: Dict[str, Any],
     split_method        = c.split_method
     butina_cutoff       = c.butina_cutoff
 
-    # Different "folds" use different seeds — gives the driver's existing
-    # fold loop a meaningful interpretation under fixed-split training.
-    split_seed = random_seed + (fold - 1)
-
     # ── Resolve training DataFrame (re-merge if scheme differs) ──────────
     base_merge = cfg.merge_scheme # wont scheme of previous run so use cfg. and not c.
 
-    # True when this run's label space differs from the one data['train_df'] and
+    # True when this run's label space differs from the one data['cnn_df'] and
     # data['test_df'] were built in (i.e. a param-search merge_scheme override).
     # Both frames then have to be rebuilt from raw — see _resolve_holdout_df.
-    scheme_overridden = (merge_scheme != base_merge and 'train_df_raw' in data)
+    scheme_overridden = merge_scheme != base_merge
 
     if scheme_overridden:
-        df = _apply_scheme(data['train_df_raw'], merge_scheme, _present(data))
+        df = _apply_scheme(data['cnn_df_raw'], merge_scheme, _present(data))
     else:
-        df = data['train_df']
+        df = data['cnn_df']
 
     ctu.seed(random_seed)
     device = ctu.get_device(device_str, verbose=verbose)
@@ -656,7 +647,7 @@ def train_single_run(data: Dict[str, Any],
 
     if verbose:
         print(f"\n{'=' * 70}")
-        print(f"AUGER CNN TRAINING — Run {fold}/{n_folds}  (split seed={split_seed})")
+        print(f"AUGER CNN TRAINING — Run {fold}/{n_folds}")
         print(f"{'=' * 70}")
         print(f"  Arch:          {architecture}")
         print(f"  LR:            {learning_rate}")
@@ -670,7 +661,7 @@ def train_single_run(data: Dict[str, Any],
         print(f"{'=' * 70}")
 
     # ── Separate calc training pool from eval_auger molecules ────────────
-    # After train_driver's hold-out filtering, data['train_df'] contains:
+    # After train_driver's hold-out filtering, data['cnn_df'] contains:
     #   source=='calc'  non-holdout calc molecules  (for train/val)
     #   source=='eval'  eval_auger molecules         (evaluation only)
     calc_df = df[df['source'] == 'calc'].reset_index(drop=True)
@@ -679,7 +670,7 @@ def train_single_run(data: Dict[str, Any],
     calc_mol_names = list(dict.fromkeys(calc_df['mol_name']))
 
     # ── GNN-consistent fold split (mirrors backend_gnn._get_fold_split) ──
-    train_mol_names, val_mol_names = _cnn_fold_split(
+    train_mol_names, val_mol_names = cnn_fold_split(
         calc_mol_names, calc_df, fold, n_folds,
         split_method, random_seed, butina_cutoff=butina_cutoff, verbose=verbose,
     )
