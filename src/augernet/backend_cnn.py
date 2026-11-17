@@ -438,12 +438,9 @@ def _evaluate_single_env_exp(model, device, *, eval_df, ds_params, norm_stats,
 
     Restricted to eval_auger molecules containing a single carbon environment
     (methane, benzene, cyclopropane, ...).  For those the measured molecular
-    spectrum *is* that environment's spectrum, so it can be fed to the model
-    directly and scored against an unambiguous label -- the only place in the
-    pipeline where the classifier meets experimental data with a known target.
+    spectrum is that environment's spectrum, so it can be fed to the model
+    directly and scored against an unambiguous label. 
 
-    Reported for interest only.  See the storage note in ``run_evaluation``:
-    this must never become a model-selection signal.
     """
     frame = _single_env_exp_frame(eval_df)
     if frame.empty:

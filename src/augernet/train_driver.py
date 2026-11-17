@@ -499,8 +499,8 @@ def split_holdout(data, model):
     else:
         df = data['cnn_df']
         is_calc_test = (df['source'] == 'calc') & df['mol_name'].isin(test_mol_names)
-        data['test_df']  = df[is_calc_test].reset_index(drop=True)
-        data['cnn_df'] = df[~is_calc_test].reset_index(drop=True)
+        data['test_df'] = df[is_calc_test].reset_index(drop=True)
+        data['cnn_df']  = df[~is_calc_test].reset_index(drop=True)
         if 'cnn_df_raw' in data:
             raw = data['cnn_df_raw']
             raw_is_test = ((raw['source'] == 'calc')

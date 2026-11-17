@@ -3,7 +3,7 @@ CNN Training Utilities for Auger Spectra Classification
 
 Contains:
 - CNN model architecture (AugerCNN1D — flexible, dict-configured)
-- Cross entropy loss function with inverse-frequency class weights
+- Cross entropy loss function with inverse-square-root-frequency class weights
 - Dataset wrapper
 - Trainer class with early stopping
 - Evaluation with molecule-by-molecule details
@@ -305,7 +305,7 @@ class CNNTrainer:
                 weight=class_weights.to(device),
                 label_smoothing=label_smoothing,
             )
-            print(f"  Using CrossEntropyLoss with inverse-frequency class weights"
+            print(f"  Using CrossEntropyLoss with inverse-square-root-frequency class weights"
                   f"{f' + label_smoothing={label_smoothing}' if label_smoothing else ''}")
         else:
             self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
@@ -483,24 +483,26 @@ def classification_metrics(mol_names, y_true, y_pred) -> dict:
     """
 
     y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+    labels = np.unique(y_true)
     out = {
         'accuracy':           accuracy_score(y_true, y_pred),
-        'f1_macro':           f1_score(y_true, y_pred, average='macro', zero_division=0),
+        'f1_macro':           f1_score(y_true, y_pred, labels=labels, average='macro', zero_division=0),
         'f1_weighted':        f1_score(y_true, y_pred, average='weighted', zero_division=0),
-        'precision_macro':    precision_score(y_true, y_pred, average='macro', zero_division=0),
+        'precision_macro':    precision_score(y_true, y_pred, labels=labels, average='macro', zero_division=0),
         'precision_weighted': precision_score(y_true, y_pred, average='weighted', zero_division=0),
-        'recall_macro':       recall_score(y_true, y_pred, average='macro', zero_division=0),
+        'recall_macro':       recall_score(y_true, y_pred, labels=labels, average='macro', zero_division=0),
         'recall_weighted':    recall_score(y_true, y_pred, average='weighted', zero_division=0),
     }
     dl, dp = dedup_pairs(mol_names, y_true, y_pred)
+    labels_dedup = np.unique(dl)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         out.update({
             'dedup_accuracy':        accuracy_score(dl, dp),
-            'dedup_f1_macro':        f1_score(dl, dp, average='macro', zero_division=0),
+            'dedup_f1_macro':        f1_score(dl, dp, labels=labels_dedup, average='macro', zero_division=0),
             'dedup_f1_weighted':     f1_score(dl, dp, average='weighted', zero_division=0),
-            'dedup_precision_macro': precision_score(dl, dp, average='macro', zero_division=0),
-            'dedup_recall_macro':    recall_score(dl, dp, average='macro', zero_division=0),
+            'dedup_precision_macro': precision_score(dl, dp, labels=labels_dedup, average='macro', zero_division=0),
+            'dedup_recall_macro':    recall_score(dl, dp, labels=labels_dedup, average='macro', zero_division=0),
         })
     return out
 

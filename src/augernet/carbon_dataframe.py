@@ -147,7 +147,7 @@ class CarbonDataset(Dataset):
 
     # -------------------------------------------------------------------
     def get_class_weights_and_counts(self, num_classes: int) -> Tuple[torch.Tensor, Dict[int, int]]:
-        """Compute inverse-frequency class weights and per-class counts.
+        """Compute inverse-square-root-frequency class weights and per-class counts.
 
         Parameters
         ----------
@@ -157,7 +157,7 @@ class CarbonDataset(Dataset):
         Returns
         -------
         weights : torch.Tensor
-            Shape ``(num_classes,)``.  Inverse-frequency weights normalised so that
+            Shape ``(num_classes,)``.  Inverse-square-root-frequency weights normalised so that
             the active (non-zero) entries have unit mean.
         counts : Dict[int, int]
             ``{class_idx: sample_count}`` for every class index in
