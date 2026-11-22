@@ -48,7 +48,7 @@ random_seed: 42
 scheduler_type: cosine
 
 # ── Input representation ─────────────────────────────────────────────────────
-cebe_augment: false
+cebe_augment: none
 
 # ── Broadening ───────────────────────────────────────────────────────────────
 fwhm: 1.6
