@@ -4,9 +4,9 @@ authors:
   - family-names: Fouda
     given-names: Adam Emad Ahmed
     orcid: https://orcid.org/0000-0002-9445-5537
-title: "AugerNet: GNN predictions and CNN classifications of core-lectron binding energies and auger spectra"
-version: 2.0.0
+title: "AugerNet: GNN predictions and CNN classifications of core-electron binding energies and Auger spectra"
+version: 2.1.0
 identifiers:
   - type: doi
-    value: 10.5281/zenodo.19689244
-date-released: 2026-04-22
+    value: 10.5281/zenodo.19689173 
+date-released: 2026-11-22

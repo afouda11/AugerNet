@@ -2,7 +2,7 @@
 
 *Machine learning for Auger-electron spectroscopy (AES) and x-ray photoelectron spectroscopy (XPS)*
 
-v2.0.0.0 of AugerNet now includes fully operational:
+v2.1.0 of AugerNet now includes fully operational:
 1) Equivariant GNN predictions of: 
   - a: core-electron binding energies (CEBE) 
   - b: Auger-Electron spectra (AES) 
